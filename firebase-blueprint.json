@@ -1,0 +1,409 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Profil pengguna staf unit hemodialisa termasuk NIP, email, dan hak akses peran.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "format": "email", "maxLength": 200 },
+        "fullName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "nip": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "role": {
+          "type": "string",
+          "enum": ["Administrator", "Managerial", "Kepala Ruang", "PJ Shift", "Perawat Pelaksana"]
+        },
+        "isActive": { "type": "boolean" },
+        "phone": { "type": "string", "maxLength": 30 },
+        "specialization": { "type": "string", "maxLength": 100 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "fullName", "nip", "role", "isActive", "createdAt", "updatedAt"]
+    },
+    "StaffDirectory": {
+      "title": "StaffDirectory",
+      "description": "Direktori publik internal tanpa PII untuk tampilan jadwal dinas dan dropdown tim.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "fullName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "role": {
+          "type": "string",
+          "enum": ["Administrator", "Managerial", "Kepala Ruang", "PJ Shift", "Perawat Pelaksana"]
+        },
+        "isActive": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "fullName", "role", "isActive", "updatedAt"]
+    },
+    "LogbookEntry": {
+      "title": "LogbookEntry",
+      "description": "Catatan tindakan harian hemodialisa perawat dengan status verifikasi.",
+      "type": "object",
+      "properties": {
+        "nurseId": { "type": "string", "maxLength": 128 },
+        "nurseName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "nurseNip": { "type": "string", "maxLength": 40 },
+        "patientId": { "type": "string", "maxLength": 128 },
+        "patientName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "patientRm": { "type": "string", "maxLength": 40 },
+        "machineId": { "type": "string", "maxLength": 128 },
+        "machineNumber": { "type": "string", "maxLength": 40 },
+        "doctorId": { "type": "string", "maxLength": 128 },
+        "doctorName": { "type": "string", "maxLength": 120 },
+        "dutyDoctorId": { "type": "string", "maxLength": 128 },
+        "dutyDoctorName": { "type": "string", "maxLength": 120 },
+        "actionCategory": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "maxLength": 10 },
+        "monthKey": { "type": "string", "pattern": "^\\d{4}-\\d{2}$", "maxLength": 7 },
+        "shift": { "type": "string", "enum": ["Pagi", "Siang", "Malam"] },
+        "startTime": { "type": "string", "maxLength": 10 },
+        "endTime": { "type": "string", "maxLength": 10 },
+        "preWeight": { "type": "number" },
+        "postWeight": { "type": "number" },
+        "preBp": { "type": "string", "maxLength": 20 },
+        "postBp": { "type": "string", "maxLength": 20 },
+        "ufGoal": { "type": "number" },
+        "ufAchieved": { "type": "number" },
+        "vascularAccess": { "type": "string", "enum": ["AV Shunt", "AV Fistula", "CDL", "Femoral", "AVG", "CVC"] },
+        "heparinType": { "type": "string", "enum": ["Standar", "Minimal", "Bebas Heparin", "Heparin", "LMWH"] },
+        "complications": { "type": "string", "maxLength": 300 },
+        "nursingNotes": { "type": "string", "maxLength": 1000 },
+        "verificationStatus": { "type": "string", "enum": ["Draft", "Pending", "Approved", "Revision"] },
+        "targetVerifierRole": { "type": "string", "enum": ["PJ Shift", "Kepala Ruang"] },
+        "targetVerifierId": { "type": "string", "maxLength": 128 },
+        "targetVerifierName": { "type": "string", "maxLength": 120 },
+        "verifiedBy": { "type": "string", "maxLength": 128 },
+        "verifiedByName": { "type": "string", "maxLength": 120 },
+        "verificationNote": { "type": "string", "maxLength": 500 },
+        "verifiedAt": { "type": "string", "format": "date-time" },
+        "wizardDetails": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "nurseId",
+        "nurseName",
+        "patientId",
+        "patientName",
+        "machineId",
+        "machineNumber",
+        "doctorId",
+        "doctorName",
+        "actionCategory",
+        "date",
+        "monthKey",
+        "shift",
+        "startTime",
+        "endTime",
+        "preWeight",
+        "postWeight",
+        "preBp",
+        "postBp",
+        "ufGoal",
+        "ufAchieved",
+        "vascularAccess",
+        "heparinType",
+        "complications",
+        "nursingNotes",
+        "verificationStatus",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Patient": {
+      "title": "Patient",
+      "description": "Data pasien hemodialisa rutin dan DPJP.",
+      "type": "object",
+      "properties": {
+        "mrn": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "fullName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "gender": { "type": "string", "enum": ["L", "P"] },
+        "birthYear": { "type": "number" },
+        "vascularAccess": { "type": "string", "enum": ["AV Shunt", "CDL", "Femoral", "AVG"] },
+        "diagnosis": { "type": "string", "maxLength": 200 },
+        "dpjpId": { "type": "string", "maxLength": 128 },
+        "dpjpName": { "type": "string", "maxLength": 120 },
+        "routineSchedule": { "type": "string", "maxLength": 80 },
+        "status": { "type": "string", "enum": ["Aktif", "Rujuk", "Meninggal", "Nonaktif"] },
+        "notes": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "mrn",
+        "fullName",
+        "gender",
+        "birthYear",
+        "vascularAccess",
+        "diagnosis",
+        "dpjpId",
+        "dpjpName",
+        "routineSchedule",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Doctor": {
+      "title": "Doctor",
+      "description": "Data dokter penanggung jawab pelayanan (DPJP) hemodialisa.",
+      "type": "object",
+      "properties": {
+        "fullName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "sipNumber": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "specialization": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "phone": { "type": "string", "maxLength": 30 },
+        "status": { "type": "string", "enum": ["Aktif", "Cuti", "Nonaktif"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["fullName", "sipNumber", "specialization", "status", "createdAt", "updatedAt"]
+    },
+    "Machine": {
+      "title": "Machine",
+      "description": "Data mesin hemodialisa dan status operasional.",
+      "type": "object",
+      "properties": {
+        "machineNumber": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "brand": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "serialNumber": { "type": "string", "maxLength": 80 },
+        "roomZone": { "type": "string", "maxLength": 60 },
+        "status": { "type": "string", "enum": ["Ready", "In Use", "Maintenance", "Sterilisasi"] },
+        "lastMaintenanceDate": { "type": "string", "maxLength": 20 },
+        "notes": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["machineNumber", "brand", "status", "createdAt", "updatedAt"]
+    },
+    "Schedule": {
+      "title": "Schedule",
+      "description": "Jadwal dinas shift perawat hemodialisa.",
+      "type": "object",
+      "properties": {
+        "nurseId": { "type": "string", "maxLength": 128 },
+        "nurseName": { "type": "string", "maxLength": 120 },
+        "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "maxLength": 10 },
+        "monthKey": { "type": "string", "pattern": "^\\d{4}-\\d{2}$", "maxLength": 7 },
+        "shift": { "type": "string", "enum": ["Pagi", "Siang", "Malam", "Libur", "Cuti"] },
+        "validationStatus": { "type": "string", "enum": ["Draft", "Validated"] },
+        "validatedBy": { "type": "string", "maxLength": 128 },
+        "validatedByName": { "type": "string", "maxLength": 120 },
+        "notes": { "type": "string", "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["nurseId", "nurseName", "date", "monthKey", "shift", "validationStatus", "createdAt", "updatedAt"]
+    },
+    "DoctorSchedule": {
+      "title": "DoctorSchedule",
+      "description": "Matriks jadwal dokter DPJP dan Dokter Jaga per tanggal dan shift.",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "maxLength": 10 },
+        "monthKey": { "type": "string", "pattern": "^\\d{4}-\\d{2}$", "maxLength": 7 },
+        "shift": { "type": "string", "enum": ["Pagi", "Siang", "Malam"] },
+        "dpjpDoctorId": { "type": "string", "maxLength": 128 },
+        "dpjpDoctorName": { "type": "string", "maxLength": 120 },
+        "dutyDoctorId": { "type": "string", "maxLength": 128 },
+        "dutyDoctorName": { "type": "string", "maxLength": 120 },
+        "notes": { "type": "string", "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["date", "monthKey", "shift", "dpjpDoctorId", "dpjpDoctorName", "dutyDoctorId", "dutyDoctorName", "createdAt", "updatedAt"]
+    },
+    "PjShiftAssignment": {
+      "title": "PjShiftAssignment",
+      "description": "Penugasan satu (1) PJ Shift penanggung jawab per tanggal dan shift.",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "maxLength": 10 },
+        "monthKey": { "type": "string", "pattern": "^\\d{4}-\\d{2}$", "maxLength": 7 },
+        "shift": { "type": "string", "enum": ["Pagi", "Siang", "Malam"] },
+        "pjNurseId": { "type": "string", "maxLength": 128 },
+        "pjNurseName": { "type": "string", "maxLength": 120 },
+        "pjNurseRole": { "type": "string", "enum": ["PJ Shift"] },
+        "notes": { "type": "string", "maxLength": 300 },
+        "assignedBy": { "type": "string", "maxLength": 128 },
+        "assignedByName": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["date", "monthKey", "shift", "pjNurseId", "pjNurseName", "pjNurseRole", "createdAt", "updatedAt"]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "Laporan pasien (SOAP/asuhan), laporan PJ Shift, dan laporan rekapitulasi bulanan.",
+      "type": "object",
+      "properties": {
+        "reportType": { "type": "string", "enum": ["pj_shift", "patient_care", "monthly_unit"] },
+        "date": { "type": "string", "maxLength": 10 },
+        "monthKey": { "type": "string", "maxLength": 7 },
+        "authorId": { "type": "string", "maxLength": 128 },
+        "authorName": { "type": "string", "maxLength": 120 },
+        "authorRole": { "type": "string", "maxLength": 40 },
+        "shift": { "type": "string", "enum": ["Pagi", "Siang", "Malam"] },
+        "totalPatients": { "type": "number" },
+        "activeMachines": { "type": "number" },
+        "nursesOnDuty": { "type": "string", "maxLength": 500 },
+        "incidents": { "type": "string", "maxLength": 1000 },
+        "handoverNotes": { "type": "string", "maxLength": 2500 },
+        "sectionDItems": { "type": "array" },
+        "sbarSituation": { "type": "string", "maxLength": 2000 },
+        "sbarBackground": { "type": "string", "maxLength": 3000 },
+        "sbarAssessment": { "type": "string", "maxLength": 2000 },
+        "sbarRecommendation": { "type": "string", "maxLength": 2000 },
+        "handoverSignedBy": { "type": "string", "maxLength": 128 },
+        "handoverSignedByName": { "type": "string", "maxLength": 120 },
+        "handoverSignedShift": { "type": "string", "enum": ["Pagi", "Siang", "Malam"] },
+        "handoverSignedAt": { "type": "string", "format": "date-time" },
+        "receivedSignedBy": { "type": "string", "maxLength": 128 },
+        "receivedSignedByName": { "type": "string", "maxLength": 120 },
+        "receivedSignedShift": { "type": "string", "enum": ["Pagi", "Siang", "Malam"] },
+        "receivedSignedDate": { "type": "string", "maxLength": 10 },
+        "receivedSignedAt": { "type": "string", "format": "date-time" },
+        "reviewStatus": { "type": "string", "enum": ["Submitted", "Reviewed"] },
+        "reviewedBy": { "type": "string", "maxLength": 128 },
+        "reviewedByName": { "type": "string", "maxLength": 120 },
+        "reviewNote": { "type": "string", "maxLength": 500 },
+        "reviewedAt": { "type": "string", "format": "date-time" },
+        "patientId": { "type": "string", "maxLength": 128 },
+        "patientName": { "type": "string", "maxLength": 120 },
+        "patientRm": { "type": "string", "maxLength": 40 },
+        "soapSubjective": { "type": "string", "maxLength": 800 },
+        "soapObjective": { "type": "string", "maxLength": 800 },
+        "soapAssessment": { "type": "string", "maxLength": 800 },
+        "soapPlan": { "type": "string", "maxLength": 800 },
+        "medicalOrder": { "type": "string", "maxLength": 800 },
+        "totalTreatments": { "type": "number" },
+        "approvedTreatments": { "type": "number" },
+        "summaryNotes": { "type": "string", "maxLength": 1000 },
+        "status": { "type": "string", "enum": ["Draft", "Final"] },
+        "targetNurseId": { "type": "string", "maxLength": 128 },
+        "targetNurseName": { "type": "string", "maxLength": 120 },
+        "targetNurseNip": { "type": "string", "maxLength": 40 },
+        "targetNurseRole": { "type": "string", "maxLength": 40 },
+        "nurseSignedBy": { "type": "string", "maxLength": 128 },
+        "nurseSignedByName": { "type": "string", "maxLength": 120 },
+        "nurseSignedRole": { "type": "string", "maxLength": 40 },
+        "nurseSignedAt": { "type": "string", "format": "date-time" },
+        "karuSignedBy": { "type": "string", "maxLength": 128 },
+        "karuSignedByName": { "type": "string", "maxLength": 120 },
+        "karuSignedAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["reportType", "date", "monthKey", "authorId", "authorName", "authorRole", "createdAt", "updatedAt"]
+    },
+    "ActionCategory": {
+      "title": "ActionCategory",
+      "description": "Master kategori tindakan hemodialisa yang dikelola Administrator.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "code": { "type": "string", "minLength": 2, "maxLength": 20 },
+        "description": { "type": "string", "maxLength": 300 },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "code", "isActive", "createdAt", "updatedAt"]
+    },
+    "LogbookLock": {
+      "title": "LogbookLock",
+      "description": "Kunci harian per pasien agar pasien yang sudah diinput logbooknya pada tanggal tersebut tidak dapat dipilih kembali oleh akun manapun.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 160 },
+        "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "maxLength": 10 },
+        "monthKey": { "type": "string", "pattern": "^\\d{4}-\\d{2}$", "maxLength": 7 },
+        "patientId": { "type": "string", "maxLength": 128 },
+        "patientName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "nurseId": { "type": "string", "maxLength": 128 },
+        "nurseName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "logbookId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "date", "monthKey", "patientId", "patientName", "nurseId", "nurseName", "logbookId", "createdAt", "updatedAt"]
+    },
+    "MachineLock": {
+      "title": "MachineLock",
+      "description": "Kunci mesin/bed HD per tanggal dan shift agar mesin yang sudah dipilih atau digunakan seorang staf tidak dapat dipilih oleh staf lain pada tanggal dan shift yang sama.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 160 },
+        "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "maxLength": 10 },
+        "monthKey": { "type": "string", "pattern": "^\\d{4}-\\d{2}$", "maxLength": 7 },
+        "shift": { "type": "string", "enum": ["Pagi", "Siang", "Malam"] },
+        "machineId": { "type": "string", "maxLength": 128 },
+        "machineNumber": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "patientId": { "type": "string", "maxLength": 128 },
+        "patientName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "nurseId": { "type": "string", "maxLength": 128 },
+        "nurseName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "logbookId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "date", "monthKey", "shift", "machineId", "machineNumber", "patientId", "patientName", "nurseId", "nurseName", "logbookId", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Data akun dan profil pribadi staf unit HD (PII terlindungi)."
+    },
+    "/staff_directory/{userId}": {
+      "schema": { "$ref": "#/entities/StaffDirectory" },
+      "description": "Direktori nama dan peran staf aktif tanpa PII."
+    },
+    "/logbook/{logbookId}": {
+      "schema": { "$ref": "#/entities/LogbookEntry" },
+      "description": "Logbook tindakan keperawatan hemodialisa harian."
+    },
+    "/patients/{patientId}": {
+      "schema": { "$ref": "#/entities/Patient" },
+      "description": "Master data pasien hemodialisa."
+    },
+    "/doctors/{doctorId}": {
+      "schema": { "$ref": "#/entities/Doctor" },
+      "description": "Master data dokter penanggung jawab hemodialisa."
+    },
+    "/machines/{machineId}": {
+      "schema": { "$ref": "#/entities/Machine" },
+      "description": "Master data dan status mesin hemodialisa."
+    },
+    "/schedules/{scheduleId}": {
+      "schema": { "$ref": "#/entities/Schedule" },
+      "description": "Matrix jadwal dinas shift perawat."
+    },
+    "/doctor_schedules/{scheduleId}": {
+      "schema": { "$ref": "#/entities/DoctorSchedule" },
+      "description": "Matriks jadwal dokter DPJP dan dokter jaga ruangan per tanggal dan shift."
+    },
+    "/pj_shift_assignments/{assignmentId}": {
+      "schema": { "$ref": "#/entities/PjShiftAssignment" },
+      "description": "Jadwal penugasan satu PJ Shift per tanggal dan shift."
+    },
+    "/reports/{reportId}": {
+      "schema": { "$ref": "#/entities/Report" },
+      "description": "Laporan keperawatan pasien, laporan PJ Shift, dan rekapitulasi bulanan."
+    },
+    "/action_categories/{categoryId}": {
+      "schema": { "$ref": "#/entities/ActionCategory" },
+      "description": "Pengaturan kategori tindakan hemodialisa."
+    },
+    "/logbook_locks/{lockId}": {
+      "schema": { "$ref": "#/entities/LogbookLock" },
+      "description": "Pengunci pasien harian agar satu pasien tidak dapat diinput logbook lebih dari sekali pada tanggal yang sama."
+    },
+    "/machine_locks/{lockId}": {
+      "schema": { "$ref": "#/entities/MachineLock" },
+      "description": "Pengunci mesin/bed HD per tanggal dan shift agar mesin yang sudah dipilih tidak dapat dipilih kembali oleh staf lain."
+    }
+  }
+}

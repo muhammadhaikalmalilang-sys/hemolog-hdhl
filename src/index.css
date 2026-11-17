@@ -1,0 +1,384 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
+    background-color: #f8fafc;
+    color: #0f172a;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+
+  .font-mono {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+@media print {
+  @page {
+    size: 330mm 215mm;
+    margin: 5mm;
+  }
+
+  html,
+  body {
+    margin: 0 !important;
+    padding: 0 !important;
+    height: auto !important;
+    min-height: 0 !important;
+    background-color: #ffffff !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .f4-print-sheet {
+    width: var(--f4-print-width, 100%) !important;
+    zoom: var(--f4-print-zoom, 1) !important;
+    overflow: visible !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .f4-print-sheet .f4-scroll-wrap {
+    overflow: visible !important;
+  }
+}
+
+.f4-measuring {
+  box-sizing: border-box !important;
+  overflow: visible !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+.f4-measuring .no-print {
+  display: none !important;
+}
+
+.f4-measuring .f4-scroll-wrap {
+  overflow: visible !important;
+}
+
+/* Synchronized compact styles for Patient Report (F4 Landscape) */
+@media print {
+  .f4-patient-landscape .f4-banner {
+    padding: 6px 10px !important;
+  }
+  .f4-patient-landscape .f4-banner h3 {
+    font-size: 11px !important;
+    line-height: 1.2 !important;
+  }
+  .f4-patient-landscape .f4-banner p {
+    font-size: 8.5px !important;
+    line-height: 1.25 !important;
+    margin-top: 2px !important;
+  }
+  .f4-patient-landscape table {
+    width: 100% !important;
+    table-layout: auto !important;
+  }
+  .f4-patient-landscape thead th {
+    font-size: 7.5px !important;
+    line-height: 1.15 !important;
+    padding: 3px 3px !important;
+    white-space: normal !important;
+    min-width: 0 !important;
+  }
+  .f4-patient-landscape tbody td,
+  .f4-patient-landscape tfoot td {
+    font-size: 8px !important;
+    line-height: 1.2 !important;
+    padding: 3px 3.5px !important;
+    white-space: normal !important;
+    max-width: none !important;
+  }
+  .f4-patient-landscape .f4-soap-grid {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 8px !important;
+  }
+}
+
+.f4-measuring.f4-patient-landscape .f4-banner {
+  padding: 6px 10px !important;
+}
+.f4-measuring.f4-patient-landscape .f4-banner h3 {
+  font-size: 11px !important;
+  line-height: 1.2 !important;
+}
+.f4-measuring.f4-patient-landscape .f4-banner p {
+  font-size: 8.5px !important;
+  line-height: 1.25 !important;
+  margin-top: 2px !important;
+}
+.f4-measuring.f4-patient-landscape table {
+  width: 100% !important;
+  table-layout: auto !important;
+}
+.f4-measuring.f4-patient-landscape thead th {
+  font-size: 7.5px !important;
+  line-height: 1.15 !important;
+  padding: 3px 3px !important;
+  white-space: normal !important;
+  min-width: 0 !important;
+}
+.f4-measuring.f4-patient-landscape tbody td,
+.f4-measuring.f4-patient-landscape tfoot td {
+  font-size: 8px !important;
+  line-height: 1.2 !important;
+  padding: 3px 3.5px !important;
+  white-space: normal !important;
+  max-width: none !important;
+}
+.f4-measuring.f4-patient-landscape .f4-soap-grid {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 8px !important;
+}
+
+/* Synchronized compact styles for PJ Shift Report (F4 Portrait) */
+@media print {
+  .f4-pj-portrait {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 5px !important;
+  }
+  .f4-pj-portrait > * {
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+  }
+  .f4-pj-portrait .pj-doc-header {
+    padding-bottom: 4px !important;
+  }
+  .f4-pj-portrait .pj-doc-header p:first-child {
+    font-size: 8.5px !important;
+  }
+  .f4-pj-portrait .pj-doc-header h1 {
+    font-size: 11.5px !important;
+    line-height: 1.2 !important;
+  }
+  .f4-pj-portrait .pj-doc-header p:last-child {
+    font-size: 8px !important;
+  }
+  .f4-pj-portrait table {
+    width: 100% !important;
+  }
+  .f4-pj-portrait th,
+  .f4-pj-portrait td {
+    padding: 2px 5px !important;
+    font-size: 8.5px !important;
+    line-height: 1.2 !important;
+  }
+  .f4-pj-portrait thead tr:first-child th {
+    padding: 2.5px 6px !important;
+    font-size: 8.5px !important;
+  }
+  .f4-pj-portrait thead tr:nth-child(2) th {
+    padding: 2px 5px !important;
+    font-size: 8px !important;
+  }
+  .f4-pj-portrait .pj-sig-box {
+    min-height: 44px !important;
+    margin-top: 3px !important;
+    margin-bottom: 3px !important;
+  }
+}
+
+.f4-measuring.f4-pj-portrait {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 5px !important;
+}
+.f4-measuring.f4-pj-portrait > * {
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
+.f4-measuring.f4-pj-portrait .pj-doc-header {
+  padding-bottom: 4px !important;
+}
+.f4-measuring.f4-pj-portrait .pj-doc-header p:first-child {
+  font-size: 8.5px !important;
+}
+.f4-measuring.f4-pj-portrait .pj-doc-header h1 {
+  font-size: 11.5px !important;
+  line-height: 1.2 !important;
+}
+.f4-measuring.f4-pj-portrait .pj-doc-header p:last-child {
+  font-size: 8px !important;
+}
+.f4-measuring.f4-pj-portrait table {
+  width: 100% !important;
+}
+.f4-measuring.f4-pj-portrait th,
+.f4-measuring.f4-pj-portrait td {
+  padding: 2px 5px !important;
+  font-size: 8.5px !important;
+  line-height: 1.2 !important;
+}
+.f4-measuring.f4-pj-portrait thead tr:first-child th {
+  padding: 2.5px 6px !important;
+  font-size: 8.5px !important;
+}
+.f4-measuring.f4-pj-portrait thead tr:nth-child(2) th {
+  padding: 2px 5px !important;
+  font-size: 8px !important;
+}
+.f4-measuring.f4-pj-portrait .pj-sig-box {
+  min-height: 44px !important;
+  margin-top: 3px !important;
+  margin-bottom: 3px !important;
+}
+
+/* Synchronized compact styles for Monthly Report (F4 Landscape) */
+@media print {
+  .f4-monthly-landscape .monthly-doc-header {
+    padding-bottom: 4px !important;
+    margin-bottom: 6px !important;
+  }
+  .f4-monthly-landscape .monthly-doc-header h1 {
+    font-size: 11.5px !important;
+    line-height: 1.2 !important;
+  }
+  .f4-monthly-landscape .monthly-doc-header p {
+    font-size: 8.5px !important;
+  }
+  .f4-monthly-landscape .monthly-meta-grid {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 2px 24px !important;
+    font-size: 8.5px !important;
+    line-height: 1.2 !important;
+    margin-bottom: 6px !important;
+  }
+  .f4-monthly-landscape table {
+    width: 100% !important;
+    table-layout: auto !important;
+  }
+  .f4-monthly-landscape th,
+  .f4-monthly-landscape td {
+    font-size: 7px !important;
+    line-height: 1.12 !important;
+    padding: 1.5px 2.5px !important;
+    min-width: 0 !important;
+    max-width: none !important;
+  }
+  .f4-monthly-landscape .monthly-day-col {
+    width: 15px !important;
+    min-width: 14px !important;
+    padding: 1.5px 1px !important;
+  }
+  .f4-monthly-landscape .monthly-patient-names span {
+    font-size: 6.5px !important;
+    line-height: 1.1 !important;
+    white-space: normal !important;
+  }
+  .f4-monthly-landscape .monthly-signatures {
+    margin-top: 8px !important;
+    gap: 24px !important;
+    font-size: 8.5px !important;
+    line-height: 1.2 !important;
+  }
+  .f4-monthly-landscape .monthly-sig-spacer {
+    height: 26px !important;
+  }
+  .f4-monthly-landscape .monthly-sig-box {
+    min-height: 28px !important;
+    margin-top: 3px !important;
+    margin-bottom: 3px !important;
+  }
+  .f4-monthly-landscape .monthly-sig-badge {
+    padding: 2px 8px !important;
+  }
+  .f4-monthly-landscape .monthly-sig-badge span {
+    font-size: 7px !important;
+    line-height: 1.15 !important;
+  }
+  .f4-monthly-landscape .monthly-sig-placeholder {
+    font-size: 7.5px !important;
+  }
+}
+
+.f4-measuring.f4-monthly-landscape .monthly-doc-header {
+  padding-bottom: 4px !important;
+  margin-bottom: 6px !important;
+}
+.f4-measuring.f4-monthly-landscape .monthly-doc-header h1 {
+  font-size: 11.5px !important;
+  line-height: 1.2 !important;
+}
+.f4-measuring.f4-monthly-landscape .monthly-doc-header p {
+  font-size: 8.5px !important;
+}
+.f4-measuring.f4-monthly-landscape .monthly-meta-grid {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 2px 24px !important;
+  font-size: 8.5px !important;
+  line-height: 1.2 !important;
+  margin-bottom: 6px !important;
+}
+.f4-measuring.f4-monthly-landscape table {
+  width: 100% !important;
+  table-layout: auto !important;
+}
+.f4-measuring.f4-monthly-landscape th,
+.f4-measuring.f4-monthly-landscape td {
+  font-size: 7px !important;
+  line-height: 1.12 !important;
+  padding: 1.5px 2.5px !important;
+  min-width: 0 !important;
+  max-width: none !important;
+}
+.f4-measuring.f4-monthly-landscape .monthly-day-col {
+  width: 15px !important;
+  min-width: 14px !important;
+  padding: 1.5px 1px !important;
+}
+.f4-measuring.f4-monthly-landscape .monthly-patient-names span {
+  font-size: 6.5px !important;
+  line-height: 1.1 !important;
+  white-space: normal !important;
+}
+.f4-measuring.f4-monthly-landscape .monthly-signatures {
+  margin-top: 8px !important;
+  gap: 24px !important;
+  font-size: 8.5px !important;
+  line-height: 1.2 !important;
+}
+.f4-measuring.f4-monthly-landscape .monthly-sig-spacer {
+  height: 26px !important;
+}
+.f4-measuring.f4-monthly-landscape .monthly-sig-box {
+  min-height: 28px !important;
+  margin-top: 3px !important;
+  margin-bottom: 3px !important;
+}
+.f4-measuring.f4-monthly-landscape .monthly-sig-badge {
+  padding: 2px 8px !important;
+}
+.f4-measuring.f4-monthly-landscape .monthly-sig-badge span {
+  font-size: 7px !important;
+  line-height: 1.15 !important;
+}
+.f4-measuring.f4-monthly-landscape .monthly-sig-placeholder {
+  font-size: 7.5px !important;
+}
+
