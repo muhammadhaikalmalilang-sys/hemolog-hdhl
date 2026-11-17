@@ -1,9 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import express from 'express';
-import { cert, getApps, initializeApp } from 'firebase-admin/app';
-import { getAuth } from 'firebase-admin/auth';
-import { FieldValue, getFirestore } from 'firebase-admin/firestore';
 
 const BOOTSTRAP_ADMIN_EMAILS = new Set([
   'muhammadhaikalmalilang@gmail.com',
@@ -164,10 +161,10 @@ function resolveLocalServiceAccountPath() {
   }
 }
 
-function resolveAdminFirestore(adminApp) {
+function resolveAdminFirestore(getFirestoreFn, adminApp) {
   return targetDatabaseId && targetDatabaseId !== '(default)'
-    ? getFirestore(adminApp, targetDatabaseId)
-    : getFirestore(adminApp);
+    ? getFirestoreFn(adminApp, targetDatabaseId)
+    : getFirestoreFn(adminApp);
 }
 
 function createTaggedError(message, code, statusCode) {
@@ -177,13 +174,21 @@ function createTaggedError(message, code, statusCode) {
   return err;
 }
 
-function getFirebaseAdmin() {
+async function getFirebaseAdmin() {
+  const [{ cert, getApps, initializeApp }, { getAuth }, { FieldValue, getFirestore }] =
+    await Promise.all([
+      import('firebase-admin/app'),
+      import('firebase-admin/auth'),
+      import('firebase-admin/firestore'),
+    ]);
+
   const existingApp = getApps().find((a) => a.name === 'hemolog-admin');
   if (existingApp) {
     return {
       app: existingApp,
       auth: getAuth(existingApp),
-      db: resolveAdminFirestore(existingApp),
+      db: resolveAdminFirestore(getFirestore, existingApp),
+      FieldValue,
     };
   }
 
@@ -257,7 +262,8 @@ function getFirebaseAdmin() {
   return {
     app: adminApp,
     auth: getAuth(adminApp),
-    db: resolveAdminFirestore(adminApp),
+    db: resolveAdminFirestore(getFirestore, adminApp),
+    FieldValue,
   };
 }
 
@@ -316,7 +322,7 @@ export function createApiApp() {
     next();
   });
 
-  app.get('/api/health', (_req, res) => {
+  app.get('/api/health', async (_req, res) => {
     const hasJson = Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim());
     const hasPair = Boolean(
       process.env.FIREBASE_CLIENT_EMAIL?.trim() && process.env.FIREBASE_PRIVATE_KEY?.trim()
@@ -327,7 +333,7 @@ export function createApiApp() {
     let adminErrorCode = null;
     let adminErrorMessage = null;
     try {
-      getFirebaseAdmin();
+      await getFirebaseAdmin();
       adminReady = true;
     } catch (err) {
       adminErrorCode = err?.code || 'FIREBASE_ADMIN_ERROR';
@@ -348,7 +354,7 @@ export function createApiApp() {
   app.post('/api/admin/users/bulk', async (req, res) => {
     let services;
     try {
-      services = getFirebaseAdmin();
+      services = await getFirebaseAdmin();
     } catch (err) {
       res.status(503).json({
         error: err?.code || 'FIREBASE_ADMIN_NOT_CONFIGURED',
@@ -461,15 +467,15 @@ export function createApiApp() {
           isActive: true,
           phone,
           specialization,
-          createdAt: FieldValue.serverTimestamp(),
-          updatedAt: FieldValue.serverTimestamp(),
+          createdAt: services.FieldValue.serverTimestamp(),
+          updatedAt: services.FieldValue.serverTimestamp(),
         });
         batch.set(services.db.collection('staff_directory').doc(createdUid), {
           uid: createdUid,
           fullName,
           role,
           isActive: true,
-          updatedAt: FieldValue.serverTimestamp(),
+          updatedAt: services.FieldValue.serverTimestamp(),
         });
         await batch.commit();
 
@@ -526,7 +532,7 @@ export function createApiApp() {
 
     let services;
     try {
-      services = getFirebaseAdmin();
+      services = await getFirebaseAdmin();
     } catch (err) {
       res.status(503).json({
         error: err?.code || 'FIREBASE_ADMIN_NOT_CONFIGURED',
