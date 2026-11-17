@@ -1,35 +1,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { IncomingMessage, ServerResponse } from 'node:http';
-import express, { type Express, type Request, type Response } from 'express';
-import {
-  cert,
-  getApps,
-  initializeApp,
-  type App as AdminApp,
-  type ServiceAccount,
-} from 'firebase-admin/app';
-import { getAuth, type Auth as AdminAuth, type DecodedIdToken } from 'firebase-admin/auth';
-import {
-  FieldValue,
-  getFirestore,
-  type Firestore as AdminFirestore,
-} from 'firebase-admin/firestore';
+import express from 'express';
+import { cert, getApps, initializeApp } from 'firebase-admin/app';
+import { getAuth } from 'firebase-admin/auth';
+import { FieldValue, getFirestore } from 'firebase-admin/firestore';
 
 const BOOTSTRAP_ADMIN_EMAILS = new Set([
   'muhammadhaikalmalilang@gmail.com',
 ]);
 
-function isBootstrapAdminEmail(email?: string | null): boolean {
-  return Boolean(email && BOOTSTRAP_ADMIN_EMAILS.has(email.trim().toLowerCase()));
+function isBootstrapAdminEmail(email) {
+  return Boolean(email && BOOTSTRAP_ADMIN_EMAILS.has(String(email).trim().toLowerCase()));
 }
 
-interface AppletFirebaseConfig {
-  projectId: string;
-  firestoreDatabaseId?: string;
-}
-
-function loadAppletFirebaseConfig(): AppletFirebaseConfig {
+function loadAppletFirebaseConfig() {
   const candidates = [
     path.resolve(process.cwd(), 'firebase-applet-config.json'),
     path.resolve(process.cwd(), '..', 'firebase-applet-config.json'),
@@ -39,7 +23,7 @@ function loadAppletFirebaseConfig(): AppletFirebaseConfig {
     try {
       if (fs.existsSync(configPath)) {
         const raw = fs.readFileSync(configPath, 'utf-8');
-        return JSON.parse(raw) as AppletFirebaseConfig;
+        return JSON.parse(raw);
       }
     } catch {
       // Ignore invalid or unreadable local file and fall back to env variables
@@ -62,13 +46,7 @@ const targetDatabaseId =
   appletConfig.firestoreDatabaseId ||
   '(default)';
 
-interface AdminServices {
-  app: AdminApp;
-  auth: AdminAuth;
-  db: AdminFirestore;
-}
-
-function escapeControlCharsInJsonStrings(input: string): string {
+function escapeControlCharsInJsonStrings(input) {
   let out = '';
   let inString = false;
   let escaped = false;
@@ -107,22 +85,22 @@ function escapeControlCharsInJsonStrings(input: string): string {
   return out;
 }
 
-function tryParseJsonObject(raw: string): Record<string, unknown> | null {
+function tryParseJsonObject(raw) {
   const candidates = [raw, escapeControlCharsInJsonStrings(raw)];
   for (const candidate of candidates) {
     try {
-      const parsed = JSON.parse(candidate) as unknown;
+      const parsed = JSON.parse(candidate);
       if (typeof parsed === 'string') {
         const inner = parsed.trim();
         if (inner.startsWith('{')) {
-          const innerParsed = JSON.parse(escapeControlCharsInJsonStrings(inner)) as unknown;
+          const innerParsed = JSON.parse(escapeControlCharsInJsonStrings(inner));
           if (innerParsed && typeof innerParsed === 'object' && !Array.isArray(innerParsed)) {
-            return innerParsed as Record<string, unknown>;
+            return innerParsed;
           }
         }
       }
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return parsed as Record<string, unknown>;
+        return parsed;
       }
     } catch {
       // Try next candidate
@@ -131,8 +109,8 @@ function tryParseJsonObject(raw: string): Record<string, unknown> | null {
   return null;
 }
 
-function parseServiceAccountFromEnv(rawValue: string): ServiceAccount & { project_id?: string } {
-  let trimmed = rawValue.trim();
+function parseServiceAccountFromEnv(rawValue) {
+  let trimmed = String(rawValue || '').trim();
   if (
     (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
     (trimmed.startsWith("'") && trimmed.endsWith("'"))
@@ -155,14 +133,7 @@ function parseServiceAccountFromEnv(rawValue: string): ServiceAccount & { projec
     jsonText = jsonText.replace(/\\"/g, '"');
   }
 
-  const parsed = tryParseJsonObject(jsonText) as
-    | (ServiceAccount & {
-        project_id?: string;
-        private_key?: string;
-        client_email?: string;
-      })
-    | null;
-
+  const parsed = tryParseJsonObject(jsonText);
   if (!parsed) {
     throw new Error('Invalid Service Account JSON format.');
   }
@@ -183,7 +154,7 @@ function parseServiceAccountFromEnv(rawValue: string): ServiceAccount & { projec
   return parsed;
 }
 
-function resolveLocalServiceAccountPath(): string | null {
+function resolveLocalServiceAccountPath() {
   if (!targetProjectId) return null;
   const candidate = path.resolve(process.cwd(), '.secrets', `${targetProjectId}-adminsdk.json`);
   try {
@@ -193,13 +164,20 @@ function resolveLocalServiceAccountPath(): string | null {
   }
 }
 
-function resolveAdminFirestore(adminApp: AdminApp): AdminFirestore {
+function resolveAdminFirestore(adminApp) {
   return targetDatabaseId && targetDatabaseId !== '(default)'
     ? getFirestore(adminApp, targetDatabaseId)
     : getFirestore(adminApp);
 }
 
-function getFirebaseAdmin(): AdminServices {
+function createTaggedError(message, code, statusCode) {
+  const err = new Error(message);
+  if (code) err.code = code;
+  if (statusCode) err.statusCode = statusCode;
+  return err;
+}
+
+function getFirebaseAdmin() {
   const existingApp = getApps().find((a) => a.name === 'hemolog-admin');
   if (existingApp) {
     return {
@@ -214,17 +192,16 @@ function getFirebaseAdmin(): AdminServices {
   const envPrivateKey = process.env.FIREBASE_PRIVATE_KEY?.trim();
   const localServiceAccountPath = resolveLocalServiceAccountPath();
 
-  let serviceAccount: (ServiceAccount & { project_id?: string }) | null = null;
+  let serviceAccount = null;
 
   if (rawServiceAccount && rawServiceAccount.trim()) {
     try {
       serviceAccount = parseServiceAccountFromEnv(rawServiceAccount);
     } catch {
-      const err = new Error(
-        'Format FIREBASE_SERVICE_ACCOUNT_JSON tidak valid. Pastikan berisi JSON Service Account utuh dari Firebase Console.'
-      ) as Error & { code?: string };
-      err.code = 'FIREBASE_ADMIN_INVALID_CREDENTIALS';
-      throw err;
+      throw createTaggedError(
+        'Format FIREBASE_SERVICE_ACCOUNT_JSON tidak valid. Pastikan berisi JSON Service Account utuh dari Firebase Console.',
+        'FIREBASE_ADMIN_INVALID_CREDENTIALS'
+      );
     }
   } else if (envClientEmail && envPrivateKey) {
     serviceAccount = {
@@ -237,34 +214,31 @@ function getFirebaseAdmin(): AdminServices {
       const fileRaw = fs.readFileSync(localServiceAccountPath, 'utf-8');
       serviceAccount = parseServiceAccountFromEnv(fileRaw);
     } catch {
-      const err = new Error(
-        'Gagal membaca file kredensial Service Account lokal.'
-      ) as Error & { code?: string };
-      err.code = 'FIREBASE_ADMIN_INVALID_CREDENTIALS';
-      throw err;
+      throw createTaggedError(
+        'Gagal membaca file kredensial Service Account lokal.',
+        'FIREBASE_ADMIN_INVALID_CREDENTIALS'
+      );
     }
   }
 
   if (!serviceAccount) {
-    const err = new Error(
-      'FIREBASE_SERVICE_ACCOUNT_JSON belum dikonfigurasi pada server.'
-    ) as Error & { code?: string };
-    err.code = 'FIREBASE_ADMIN_NOT_CONFIGURED';
-    throw err;
+    throw createTaggedError(
+      'FIREBASE_SERVICE_ACCOUNT_JSON belum dikonfigurasi pada server.',
+      'FIREBASE_ADMIN_NOT_CONFIGURED'
+    );
   }
 
   const resolvedProjectId =
     targetProjectId || serviceAccount.project_id || serviceAccount.projectId || '';
   const saProjectId = serviceAccount.project_id || serviceAccount.projectId;
   if (resolvedProjectId && saProjectId && saProjectId !== resolvedProjectId) {
-    const err = new Error(
-      `Service Account JSON berasal dari project "${saProjectId}", sedangkan aplikasi terhubung ke "${resolvedProjectId}".`
-    ) as Error & { code?: string };
-    err.code = 'FIREBASE_ADMIN_PROJECT_MISMATCH';
-    throw err;
+    throw createTaggedError(
+      `Service Account JSON berasal dari project "${saProjectId}", sedangkan aplikasi terhubung ke "${resolvedProjectId}".`,
+      'FIREBASE_ADMIN_PROJECT_MISMATCH'
+    );
   }
 
-  let adminApp: AdminApp;
+  let adminApp;
   try {
     adminApp = initializeApp(
       {
@@ -274,11 +248,10 @@ function getFirebaseAdmin(): AdminServices {
       'hemolog-admin'
     );
   } catch {
-    const err = new Error(
-      'Kredensial FIREBASE_SERVICE_ACCOUNT_JSON gagal dimuat oleh Firebase Admin SDK. Pastikan private_key dan JSON utuh.'
-    ) as Error & { code?: string };
-    err.code = 'FIREBASE_ADMIN_INVALID_CREDENTIALS';
-    throw err;
+    throw createTaggedError(
+      'Kredensial FIREBASE_SERVICE_ACCOUNT_JSON gagal dimuat oleh Firebase Admin SDK. Pastikan private_key dan JSON utuh.',
+      'FIREBASE_ADMIN_INVALID_CREDENTIALS'
+    );
   }
 
   return {
@@ -296,10 +269,7 @@ const ALLOWED_ROLES = new Set([
   'Perawat Pelaksana',
 ]);
 
-async function verifyAdminCaller(
-  req: Request,
-  services: AdminServices
-): Promise<DecodedIdToken | null> {
+async function verifyAdminCaller(req, services) {
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
   if (!token) return null;
@@ -318,23 +288,21 @@ async function verifyAdminCaller(
     callerData?.role === 'Administrator';
 
   if (!isAdminCaller) {
-    const err = new Error('Hanya Administrator aktif yang berhak mengelola akun pengguna.') as Error & {
-      statusCode?: number;
-      code?: string;
-    };
-    err.statusCode = 403;
-    err.code = 'FORBIDDEN';
-    throw err;
+    throw createTaggedError(
+      'Hanya Administrator aktif yang berhak mengelola akun pengguna.',
+      'FORBIDDEN',
+      403
+    );
   }
 
   return decoded;
 }
 
-export function createApiApp(): Express {
+export function createApiApp() {
   const app = express();
   app.use(express.json());
 
-  app.use((req: Request, res: Response, next) => {
+  app.use((req, res, next) => {
     const p = req.path.toLowerCase();
     if (
       p.includes('.secrets') ||
@@ -348,7 +316,7 @@ export function createApiApp(): Express {
     next();
   });
 
-  app.get('/api/health', (_req: Request, res: Response) => {
+  app.get('/api/health', (_req, res) => {
     const hasJson = Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim());
     const hasPair = Boolean(
       process.env.FIREBASE_CLIENT_EMAIL?.trim() && process.env.FIREBASE_PRIVATE_KEY?.trim()
@@ -356,15 +324,14 @@ export function createApiApp(): Express {
     const hasLocalFile = Boolean(resolveLocalServiceAccountPath());
 
     let adminReady = false;
-    let adminErrorCode: string | null = null;
-    let adminErrorMessage: string | null = null;
+    let adminErrorCode = null;
+    let adminErrorMessage = null;
     try {
       getFirebaseAdmin();
       adminReady = true;
-    } catch (err: unknown) {
-      const e = err as Error & { code?: string };
-      adminErrorCode = e.code || 'FIREBASE_ADMIN_ERROR';
-      adminErrorMessage = e.message;
+    } catch (err) {
+      adminErrorCode = err?.code || 'FIREBASE_ADMIN_ERROR';
+      adminErrorMessage = err instanceof Error ? err.message : String(err);
     }
 
     res.json({
@@ -378,15 +345,14 @@ export function createApiApp(): Express {
     });
   });
 
-  app.post('/api/admin/users/bulk', async (req: Request, res: Response) => {
-    let services: AdminServices;
+  app.post('/api/admin/users/bulk', async (req, res) => {
+    let services;
     try {
       services = getFirebaseAdmin();
-    } catch (err: unknown) {
-      const e = err as Error & { code?: string };
+    } catch (err) {
       res.status(503).json({
-        error: e.code || 'FIREBASE_ADMIN_NOT_CONFIGURED',
-        message: e.message,
+        error: err?.code || 'FIREBASE_ADMIN_NOT_CONFIGURED',
+        message: err instanceof Error ? err.message : 'Firebase Admin belum dikonfigurasi.',
       });
       return;
     }
@@ -400,28 +366,16 @@ export function createApiApp(): Express {
         });
         return;
       }
-    } catch (err: unknown) {
-      const e = err as Error & { statusCode?: number; code?: string };
-      res.status(e.statusCode || 401).json({
-        error: e.code || 'UNAUTHORIZED',
-        message: e.message || 'Gagal memverifikasi otoritas Administrator.',
+    } catch (err) {
+      res.status(err?.statusCode || 401).json({
+        error: err?.code || 'UNAUTHORIZED',
+        message:
+          (err instanceof Error && err.message) || 'Gagal memverifikasi otoritas Administrator.',
       });
       return;
     }
 
-    const body = req.body as {
-      accounts?: {
-        rowIndex?: number;
-        fullName?: string;
-        nip?: string;
-        email?: string;
-        password?: string;
-        role?: string;
-        phone?: string;
-        specialization?: string;
-      }[];
-    };
-
+    const body = req.body || {};
     const accounts = Array.isArray(body?.accounts) ? body.accounts : [];
     if (accounts.length === 0) {
       res.status(400).json({
@@ -439,14 +393,7 @@ export function createApiApp(): Express {
       return;
     }
 
-    const results: {
-      rowIndex: number;
-      email: string;
-      fullName: string;
-      ok: boolean;
-      uid?: string;
-      error?: string;
-    }[] = [];
+    const results = [];
 
     for (let i = 0; i < accounts.length; i++) {
       const item = accounts[i] || {};
@@ -494,7 +441,7 @@ export function createApiApp(): Express {
         continue;
       }
 
-      let createdUid: string | null = null;
+      let createdUid = null;
       try {
         const userRecord = await services.auth.createUser({
           email,
@@ -533,11 +480,11 @@ export function createApiApp(): Express {
           ok: true,
           uid: createdUid,
         });
-      } catch (err: unknown) {
+      } catch (err) {
         if (createdUid) {
           await services.auth.deleteUser(createdUid).catch(() => undefined);
         }
-        const code = (err as { code?: string })?.code || '';
+        const code = err?.code || '';
         let message = err instanceof Error ? err.message : 'Gagal membuat akun.';
         if (code === 'auth/email-already-exists') {
           message = 'Email sudah terdaftar di Firebase Authentication.';
@@ -567,7 +514,7 @@ export function createApiApp(): Express {
     });
   });
 
-  app.delete('/api/admin/users/:uid', async (req: Request, res: Response) => {
+  app.delete('/api/admin/users/:uid', async (req, res) => {
     const targetUid = String(req.params.uid || '').trim();
     if (!targetUid || !/^[a-zA-Z0-9_-]{1,128}$/.test(targetUid)) {
       res.status(400).json({
@@ -577,14 +524,13 @@ export function createApiApp(): Express {
       return;
     }
 
-    let services: AdminServices;
+    let services;
     try {
       services = getFirebaseAdmin();
-    } catch (err: unknown) {
-      const e = err as Error & { code?: string };
+    } catch (err) {
       res.status(503).json({
-        error: e.code || 'FIREBASE_ADMIN_NOT_CONFIGURED',
-        message: e.message,
+        error: err?.code || 'FIREBASE_ADMIN_NOT_CONFIGURED',
+        message: err instanceof Error ? err.message : 'Firebase Admin belum dikonfigurasi.',
       });
       return;
     }
@@ -620,8 +566,8 @@ export function createApiApp(): Express {
       let authDeleted = true;
       try {
         await services.auth.deleteUser(targetUid);
-      } catch (authErr: unknown) {
-        const code = (authErr as { code?: string })?.code;
+      } catch (authErr) {
+        const code = authErr?.code;
         if (code === 'auth/user-not-found') {
           authDeleted = false;
         } else {
@@ -639,17 +585,18 @@ export function createApiApp(): Express {
         deletedUid: targetUid,
         authDeleted,
       });
-    } catch (err: unknown) {
-      const e = err as Error & { statusCode?: number; code?: string };
-      console.error('Failed to delete Firebase user:', e);
-      res.status(e.statusCode || 500).json({
-        error: e.code || 'DELETE_USER_FAILED',
-        message: e.message || 'Gagal menghapus akun dari Firebase Authentication.',
+    } catch (err) {
+      console.error('Failed to delete Firebase user:', err);
+      res.status(err?.statusCode || 500).json({
+        error: err?.code || 'DELETE_USER_FAILED',
+        message:
+          (err instanceof Error && err.message) ||
+          'Gagal menghapus akun dari Firebase Authentication.',
       });
     }
   });
 
-  app.use('/api', (req: Request, res: Response) => {
+  app.use('/api', (req, res) => {
     res.status(404).json({
       error: 'API_ROUTE_NOT_FOUND',
       message: `Endpoint API tidak ditemukan (${req.method} ${req.originalUrl}).`,
@@ -659,16 +606,16 @@ export function createApiApp(): Express {
   return app;
 }
 
-let cachedApp: Express | null = null;
+let cachedApp = null;
 
-function getApp(): Express {
+function getApp() {
   if (!cachedApp) {
     cachedApp = createApiApp();
   }
   return cachedApp;
 }
 
-export default function handler(req: IncomingMessage, res: ServerResponse) {
+export default function handler(req, res) {
   const rawUrl = req.url || '/';
   try {
     const parsed = new URL(rawUrl, 'http://localhost');
@@ -689,8 +636,8 @@ export default function handler(req: IncomingMessage, res: ServerResponse) {
 
   try {
     const app = getApp();
-    return app(req as Parameters<typeof app>[0], res as Parameters<typeof app>[1]);
-  } catch (err: unknown) {
+    return app(req, res);
+  } catch (err) {
     console.error('Unhandled API handler error:', err);
     if (!res.headersSent) {
       res.statusCode = 500;
