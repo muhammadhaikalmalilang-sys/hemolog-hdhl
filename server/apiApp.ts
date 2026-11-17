@@ -17,8 +17,18 @@ import {
   type Firestore as AdminFirestore,
 } from 'firebase-admin/firestore';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+function resolveModuleDir(): string {
+  try {
+    if (typeof import.meta !== 'undefined' && typeof import.meta.url === 'string' && import.meta.url) {
+      return path.dirname(fileURLToPath(import.meta.url));
+    }
+  } catch {
+    // Fallback when bundled to CommonJS (e.g., Vercel @vercel/node) where import.meta.url is undefined
+  }
+  return process.cwd();
+}
+
+const moduleDir = resolveModuleDir();
 
 const BOOTSTRAP_ADMIN_EMAILS = new Set([
   'muhammadhaikalmalilang@gmail.com',
@@ -36,8 +46,8 @@ interface AppletFirebaseConfig {
 function loadAppletFirebaseConfig(): AppletFirebaseConfig {
   const candidates = [
     path.resolve(process.cwd(), 'firebase-applet-config.json'),
-    path.resolve(__dirname, '..', 'firebase-applet-config.json'),
-    path.resolve(__dirname, 'firebase-applet-config.json'),
+    path.resolve(moduleDir, '..', 'firebase-applet-config.json'),
+    path.resolve(moduleDir, 'firebase-applet-config.json'),
   ];
 
   for (const configPath of candidates) {
@@ -192,7 +202,7 @@ function resolveLocalServiceAccountPath(): string | null {
   if (!targetProjectId) return null;
   const candidates = [
     path.resolve(process.cwd(), '.secrets', `${targetProjectId}-adminsdk.json`),
-    path.resolve(__dirname, '..', '.secrets', `${targetProjectId}-adminsdk.json`),
+    path.resolve(moduleDir, '..', '.secrets', `${targetProjectId}-adminsdk.json`),
   ];
   return candidates.find((candidate) => fs.existsSync(candidate)) || null;
 }

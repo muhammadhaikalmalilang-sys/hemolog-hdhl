@@ -1,7 +1,15 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { Express } from 'express';
 import { createApiApp } from '../server/apiApp.js';
 
-const app = createApiApp();
+let cachedApp: Express | null = null;
+
+function getApp(): Express {
+  if (!cachedApp) {
+    cachedApp = createApiApp();
+  }
+  return cachedApp;
+}
 
 export default function handler(req: IncomingMessage, res: ServerResponse) {
   const rawUrl = req.url || '/';
@@ -22,5 +30,20 @@ export default function handler(req: IncomingMessage, res: ServerResponse) {
     // Keep original req.url if URL parsing fails
   }
 
-  return app(req as Parameters<typeof app>[0], res as Parameters<typeof app>[1]);
+  try {
+    const app = getApp();
+    return app(req as Parameters<typeof app>[0], res as Parameters<typeof app>[1]);
+  } catch (err: unknown) {
+    console.error('Unhandled API handler error:', err);
+    if (!res.headersSent) {
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(
+        JSON.stringify({
+          error: 'SERVER_HANDLER_ERROR',
+          message: err instanceof Error ? err.message : 'Terjadi kesalahan internal server API.',
+        })
+      );
+    }
+  }
 }
