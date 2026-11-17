@@ -101,6 +101,46 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
+async function parseApiJsonResponse<T extends { ok?: boolean; error?: string; message?: string }>(
+  res: Response,
+  fallbackMessage: string
+): Promise<T> {
+  const rawText = await res.text();
+  let parsed: T | null = null;
+  if (rawText) {
+    try {
+      parsed = JSON.parse(rawText) as T;
+    } catch {
+      parsed = null;
+    }
+  }
+
+  if (!parsed) {
+    const trimmed = rawText.trim();
+    const looksLikeSpaHtml =
+      trimmed.startsWith('<!doctype html') ||
+      trimmed.startsWith('<!DOCTYPE html') ||
+      trimmed.includes('<div id="root">');
+    const err = new Error(
+      looksLikeSpaHtml
+        ? `Endpoint server /api tidak merespons JSON (HTTP ${res.status}). Pastikan Serverless Function Vercel (/api/index.ts) ter-deploy dengan benar.`
+        : `${fallbackMessage} (HTTP ${res.status}${trimmed ? `: ${trimmed.slice(0, 140)}` : ''})`
+    ) as Error & { code?: string };
+    err.code = looksLikeSpaHtml ? 'API_UNREACHABLE' : `HTTP_${res.status}`;
+    throw err;
+  }
+
+  if (!res.ok) {
+    const err = new Error(parsed.message || `${fallbackMessage} (HTTP ${res.status})`) as Error & {
+      code?: string;
+    };
+    err.code = parsed.error || `HTTP_${res.status}`;
+    throw err;
+  }
+
+  return parsed;
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
@@ -408,18 +448,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       },
     });
 
-    const data = (await res.json().catch(() => ({}))) as {
+    const data = await parseApiJsonResponse<{
       ok?: boolean;
       authDeleted?: boolean;
       error?: string;
       message?: string;
-    };
+    }>(res, 'Gagal menghapus akun pengguna.');
 
-    if (!res.ok) {
+    if (!data.ok) {
       const err = new Error(data.message || 'Gagal menghapus akun pengguna.') as Error & {
         code?: string;
       };
-      err.code = data.error;
+      err.code = data.error || 'DELETE_USER_FAILED';
       throw err;
     }
 
@@ -452,7 +492,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       body: JSON.stringify({ accounts }),
     });
 
-    const data = (await res.json().catch(() => ({}))) as {
+    const data = await parseApiJsonResponse<{
       ok?: boolean;
       createdCount?: number;
       failedCount?: number;
@@ -466,15 +506,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }[];
       error?: string;
       message?: string;
-    };
-
-    if (!res.ok) {
-      const err = new Error(data.message || 'Gagal membuat banyak akun staf.') as Error & {
-        code?: string;
-      };
-      err.code = data.error;
-      throw err;
-    }
+    }>(res, 'Gagal membuat banyak akun staf.');
 
     return {
       ok: Boolean(data.ok),

@@ -529,21 +529,52 @@ export function AccountsPage({ users }: AccountsPageProps) {
 
               {deleteError && (
                 <div className="rounded-lg border border-rose-200 bg-rose-50 p-3.5 text-rose-800 space-y-2">
-                  <p className="font-semibold">{deleteError}</p>
+                  <p className="font-semibold">
+                    {deleteError}
+                    {deleteErrorCode ? (
+                      <span className="ml-1.5 font-mono text-[10px] opacity-80">
+                        [{deleteErrorCode}]
+                      </span>
+                    ) : null}
+                  </p>
                   {deleteErrorCode === 'FIREBASE_ADMIN_NOT_CONFIGURED' && (
                     <ol className="list-decimal pl-4 space-y-1 text-[11px] text-rose-700">
                       <li>
-                        Buka Firebase Console proyek <strong>{ACTIVE_FIREBASE_PROJECT_ID}</strong> &rarr;{' '}
-                        <strong>Project Settings &rarr; Service Accounts</strong>.
+                        Buka Vercel &rarr; <strong>Settings &rarr; Environment Variables</strong> (atau
+                        Firebase Console proyek <strong>{ACTIVE_FIREBASE_PROJECT_ID}</strong> &rarr;{' '}
+                        <strong>Project Settings &rarr; Service Accounts</strong>).
                       </li>
                       <li>
-                        Klik <strong>Generate new private key</strong> untuk mengunduh file JSON.
+                        Pastikan variabel <code className="font-mono font-semibold">FIREBASE_SERVICE_ACCOUNT_JSON</code>{' '}
+                        (tanpa prefix <code className="font-mono">VITE_</code>) sudah diisi JSON Service Account utuh untuk{' '}
+                        <strong>Production &amp; Preview</strong>.
                       </li>
                       <li>
-                        Simpan isi JSON tersebut pada environment variable / Secrets server bernama{' '}
-                        <code className="font-mono font-semibold">FIREBASE_SERVICE_ACCOUNT_JSON</code>, lalu restart server.
+                        Lakukan <strong>Redeploy</strong> di Vercel agar variabel environment terbaca oleh Serverless Function.
                       </li>
                     </ol>
+                  )}
+                  {deleteErrorCode === 'FIREBASE_ADMIN_INVALID_CREDENTIALS' && (
+                    <p className="text-[11px] text-rose-700">
+                      Isi <code className="font-mono font-semibold">FIREBASE_SERVICE_ACCOUNT_JSON</code> di Vercel
+                      tidak terbaca sebagai JSON Service Account yang valid. Salin ulang JSON utuh (1 baris atau multi-baris) lalu klik{' '}
+                      <strong>Redeploy</strong>.
+                    </p>
+                  )}
+                  {deleteErrorCode === 'FIREBASE_ADMIN_PROJECT_MISMATCH' && (
+                    <p className="text-[11px] text-rose-700">
+                      Pastikan Service Account JSON berasal dari project Firebase{' '}
+                      <strong className="font-mono">{ACTIVE_FIREBASE_PROJECT_ID}</strong>.
+                    </p>
+                  )}
+                  {(deleteErrorCode === 'API_UNREACHABLE' ||
+                    deleteErrorCode === 'API_ROUTE_NOT_FOUND' ||
+                    deleteErrorCode === 'HTTP_404' ||
+                    deleteErrorCode === 'HTTP_500') && (
+                    <p className="text-[11px] text-rose-700">
+                      Serverless Function <code className="font-mono">/api/admin/users</code> tidak merespons dengan benar di hosting.
+                      Buka <code className="font-mono">/api/health</code> pada domain Vercel Anda untuk memeriksa status server API.
+                    </p>
                   )}
                 </div>
               )}

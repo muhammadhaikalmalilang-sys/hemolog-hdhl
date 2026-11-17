@@ -73,25 +73,118 @@ interface AdminServices {
   db: AdminFirestore;
 }
 
+function escapeControlCharsInJsonStrings(input: string): string {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (escaped) {
+      out += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      out += ch;
+      if (inString) escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      out += ch;
+      continue;
+    }
+    if (inString) {
+      if (ch === '\r') continue;
+      if (ch === '\n') {
+        out += '\\n';
+        continue;
+      }
+      if (ch === '\t') {
+        out += '\\t';
+        continue;
+      }
+    }
+    out += ch;
+  }
+
+  return out;
+}
+
+function tryParseJsonObject(raw: string): Record<string, unknown> | null {
+  const candidates = [raw, escapeControlCharsInJsonStrings(raw)];
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      if (typeof parsed === 'string') {
+        const inner = parsed.trim();
+        if (inner.startsWith('{')) {
+          const innerParsed = JSON.parse(escapeControlCharsInJsonStrings(inner)) as unknown;
+          if (innerParsed && typeof innerParsed === 'object' && !Array.isArray(innerParsed)) {
+            return innerParsed as Record<string, unknown>;
+          }
+        }
+      }
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Try next candidate
+    }
+  }
+  return null;
+}
+
 function parseServiceAccountFromEnv(rawValue: string): ServiceAccount & { project_id?: string } {
   let trimmed = rawValue.trim();
   if (
     (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
     (trimmed.startsWith("'") && trimmed.endsWith("'"))
   ) {
-    trimmed = trimmed.slice(1, -1).trim();
+    const inner = trimmed.slice(1, -1).trim();
+    if (inner.startsWith('{') || inner.startsWith('{\\')) {
+      trimmed = inner;
+    }
   }
+
   let jsonText = trimmed;
   if (!trimmed.startsWith('{')) {
-    jsonText = Buffer.from(trimmed, 'base64').toString('utf-8').trim();
+    const decoded = Buffer.from(trimmed, 'base64').toString('utf-8').trim();
+    if (decoded.startsWith('{')) {
+      jsonText = decoded;
+    }
   }
-  const parsed = JSON.parse(jsonText) as ServiceAccount & {
-    project_id?: string;
-    private_key?: string;
-  };
-  if (parsed.private_key) {
+
+  if (jsonText.includes('\\"') && !jsonText.includes('"type"')) {
+    jsonText = jsonText.replace(/\\"/g, '"');
+  }
+
+  const parsed = tryParseJsonObject(jsonText) as
+    | (ServiceAccount & {
+        project_id?: string;
+        private_key?: string;
+        client_email?: string;
+      })
+    | null;
+
+  if (!parsed) {
+    throw new Error('Invalid Service Account JSON format.');
+  }
+
+  if (typeof parsed.private_key === 'string') {
     parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
   }
+  if (typeof parsed.privateKey === 'string') {
+    parsed.privateKey = parsed.privateKey.replace(/\\n/g, '\n');
+  }
+
+  const hasClientEmail = Boolean(parsed.client_email || parsed.clientEmail);
+  const hasPrivateKey = Boolean(parsed.private_key || parsed.privateKey);
+  if (!hasClientEmail || !hasPrivateKey) {
+    throw new Error('Service Account JSON missing client_email or private_key.');
+  }
+
   return parsed;
 }
 
@@ -104,13 +197,19 @@ function resolveLocalServiceAccountPath(): string | null {
   return candidates.find((candidate) => fs.existsSync(candidate)) || null;
 }
 
+function resolveAdminFirestore(adminApp: AdminApp): AdminFirestore {
+  return targetDatabaseId && targetDatabaseId !== '(default)'
+    ? getFirestore(adminApp, targetDatabaseId)
+    : getFirestore(adminApp);
+}
+
 function getFirebaseAdmin(): AdminServices {
   const existingApp = getApps().find((a) => a.name === 'hemolog-admin');
   if (existingApp) {
     return {
       app: existingApp,
       auth: getAuth(existingApp),
-      db: getFirestore(existingApp, targetDatabaseId),
+      db: resolveAdminFirestore(existingApp),
     };
   }
 
@@ -169,18 +268,27 @@ function getFirebaseAdmin(): AdminServices {
     throw err;
   }
 
-  const adminApp = initializeApp(
-    {
-      credential: cert(serviceAccount),
-      projectId: resolvedProjectId,
-    },
-    'hemolog-admin'
-  );
+  let adminApp: AdminApp;
+  try {
+    adminApp = initializeApp(
+      {
+        credential: cert(serviceAccount),
+        projectId: resolvedProjectId,
+      },
+      'hemolog-admin'
+    );
+  } catch {
+    const err = new Error(
+      'Kredensial FIREBASE_SERVICE_ACCOUNT_JSON gagal dimuat oleh Firebase Admin SDK. Pastikan private_key dan JSON utuh.'
+    ) as Error & { code?: string };
+    err.code = 'FIREBASE_ADMIN_INVALID_CREDENTIALS';
+    throw err;
+  }
 
   return {
     app: adminApp,
     auth: getAuth(adminApp),
-    db: getFirestore(adminApp, targetDatabaseId),
+    db: resolveAdminFirestore(adminApp),
   };
 }
 
@@ -250,10 +358,27 @@ export function createApiApp(): Express {
       process.env.FIREBASE_CLIENT_EMAIL?.trim() && process.env.FIREBASE_PRIVATE_KEY?.trim()
     );
     const hasLocalFile = Boolean(resolveLocalServiceAccountPath());
+
+    let adminReady = false;
+    let adminErrorCode: string | null = null;
+    let adminErrorMessage: string | null = null;
+    try {
+      getFirebaseAdmin();
+      adminReady = true;
+    } catch (err: unknown) {
+      const e = err as Error & { code?: string };
+      adminErrorCode = e.code || 'FIREBASE_ADMIN_ERROR';
+      adminErrorMessage = e.message;
+    }
+
     res.json({
       ok: true,
       projectId: targetProjectId,
+      databaseId: targetDatabaseId,
       adminConfigured: hasJson || hasPair || hasLocalFile,
+      adminReady,
+      adminErrorCode,
+      adminErrorMessage,
     });
   });
 
@@ -526,6 +651,13 @@ export function createApiApp(): Express {
         message: e.message || 'Gagal menghapus akun dari Firebase Authentication.',
       });
     }
+  });
+
+  app.use('/api', (req: Request, res: Response) => {
+    res.status(404).json({
+      error: 'API_ROUTE_NOT_FOUND',
+      message: `Endpoint API tidak ditemukan (${req.method} ${req.originalUrl}).`,
+    });
   });
 
   return app;
