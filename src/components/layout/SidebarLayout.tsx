@@ -189,7 +189,7 @@ export function SidebarLayout({
       )}
 
       {/* Main Content Area */}
-      <div className="relative flex flex-1 flex-col lg:pl-64 print:pl-0 min-w-0">
+      <div className="relative flex flex-1 flex-col lg:pl-64 print:pl-0 print:block min-w-0">
         {/* Softly Veiled Hospital Facade Background */}
         <div
           className="no-print pointer-events-none fixed inset-0 lg:left-64 z-0 overflow-hidden bg-gradient-to-b from-sky-50 via-slate-50 to-slate-100"
@@ -207,7 +207,7 @@ export function SidebarLayout({
           <div className="absolute inset-0 bg-gradient-to-b from-sky-50/70 via-white/70 to-slate-100/85" />
         </div>
 
-        <main className="relative flex-1 p-4 sm:p-6 lg:p-7 max-w-[1440px] w-full mx-auto space-y-5 print:p-0 print:max-w-none print:space-y-0">
+        <main className="relative flex-1 p-4 sm:p-6 lg:p-7 max-w-[1440px] w-full mx-auto space-y-5 print:block print:p-0 print:max-w-none print:space-y-0">
           {/* Retained Context Strip: Tanggal Aktif, Role/Hak Akses, dan Jadwal Shift dari Administrator */}
           <div className="no-print flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200/80 bg-white/90 backdrop-blur-sm px-4 py-2.5 shadow-sm text-xs text-slate-700">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">

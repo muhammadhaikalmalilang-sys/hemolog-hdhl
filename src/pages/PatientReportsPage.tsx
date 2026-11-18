@@ -796,147 +796,147 @@ export function PatientReportsPage({
             </div>
           ) : (
             <div className="f4-scroll-wrap overflow-x-auto">
-              <table className="w-full border-collapse text-[11px] text-slate-800">
+              <table className="w-full table-auto border-collapse text-[11px] text-slate-800">
                 <thead>
                   {/* Row 1: Grouped Category Headers */}
-                  <tr className="bg-[#1b4f6e] text-white text-[10px] uppercase tracking-wider">
+                  <tr className="bg-[#1b4f6e] text-white text-[10px] uppercase tracking-wider leading-tight">
                     <th
                       rowSpan={2}
-                      className="border border-[#2d6687] px-2 py-2 text-center font-bold whitespace-nowrap"
+                      className="border border-[#2d6687] px-2 py-2 text-center font-bold whitespace-normal"
                     >
                       NO
                     </th>
                     <th
                       colSpan={3}
-                      className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-nowrap"
+                      className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-normal"
                     >
                       DATA IDENTITAS &amp; STATUS PASIEN
                     </th>
                     <th
                       colSpan={3}
-                      className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-nowrap"
+                      className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-normal"
                     >
                       PENGATURAN TEKNIS &amp; PRE-HD
                     </th>
                     <th
                       colSpan={5}
-                      className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-nowrap"
+                      className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-normal"
                     >
                       PARAMETER BERAT BADAN &amp; ALIRAN (QB/QD)
                     </th>
                     <th
                       colSpan={3}
-                      className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-nowrap"
+                      className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-normal"
                     >
                       MONITORING ULTRAFILTRASI &amp; ADEKUASI
                     </th>
                     <th
                       colSpan={2}
-                      className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-nowrap"
+                      className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-normal"
                     >
                       TANDA VITAL (HEMODINAMIK)
                     </th>
                     <th
                       colSpan={2}
-                      className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-nowrap"
+                      className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-normal"
                     >
                       SPESIFIKASI DIALISER &amp; HEPARINISASI
                     </th>
                     <th
                       colSpan={3}
-                      className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-nowrap"
+                      className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-normal"
                     >
                       KOMPLIKASI, TATALAKSANA &amp; ADVIS DPJP
                     </th>
                     <th
                       rowSpan={2}
-                      className="border border-[#2d6687] px-2.5 py-2 text-center font-bold whitespace-nowrap"
+                      className="border border-[#2d6687] px-2 py-2 text-center font-bold whitespace-normal"
                     >
                       PERAWAT PELAKSANA
                     </th>
                     <th
                       rowSpan={2}
-                      className="no-print border border-[#2d6687] px-2 py-2 text-center font-bold whitespace-nowrap"
+                      className="no-print border border-[#2d6687] px-2 py-2 text-center font-bold whitespace-normal"
                     >
                       STATUS
                     </th>
                     <th
                       rowSpan={2}
-                      className="no-print border border-[#2d6687] px-2 py-2 text-center font-bold whitespace-nowrap"
+                      className="no-print border border-[#2d6687] px-2 py-2 text-center font-bold whitespace-normal"
                     >
                       AKSI
                     </th>
                   </tr>
 
                   {/* Row 2: Specific Sub-Columns */}
-                  <tr className="bg-[#236084] text-white text-[9.5px] uppercase tracking-wide">
-                    <th className="border border-[#34759b] px-2.5 py-1.5 text-left font-semibold whitespace-nowrap">
+                  <tr className="bg-[#236084] text-white text-[9.5px] uppercase tracking-wide leading-tight">
+                    <th className="border border-[#34759b] px-2 py-1.5 text-left font-semibold whitespace-normal">
                       NAMA PASIEN / NO. RM
                     </th>
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
+                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
                       STATUS RAWAT
                     </th>
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
+                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
                       RUANG / KATEGORI
                     </th>
 
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
+                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
                       NO. BED / MESIN
                     </th>
-                    <th className="border border-[#34759b] px-2.5 py-1.5 text-left font-semibold whitespace-nowrap">
+                    <th className="border border-[#34759b] px-2 py-1.5 text-left font-semibold whitespace-normal">
                       AKSES VASKULAR
                     </th>
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
+                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
                       DURASI (JAM)
                     </th>
 
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
+                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
                       BB KERING (KG)
                     </th>
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
+                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
                       BB PRE HD (KG)
                     </th>
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
+                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
                       BB POST HD (KG)
                     </th>
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
+                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
                       QB (ML/M)
                     </th>
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
+                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
                       QD (ML/M)
                     </th>
 
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
+                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
                       TARGET UF (ML)
                     </th>
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
+                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
                       KT/V
                     </th>
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
+                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
                       CAPAIAN UF (ML)
                     </th>
 
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
+                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
                       TD PRE (MMHG)
                     </th>
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
+                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
                       TD POST (MMHG)
                     </th>
 
-                    <th className="border border-[#34759b] px-2.5 py-1.5 text-left font-semibold whitespace-nowrap">
+                    <th className="border border-[#34759b] px-2 py-1.5 text-left font-semibold whitespace-normal">
                       DIALISER
                     </th>
-                    <th className="border border-[#34759b] px-2.5 py-1.5 text-left font-semibold whitespace-nowrap">
+                    <th className="border border-[#34759b] px-2 py-1.5 text-left font-semibold whitespace-normal">
                       HEPARINISASI
                     </th>
 
-                    <th className="border border-[#34759b] px-2.5 py-1.5 text-left font-semibold whitespace-nowrap">
+                    <th className="border border-[#34759b] px-2 py-1.5 text-left font-semibold whitespace-normal">
                       KOMPLIKASI INTRA-HD
                     </th>
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
+                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
                       JAM
                     </th>
-                    <th className="border border-[#34759b] px-2.5 py-1.5 text-left font-semibold whitespace-nowrap min-w-[220px]">
+                    <th className="border border-[#34759b] px-2 py-1.5 text-left font-semibold whitespace-normal">
                       TINDAKAN &amp; ADVIS MEDIS DPJP
                     </th>
                   </tr>
@@ -952,22 +952,22 @@ export function PatientReportsPage({
                         key={s.id}
                         className="odd:bg-white even:bg-slate-50/70 hover:bg-sky-50/60 transition-colors"
                       >
-                        <td className="border border-slate-200 px-2 py-2 text-center font-mono tabular-nums font-medium">
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums font-medium whitespace-nowrap">
                           {row.index}
                         </td>
 
                         {/* DATA IDENTITAS & STATUS PASIEN */}
-                        <td className="border border-slate-200 px-2.5 py-2 whitespace-nowrap">
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 whitespace-nowrap">
                           <div className="font-medium text-slate-900">{s.patientName}</div>
                           <div className="f4-patient-sub font-mono text-[10px] text-slate-500 tabular-nums">
                             {s.patientRm}
                           </div>
                         </td>
-                        <td className="border border-slate-200 px-2 py-2 text-center whitespace-nowrap">
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center whitespace-nowrap">
                           {row.statusRawat}
                         </td>
                         <td
-                          className={`border border-slate-200 px-2 py-2 text-center whitespace-nowrap ${
+                          className={`f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center whitespace-nowrap ${
                             isIsolasi ? 'font-bold text-slate-900' : ''
                           }`}
                         >
@@ -975,63 +975,63 @@ export function PatientReportsPage({
                         </td>
 
                         {/* PENGATURAN TEKNIS & PRE-HD */}
-                        <td className="border border-slate-200 px-2 py-2 text-center font-mono whitespace-nowrap">
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono whitespace-nowrap">
                           {row.bedMachine}
                         </td>
-                        <td className="border border-slate-200 px-2.5 py-2 whitespace-nowrap">
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 whitespace-nowrap">
                           {s.vascularAccess}
                         </td>
-                        <td className="border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                           {formatNumId(row.durationHours, 1)}
                         </td>
 
                         {/* PARAMETER BERAT BADAN & ALIRAN */}
-                        <td className="border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                           {formatNumId(row.dryWeight, 1)}
                         </td>
-                        <td className="border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                           {formatNumId(s.preWeight, 1)}
                         </td>
-                        <td className="border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                           {formatNumId(s.postWeight, 1)}
                         </td>
-                        <td className="border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                           {row.qbVal !== null ? formatIntId(row.qbVal) : '-'}
                         </td>
-                        <td className="border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                           {row.qdVal !== null ? formatIntId(row.qdVal) : '-'}
                         </td>
 
                         {/* MONITORING ULTRAFILTRASI & ADEKUASI */}
-                        <td className="border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                           {formatIntId(s.ufGoal)}
                         </td>
-                        <td className="border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap text-slate-700">
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap text-slate-700">
                           {row.ktvDisplay}
                         </td>
-                        <td className="border border-slate-200 px-2 py-2 text-center font-mono tabular-nums font-semibold text-slate-900 whitespace-nowrap">
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums font-semibold text-slate-900 whitespace-nowrap">
                           {formatIntId(s.ufAchieved)}
                         </td>
 
                         {/* TANDA VITAL */}
-                        <td className="border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                           {s.preBp || '-'}
                         </td>
-                        <td className="border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                           {s.postBp || '-'}
                         </td>
 
                         {/* SPESIFIKASI DIALISER & HEPARINISASI */}
-                        <td className="border border-slate-200 px-2.5 py-2 whitespace-nowrap">
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 whitespace-nowrap">
                           {row.dialyzer}
                         </td>
-                        <td className="border border-slate-200 px-2.5 py-2 whitespace-nowrap">
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 whitespace-nowrap">
                           {row.heparinDisplay}
                         </td>
 
                         {/* KOMPLIKASI, TATALAKSANA & ADVIS DPJP */}
                         <td
-                          className={`border border-slate-200 px-2.5 py-2 align-top ${
+                          className={`f4-col-flex border border-slate-200 px-2 py-2 align-top whitespace-normal break-words ${
                             row.hasComplication ? 'font-bold text-rose-700 bg-rose-50/70' : ''
                           }`}
                         >
@@ -1053,7 +1053,7 @@ export function PatientReportsPage({
                           )}
                         </td>
                         <td
-                          className={`border border-slate-200 px-2 py-2 text-center font-mono tabular-nums align-top whitespace-nowrap ${
+                          className={`f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums align-top whitespace-nowrap ${
                             row.hasComplication ? 'font-bold text-rose-700 bg-rose-50/70' : ''
                           }`}
                         >
@@ -1074,7 +1074,7 @@ export function PatientReportsPage({
                             row.compTimeLines[0]
                           )}
                         </td>
-                        <td className="border border-slate-200 px-2.5 py-2 max-w-[280px] align-top print:max-w-none">
+                        <td className="f4-col-flex border border-slate-200 px-2 py-2 align-top whitespace-normal break-words">
                           {row.dpjpAdviceLines.length > 1 ? (
                             <div className="space-y-1">
                               {row.dpjpAdviceLines.map((adv, lineIdx) => (
@@ -1089,14 +1089,12 @@ export function PatientReportsPage({
                               ))}
                             </div>
                           ) : (
-                            <span className="line-clamp-2 print:line-clamp-none" title={row.dpjpAdviceDisplay}>
-                              {row.dpjpAdviceLines[0]}
-                            </span>
+                            row.dpjpAdviceLines[0]
                           )}
                         </td>
 
                         {/* PERAWAT PELAKSANA */}
-                        <td className="border border-slate-200 px-2.5 py-2 whitespace-nowrap">
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 whitespace-nowrap">
                           <div className="font-medium text-slate-900">{s.nurseName}</div>
                           <div className="f4-patient-sub text-[10px] font-mono text-slate-500">
                             Shift {s.shift}
@@ -1104,12 +1102,12 @@ export function PatientReportsPage({
                         </td>
 
                         {/* STATUS VERIFIKASI */}
-                        <td className="no-print border border-slate-200 px-2 py-2 text-center whitespace-nowrap">
+                        <td className="no-print f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center whitespace-nowrap">
                           <VerificationBadge status={s.verificationStatus} />
                         </td>
 
                         {/* DETAIL BUTTON */}
-                        <td className="no-print border border-slate-200 px-2 py-2 text-center whitespace-nowrap">
+                        <td className="no-print f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center whitespace-nowrap">
                           <button
                             type="button"
                             onClick={() => setDetailEntryId(s.id)}
@@ -1130,47 +1128,47 @@ export function PatientReportsPage({
                     <tr className="bg-slate-100 font-bold text-slate-900">
                       <td
                         colSpan={6}
-                        className="border border-slate-300 px-3 py-2 text-center uppercase tracking-wide"
+                        className="f4-col-fit border border-slate-300 px-2 py-2 text-center uppercase tracking-wide whitespace-nowrap"
                       >
                         TOTAL &amp; RATA-RATA
                       </td>
-                      <td className="border border-slate-300 px-2 py-2 text-center font-mono tabular-nums">
+                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                         {formatNumId(summaryStats.avgDurasi, 1)}
                       </td>
-                      <td className="border border-slate-300 px-2 py-2 text-center font-mono tabular-nums">
+                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                         {formatNumId(summaryStats.avgDry, 1)}
                       </td>
-                      <td className="border border-slate-300 px-2 py-2 text-center font-mono tabular-nums">
+                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                         {formatNumId(summaryStats.avgPreW, 1)}
                       </td>
-                      <td className="border border-slate-300 px-2 py-2 text-center font-mono tabular-nums">
+                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                         {formatNumId(summaryStats.avgPostW, 1)}
                       </td>
-                      <td className="border border-slate-300 px-2 py-2 text-center font-mono tabular-nums">
+                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                         {summaryStats.avgQb !== null ? formatIntId(summaryStats.avgQb) : '-'}
                       </td>
-                      <td className="border border-slate-300 px-2 py-2 text-center font-mono tabular-nums">
+                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                         {summaryStats.avgQd !== null ? formatIntId(summaryStats.avgQd) : '-'}
                       </td>
-                      <td className="border border-slate-300 px-2 py-2 text-center font-mono tabular-nums">
+                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                         {formatIntId(summaryStats.totalTargetUf)}
                       </td>
-                      <td className="border border-slate-300 px-2 py-2 text-center font-mono tabular-nums">
+                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                         -
                       </td>
-                      <td className="border border-slate-300 px-2 py-2 text-center font-mono tabular-nums">
+                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                         {formatIntId(summaryStats.totalAchievedUf)}
                       </td>
-                      <td className="border border-slate-300 px-2 py-2 text-center">-</td>
-                      <td className="border border-slate-300 px-2 py-2 text-center">-</td>
-                      <td className="border border-slate-300 px-2 py-2 text-center">-</td>
-                      <td className="border border-slate-300 px-2 py-2 text-center">-</td>
-                      <td className="border border-slate-300 px-2 py-2 text-center">-</td>
-                      <td className="border border-slate-300 px-2 py-2 text-center">-</td>
-                      <td className="border border-slate-300 px-2 py-2 text-center">-</td>
-                      <td className="border border-slate-300 px-2 py-2 text-center">-</td>
-                      <td className="no-print border border-slate-300 px-2 py-2 text-center">-</td>
-                      <td className="no-print border border-slate-300 px-2 py-2 text-center">-</td>
+                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center whitespace-nowrap">-</td>
+                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center whitespace-nowrap">-</td>
+                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center whitespace-nowrap">-</td>
+                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center whitespace-nowrap">-</td>
+                      <td className="f4-col-flex border border-slate-300 px-2 py-2 text-center">-</td>
+                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center whitespace-nowrap">-</td>
+                      <td className="f4-col-flex border border-slate-300 px-2 py-2 text-center">-</td>
+                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center whitespace-nowrap">-</td>
+                      <td className="no-print f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center whitespace-nowrap">-</td>
+                      <td className="no-print f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center whitespace-nowrap">-</td>
                     </tr>
                   </tfoot>
                 )}

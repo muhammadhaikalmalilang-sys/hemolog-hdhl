@@ -90,7 +90,7 @@
     padding: 6px 10px !important;
   }
   .f4-patient-landscape .f4-banner h3 {
-    font-size: 13px !important;
+    font-size: 13.5px !important;
     line-height: 1.2 !important;
   }
   .f4-patient-landscape .f4-banner p {
@@ -105,17 +105,26 @@
   .f4-patient-landscape thead th {
     font-size: 9px !important;
     line-height: 1.15 !important;
-    padding: 2.5px 2px !important;
+    padding: 3px 4px !important;
     white-space: normal !important;
     min-width: 0 !important;
   }
   .f4-patient-landscape tbody td,
   .f4-patient-landscape tfoot td {
     font-size: 10.5px !important;
-    line-height: 1.2 !important;
-    padding: 2.5px 2px !important;
-    white-space: normal !important;
+    line-height: 1.22 !important;
+    padding: 3px 4px !important;
     max-width: none !important;
+  }
+  .f4-patient-landscape tbody td.f4-col-fit,
+  .f4-patient-landscape tfoot td.f4-col-fit {
+    width: 1% !important;
+    white-space: nowrap !important;
+  }
+  .f4-patient-landscape tbody td.f4-col-flex,
+  .f4-patient-landscape tfoot td.f4-col-flex {
+    width: auto !important;
+    white-space: normal !important;
     overflow-wrap: break-word !important;
   }
   .f4-patient-landscape tbody td > .f4-patient-sub {
@@ -134,7 +143,7 @@
   padding: 6px 10px !important;
 }
 .f4-measuring.f4-patient-landscape .f4-banner h3 {
-  font-size: 13px !important;
+  font-size: 13.5px !important;
   line-height: 1.2 !important;
 }
 .f4-measuring.f4-patient-landscape .f4-banner p {
@@ -149,17 +158,26 @@
 .f4-measuring.f4-patient-landscape thead th {
   font-size: 9px !important;
   line-height: 1.15 !important;
-  padding: 2.5px 2px !important;
+  padding: 3px 4px !important;
   white-space: normal !important;
   min-width: 0 !important;
 }
 .f4-measuring.f4-patient-landscape tbody td,
 .f4-measuring.f4-patient-landscape tfoot td {
   font-size: 10.5px !important;
-  line-height: 1.2 !important;
-  padding: 2.5px 2px !important;
-  white-space: normal !important;
+  line-height: 1.22 !important;
+  padding: 3px 4px !important;
   max-width: none !important;
+}
+.f4-measuring.f4-patient-landscape tbody td.f4-col-fit,
+.f4-measuring.f4-patient-landscape tfoot td.f4-col-fit {
+  width: 1% !important;
+  white-space: nowrap !important;
+}
+.f4-measuring.f4-patient-landscape tbody td.f4-col-flex,
+.f4-measuring.f4-patient-landscape tfoot td.f4-col-flex {
+  width: auto !important;
+  white-space: normal !important;
   overflow-wrap: break-word !important;
 }
 .f4-measuring.f4-patient-landscape tbody td > .f4-patient-sub {

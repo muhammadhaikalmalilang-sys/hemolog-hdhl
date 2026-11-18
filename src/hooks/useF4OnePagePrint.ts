@@ -84,7 +84,11 @@ export function useF4OnePagePrint({
     el.style.width = `${targetWidth}px`;
 
     // Measure natural dimensions at target printable width using exact print styles
-    const baseW = Math.max(el.scrollWidth, targetWidth);
+    let baseW = Math.max(el.scrollWidth, targetWidth);
+    if (baseW > targetWidth + 1) {
+      el.style.width = `${baseW}px`;
+      baseW = Math.max(el.scrollWidth, baseW);
+    }
     const baseH = Math.max(el.scrollHeight, 1);
 
     const wScale = targetWidth / baseW;
@@ -92,14 +96,14 @@ export function useF4OnePagePrint({
     let bestWidth = baseW;
     let bestZoom = Math.min(wScale, hScale, 1);
 
-    // If vertical height is the bottleneck while width fits, sweep wider layout widths
-    // to unwrap lines and pick the width yielding the LARGEST physical font scale (zoom)
-    if (hScale < wScale && baseW <= targetWidth + 2 && bestZoom < 0.995) {
+    // If vertical height is the bottleneck, sweep wider layout widths to unwrap
+    // multi-line narrative text and pick the width yielding the LARGEST readable scale
+    if (hScale < wScale && bestZoom < 0.995) {
       const steps = 12;
-      const maxMultiplier = 1.85;
+      const maxWidth = Math.round(Math.max(baseW, targetWidth) * 1.85);
       for (let i = 1; i <= steps; i++) {
-        const mult = 1 + ((maxMultiplier - 1) * i) / steps;
-        const candWidth = Math.round(targetWidth * mult);
+        const candWidth = Math.round(baseW + ((maxWidth - baseW) * i) / steps);
+        if (candWidth <= baseW) continue;
         // Width upper bound check: resulting wScale cannot beat bestZoom
         if (targetWidth / candWidth <= bestZoom) break;
 
@@ -116,12 +120,12 @@ export function useF4OnePagePrint({
       }
     }
 
-    // Apply a tiny 0.7% safety factor when scaling down so border/subpixel never triggers page 2
-    const finalZoom = bestZoom < 1 ? bestZoom * 0.993 : 1;
+    // Apply a small safety factor when scaling down so border/subpixel rounding never triggers page 2
+    const finalZoom = bestZoom < 1 ? bestZoom * 0.988 : 1;
     const finalWidth =
       finalZoom < 1
         ? Math.max(bestWidth, Math.floor(targetWidth / finalZoom))
-        : bestWidth;
+        : Math.max(bestWidth, targetWidth);
 
     el.classList.remove('f4-measuring');
     el.style.width = '';
