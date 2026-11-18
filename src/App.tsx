@@ -21,6 +21,7 @@ import { MachinesPage } from './pages/MachinesPage';
 import { AccountsPage } from './pages/AccountsPage';
 import { MyAccountPage } from './pages/MyAccountPage';
 import { OfflineIndicator } from './components/ui/OfflineIndicator';
+import { reconnectFirestore } from './lib/firebase';
 import { isLogbookAssignedToVerifier } from './lib/formatters';
 import { ROLE_MENUS, type MenuId } from './types';
 
@@ -49,13 +50,25 @@ class ErrorBoundary extends Component<
               Terjadi Kendala Koneksi / Akses Data
             </h2>
             <p className="mt-2 text-xs text-slate-600 break-words">{this.state.message}</p>
-            <button
-              type="button"
-              onClick={() => window.location.reload()}
-              className="mt-5 rounded-lg bg-teal-600 px-4 py-2 text-xs font-semibold text-white hover:bg-teal-700"
-            >
-              Muat Ulang Aplikasi
-            </button>
+            <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  void reconnectFirestore(true);
+                  this.setState({ hasError: false, message: '' });
+                }}
+                className="rounded-lg bg-teal-600 px-4 py-2 text-xs font-semibold text-white hover:bg-teal-700"
+              >
+                Coba Sambungkan Ulang
+              </button>
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Muat Ulang Aplikasi
+              </button>
+            </div>
           </div>
         </div>
       );

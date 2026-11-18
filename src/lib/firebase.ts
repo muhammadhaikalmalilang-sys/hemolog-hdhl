@@ -1,6 +1,15 @@
 import { initializeApp, getApps, deleteApp, type FirebaseApp } from 'firebase/app';
 import { getAuth, type Auth } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer, type Firestore } from 'firebase/firestore';
+import {
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  enableNetwork,
+  doc,
+  getDocFromServer,
+  type Firestore,
+} from 'firebase/firestore';
 import firebaseAppletConfig from '../../firebase-applet-config.json';
 
 const envApiKey = import.meta.env.VITE_FIREBASE_API_KEY;
@@ -19,7 +28,24 @@ const firebaseConfig = envApiKey
 
 const app: FirebaseApp = getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig);
 
-export const db: Firestore = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+function createFirestoreInstance(): Firestore {
+  try {
+    return initializeFirestore(
+      app,
+      {
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager(),
+        }),
+      },
+      firebaseConfig.firestoreDatabaseId
+    );
+  } catch {
+    // Fallback if Firestore was already initialized (e.g., module hot reload or multiple imports)
+    return getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  }
+}
+
+export const db: Firestore = createFirestoreInstance();
 export const auth: Auth = getAuth(app);
 
 export const ACTIVE_FIREBASE_PROJECT_ID: string = firebaseConfig.projectId;
@@ -60,11 +86,11 @@ export interface FirestoreErrorInfo {
   };
 }
 
-export function handleFirestoreError(
+export function formatFirestoreError(
   error: unknown,
   operationType: OperationType,
   path: string | null
-): never {
+): string {
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
@@ -82,8 +108,49 @@ export function handleFirestoreError(
     operationType,
     path,
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  const json = JSON.stringify(errInfo);
+  console.error('Firestore Error: ', json);
+  return json;
+}
+
+export function handleFirestoreError(
+  error: unknown,
+  operationType: OperationType,
+  path: string | null
+): never {
+  throw new Error(formatFirestoreError(error, operationType, path));
+}
+
+const TRANSIENT_FIRESTORE_CODES = new Set([
+  'unavailable',
+  'aborted',
+  'deadline-exceeded',
+  'resource-exhausted',
+  'cancelled',
+  'unknown',
+]);
+
+export function isTransientFirestoreError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === 'string') {
+    const normalized = code.replace(/^firestore\//, '').toLowerCase();
+    if (TRANSIENT_FIRESTORE_CODES.has(normalized)) return true;
+  }
+  const message =
+    error instanceof Error
+      ? error.message.toLowerCase()
+      : typeof (error as { message?: unknown }).message === 'string'
+      ? String((error as { message?: string }).message).toLowerCase()
+      : '';
+  return (
+    message.includes('the client is offline') ||
+    message.includes('failed to get document because the client is offline') ||
+    message.includes('network') ||
+    message.includes('unavailable') ||
+    message.includes('deadline') ||
+    message.includes('timeout')
+  );
 }
 
 export async function testConnection(): Promise<void> {
@@ -94,6 +161,58 @@ export async function testConnection(): Promise<void> {
       console.error('Please check your Firebase configuration. Firestore client is offline.');
     }
   }
+}
+
+const reconnectListeners = new Set<() => void>();
+
+export function onFirestoreReconnect(listener: () => void): () => void {
+  reconnectListeners.add(listener);
+  return () => {
+    reconnectListeners.delete(listener);
+  };
+}
+
+let lastReconnectAt = 0;
+let reconnectPromise: Promise<void> | null = null;
+
+export async function reconnectFirestore(force = false): Promise<void> {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return;
+  }
+  const now = Date.now();
+  if (!force && now - lastReconnectAt < 2500) {
+    return reconnectPromise ?? Promise.resolve();
+  }
+  lastReconnectAt = now;
+  reconnectPromise = (async () => {
+    try {
+      await enableNetwork(db).catch(() => undefined);
+      await testConnection();
+    } finally {
+      reconnectListeners.forEach((cb) => {
+        try {
+          cb();
+        } catch {
+          // Ignore callback error
+        }
+      });
+    }
+  })();
+  return reconnectPromise;
+}
+
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+  window.addEventListener('online', () => {
+    void reconnectFirestore(true);
+  });
+  window.addEventListener('focus', () => {
+    void reconnectFirestore(false);
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      void reconnectFirestore(false);
+    }
+  });
 }
 
 testConnection();

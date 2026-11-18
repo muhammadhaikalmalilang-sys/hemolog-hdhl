@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { CheckCircle2, KeyRound, MailCheck, User } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { RoleBadge } from '../components/ui/StatusBadge';
@@ -18,6 +18,27 @@ export function MyAccountPage() {
   const [specialization, setSpecialization] = useState(userProfile?.specialization || '');
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileMsg, setProfileMsg] = useState<string | null>(null);
+
+  const prevProfileRef = useRef(userProfile);
+
+  useEffect(() => {
+    if (!userProfile) return;
+    const prev = prevProfileRef.current;
+    if (!prev || prev.uid !== userProfile.uid) {
+      setFullName(userProfile.fullName || '');
+      setNip(userProfile.nip || '');
+      setPhone(userProfile.phone || '');
+      setSpecialization(userProfile.specialization || '');
+    } else {
+      setFullName((cur) => (cur === (prev.fullName || '') ? userProfile.fullName || '' : cur));
+      setNip((cur) => (cur === (prev.nip || '') ? userProfile.nip || '' : cur));
+      setPhone((cur) => (cur === (prev.phone || '') ? userProfile.phone || '' : cur));
+      setSpecialization((cur) =>
+        cur === (prev.specialization || '') ? userProfile.specialization || '' : cur
+      );
+    }
+    prevProfileRef.current = userProfile;
+  }, [userProfile]);
 
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');

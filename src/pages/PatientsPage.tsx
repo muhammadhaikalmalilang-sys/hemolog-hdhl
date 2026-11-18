@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { addDoc, collection, deleteDoc, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { CheckCircle2, Pencil, Plus, Search, Trash2, Users, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
@@ -20,8 +20,24 @@ export function PatientsPage({ patients }: PatientsPageProps) {
   const [showModal, setShowModal] = useState(false);
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [bulkSuccessCount, setBulkSuccessCount] = useState<number | null>(null);
-  const [editing, setEditing] = useState<Patient | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<Patient | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+
+  const editing = useMemo(
+    () => (editingId ? patients.find((p) => p.id === editingId) ?? null : null),
+    [editingId, patients]
+  );
+  const deleteTarget = useMemo(
+    () => (deleteTargetId ? patients.find((p) => p.id === deleteTargetId) ?? null : null),
+    [deleteTargetId, patients]
+  );
+
+  useEffect(() => {
+    if (showModal && editingId && !editing) {
+      setShowModal(false);
+      setEditingId(null);
+    }
+  }, [showModal, editingId, editing]);
 
   const [mrn, setMrn] = useState('');
   const [fullName, setFullName] = useState('');
@@ -52,7 +68,7 @@ export function PatientsPage({ patients }: PatientsPageProps) {
   }, [patients, statusFilter, searchTerm]);
 
   const openCreate = () => {
-    setEditing(null);
+    setEditingId(null);
     setMrn('');
     setFullName('');
     setGender('L');
@@ -66,7 +82,7 @@ export function PatientsPage({ patients }: PatientsPageProps) {
   };
 
   const openEdit = (p: Patient) => {
-    setEditing(p);
+    setEditingId(p.id);
     setMrn(p.mrn);
     setFullName(p.fullName);
     setGender(p.gender);
@@ -117,7 +133,7 @@ export function PatientsPage({ patients }: PatientsPageProps) {
     if (!deleteTarget) return;
     try {
       await deleteDoc(doc(db, 'patients', deleteTarget.id));
-      setDeleteTarget(null);
+      setDeleteTargetId(null);
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, `patients/${deleteTarget.id}`);
     }
@@ -259,7 +275,7 @@ export function PatientsPage({ patients }: PatientsPageProps) {
                         </button>
                         <button
                           type="button"
-                          onClick={() => setDeleteTarget(p)}
+                          onClick={() => setDeleteTargetId(p.id)}
                           className="rounded p-1.5 text-rose-500 hover:bg-rose-50"
                         >
                           <Trash2 className="h-4 w-4" />
@@ -437,7 +453,7 @@ export function PatientsPage({ patients }: PatientsPageProps) {
             <div className="mt-5 flex justify-end gap-2.5">
               <button
                 type="button"
-                onClick={() => setDeleteTarget(null)}
+                onClick={() => setDeleteTargetId(null)}
                 className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700"
               >
                 Batal

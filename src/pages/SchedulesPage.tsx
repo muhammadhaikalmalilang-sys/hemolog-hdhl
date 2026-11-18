@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { deleteDoc, doc, serverTimestamp, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import {
   CalendarPlus,
@@ -14,12 +14,11 @@ import {
   clampString,
   formatDateId,
   formatMonthLabel,
-  getCurrentMonthKey,
   getDayNameId,
   getDaysInMonth,
-  getTodayDateStr,
 } from '../lib/formatters';
 import { useAuth } from '../context/AuthContext';
+import { useLiveClock } from '../hooks/useLiveClock';
 import { ShiftBadge, ValidationBadge } from '../components/ui/StatusBadge';
 import { ImportScheduleSpreadsheetModal } from '../components/schedules/ImportScheduleSpreadsheetModal';
 import {
@@ -49,12 +48,14 @@ export function SchedulesPage({
   staffDirectory,
 }: SchedulesPageProps) {
   const { userProfile } = useAuth();
+  const { todayDate: liveTodayDate, currentMonthKey: liveMonthKey } = useLiveClock();
+  const [trackedTodayDate, setTrackedTodayDate] = useState(liveTodayDate);
   const [activeTab, setActiveTab] = useState<'nurses' | 'pj_shift' | 'doctors'>('nurses');
-  const [monthKey, setMonthKey] = useState(getCurrentMonthKey());
+  const [monthKey, setMonthKey] = useState(liveMonthKey);
 
   // Admin nurse quick assignment form
   const [targetNurseId, setTargetNurseId] = useState('');
-  const [targetDate, setTargetDate] = useState(getTodayDateStr());
+  const [targetDate, setTargetDate] = useState(liveTodayDate);
   const [targetShift, setTargetShift] = useState<ScheduleShiftType>('Pagi');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
@@ -64,7 +65,7 @@ export function SchedulesPage({
 
   // Admin doctor schedule assignment form
   const activeDoctors = useMemo(() => doctors.filter((d) => d.status === 'Aktif'), [doctors]);
-  const [docDate, setDocDate] = useState(getTodayDateStr());
+  const [docDate, setDocDate] = useState(liveTodayDate);
   const [docShift, setDocShift] = useState<ShiftType>('Pagi');
   const [docDpjpId, setDocDpjpId] = useState('');
   const [docDutyId, setDocDutyId] = useState('');
@@ -80,7 +81,7 @@ export function SchedulesPage({
         .sort((a, b) => a.fullName.localeCompare(b.fullName)),
     [staffDirectory]
   );
-  const [pjDate, setPjDate] = useState(getTodayDateStr());
+  const [pjDate, setPjDate] = useState(liveTodayDate);
   const [pjShift, setPjShift] = useState<ShiftType>('Pagi');
   const [pjNurseId, setPjNurseId] = useState('');
   const [pjNotes, setPjNotes] = useState('');
@@ -88,6 +89,17 @@ export function SchedulesPage({
   const [batchSavingPj, setBatchSavingPj] = useState(false);
   const [deletingPjId, setDeletingPjId] = useState<string | null>(null);
   const [pjFeedback, setPjFeedback] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (liveTodayDate !== trackedTodayDate) {
+      const prevMonth = trackedTodayDate.slice(0, 7);
+      setTrackedTodayDate(liveTodayDate);
+      setMonthKey((prev) => (prev === prevMonth ? liveMonthKey : prev));
+      setTargetDate((prev) => (prev === trackedTodayDate ? liveTodayDate : prev));
+      setDocDate((prev) => (prev === trackedTodayDate ? liveTodayDate : prev));
+      setPjDate((prev) => (prev === trackedTodayDate ? liveTodayDate : prev));
+    }
+  }, [liveTodayDate, liveMonthKey, trackedTodayDate]);
 
   if (!userProfile) return null;
 

@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Eye, Search } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { formatDateId, formatFullDayDateId, getTodayDateStr } from '../lib/formatters';
+import { useLiveClock } from '../hooks/useLiveClock';
+import { formatDateId, formatFullDayDateId } from '../lib/formatters';
 import { ShiftBadge, VerificationBadge } from '../components/ui/StatusBadge';
 import { LogbookDetailModal } from '../components/logbook/LogbookDetailModal';
 import type {
@@ -37,11 +38,20 @@ export function HistoryPage({
   machineLocks = [],
 }: HistoryPageProps) {
   const { userProfile } = useAuth();
-  const [dateFilter, setDateFilter] = useState(getTodayDateStr());
+  const { todayDate: liveTodayDate } = useLiveClock();
+  const [todayDate, setTodayDate] = useState(liveTodayDate);
+  const [dateFilter, setDateFilter] = useState(liveTodayDate);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [tab, setTab] = useState<'logbook' | 'shift_reports'>('logbook');
-  const [detailEntry, setDetailEntry] = useState<LogbookEntry | null>(null);
+  const [detailEntryId, setDetailEntryId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (liveTodayDate !== todayDate) {
+      setTodayDate(liveTodayDate);
+      setDateFilter((prev) => (prev === todayDate ? liveTodayDate : prev));
+    }
+  }, [liveTodayDate, todayDate]);
 
   const uid = userProfile?.uid || '';
   const isPjShift = userProfile?.role === 'PJ Shift';
@@ -50,6 +60,14 @@ export function HistoryPage({
     if (!uid) return [];
     return logbooks.filter((item) => item.nurseId === uid);
   }, [logbooks, uid]);
+
+  const detailEntry = useMemo(
+    () =>
+      detailEntryId
+        ? ownManagedLogbooks.find((item) => item.id === detailEntryId) || null
+        : null,
+    [ownManagedLogbooks, detailEntryId]
+  );
 
   const filteredLogbooks = useMemo(() => {
     return ownManagedLogbooks.filter((item) => {
@@ -147,7 +165,7 @@ export function HistoryPage({
                 ) : (
                   <button
                     type="button"
-                    onClick={() => setDateFilter(getTodayDateStr())}
+                    onClick={() => setDateFilter(todayDate)}
                     className="rounded-lg border border-slate-300 px-2.5 py-2 text-[11px] font-semibold text-teal-700 hover:bg-teal-50 shrink-0"
                     title="Kembali ke hari aktif"
                   >
@@ -174,13 +192,13 @@ export function HistoryPage({
                   {dateFilter ? formatFullDayDateId(dateFilter) : 'Semua Tanggal'}
                 </strong>
               </span>
-              {dateFilter && dateFilter !== getTodayDateStr() && (
+              {dateFilter && dateFilter !== todayDate && (
                 <button
                   type="button"
-                  onClick={() => setDateFilter(getTodayDateStr())}
+                  onClick={() => setDateFilter(todayDate)}
                   className="font-semibold text-teal-700 hover:underline"
                 >
-                  Kembali ke Hari Ini ({formatDateId(getTodayDateStr())})
+                  Kembali ke Hari Ini ({formatDateId(todayDate)})
                 </button>
               )}
             </div>
@@ -244,7 +262,7 @@ export function HistoryPage({
                         <td className="px-4 py-3 text-right whitespace-nowrap">
                           <button
                             type="button"
-                            onClick={() => setDetailEntry(item)}
+                            onClick={() => setDetailEntryId(item.id)}
                             className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-colors"
                             title="Lihat Detail Logbook Lengkap (Bagian 1–7)"
                           >
@@ -310,7 +328,7 @@ export function HistoryPage({
           actionCategories={actionCategories}
           staffDirectory={staffDirectory}
           machineLocks={machineLocks}
-          onClose={() => setDetailEntry(null)}
+          onClose={() => setDetailEntryId(null)}
         />
       )}
     </div>

@@ -27,9 +27,13 @@ import {
 import {
   auth,
   db,
+  formatFirestoreError,
   isBootstrapAdminEmail,
+  isTransientFirestoreError,
   handleFirestoreError,
+  onFirestoreReconnect,
   OperationType,
+  reconnectFirestore,
   withSecondaryAuth,
 } from '../lib/firebase';
 import { clampString } from '../lib/formatters';
@@ -148,17 +152,90 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [profileLoading, setProfileLoading] = useState(true);
   const [blockedMessage, setBlockedMessage] = useState<string | null>(null);
   const [idleLogoutMessage, setIdleLogoutMessage] = useState<string | null>(null);
+  const [fatalError, setFatalError] = useState<string | null>(null);
+  const [listenerEpoch, setListenerEpoch] = useState(0);
 
   useEffect(() => {
     let unsubscribeProfile: (() => void) | null = null;
+    let needsResubscribe = false;
+    let retryTimer: number | null = null;
+    let activeUid: string | null = null;
+
+    const attachProfileListener = (user: User) => {
+      if (unsubscribeProfile) {
+        unsubscribeProfile();
+        unsubscribeProfile = null;
+      }
+      const userRef = doc(db, 'users', user.uid);
+      unsubscribeProfile = onSnapshot(
+        userRef,
+        (docSnap) => {
+          needsResubscribe = false;
+          if (docSnap.exists()) {
+            const data = docSnap.data() as UserProfile;
+            if (!data.isActive) {
+              setBlockedMessage(
+                'Akun Anda sedang dinonaktifkan oleh Administrator. Hubungi Admin Unit Hemodialisa untuk aktivasi kembali.'
+              );
+              setUserProfile(null);
+              signOut(auth).catch(() => undefined);
+            } else {
+              const fallbackName =
+                clampString(
+                  data.fullName || user.displayName || user.email?.split('@')[0] || 'Staf HD',
+                  120
+                ) || 'Staf HD';
+              setUserProfile({
+                ...data,
+                uid: user.uid,
+                email: data.email || user.email || '',
+                fullName: fallbackName,
+              });
+            }
+          } else {
+            setUserProfile(null);
+          }
+          setAuthReady(true);
+          setProfileLoading(false);
+        },
+        (error) => {
+          if (isTransientFirestoreError(error)) {
+            needsResubscribe = true;
+            console.warn('Koneksi profil terputus sementara, menyambungkan ulang...');
+            void reconnectFirestore();
+            if (retryTimer !== null) window.clearTimeout(retryTimer);
+            retryTimer = window.setTimeout(() => {
+              if (auth.currentUser?.uid === user.uid && (typeof navigator === 'undefined' || navigator.onLine)) {
+                setListenerEpoch((e) => e + 1);
+              }
+            }, 3000);
+            return;
+          }
+          setFatalError(formatFirestoreError(error, OperationType.GET, `users/${user.uid}`));
+        }
+      );
+    };
+
+    const unsubReconnect = onFirestoreReconnect(() => {
+      if (needsResubscribe && activeUid && auth.currentUser?.uid === activeUid) {
+        needsResubscribe = false;
+        setListenerEpoch((e) => e + 1);
+      }
+    });
 
     const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
       if (unsubscribeProfile) {
         unsubscribeProfile();
         unsubscribeProfile = null;
       }
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+        retryTimer = null;
+      }
 
+      activeUid = user?.uid ?? null;
       setFirebaseUser(user);
+      setFatalError(null);
 
       if (!user) {
         setUserProfile(null);
@@ -169,7 +246,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       setBlockedMessage(null);
       setIdleLogoutMessage(null);
-
       setProfileLoading(true);
       const userRef = doc(db, 'users', user.uid);
 
@@ -209,47 +285,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         console.error('Error initializing user profile:', error);
       }
 
-      unsubscribeProfile = onSnapshot(
-        userRef,
-        (docSnap) => {
-          if (docSnap.exists()) {
-            const data = docSnap.data() as UserProfile;
-            if (!data.isActive) {
-              setBlockedMessage(
-                'Akun Anda sedang dinonaktifkan oleh Administrator. Hubungi Admin Unit Hemodialisa untuk aktivasi kembali.'
-              );
-              setUserProfile(null);
-              signOut(auth).catch(() => undefined);
-            } else {
-              const fallbackName =
-                clampString(
-                  data.fullName || user.displayName || user.email?.split('@')[0] || 'Staf HD',
-                  120
-                ) || 'Staf HD';
-              setUserProfile({
-                ...data,
-                uid: user.uid,
-                email: data.email || user.email || '',
-                fullName: fallbackName,
-              });
-            }
-          } else {
-            setUserProfile(null);
-          }
-          setAuthReady(true);
-          setProfileLoading(false);
-        },
-        (error) => {
-          handleFirestoreError(error, OperationType.GET, `users/${user.uid}`);
-        }
-      );
+      attachProfileListener(user);
     });
 
     return () => {
       unsubscribeAuth();
+      unsubReconnect();
       if (unsubscribeProfile) unsubscribeProfile();
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
     };
-  }, []);
+  }, [listenerEpoch]);
+
+  if (fatalError) {
+    throw new Error(fatalError);
+  }
 
   const loginWithEmail = async (email: string, password: string, rememberMe = true) => {
     setBlockedMessage(null);

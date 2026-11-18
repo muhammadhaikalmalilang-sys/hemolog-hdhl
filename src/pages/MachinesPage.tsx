@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { addDoc, collection, deleteDoc, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { Layers, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { clampString, getTodayDateStr } from '../lib/formatters';
+import { clampString } from '../lib/formatters';
+import { useLiveClock } from '../hooks/useLiveClock';
 import { MachineStatusBadge } from '../components/ui/StatusBadge';
 import { BulkAddMachinesModal } from '../components/machines/BulkAddMachinesModal';
 import type { Machine, MachineStatus } from '../types';
@@ -12,35 +13,52 @@ interface MachinesPageProps {
 }
 
 export function MachinesPage({ machines }: MachinesPageProps) {
+  const { todayDate } = useLiveClock();
   const [showModal, setShowModal] = useState(false);
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [bulkSuccessCount, setBulkSuccessCount] = useState<number | null>(null);
-  const [editing, setEditing] = useState<Machine | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<Machine | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+
+  const editing = useMemo(
+    () => (editingId ? machines.find((m) => m.id === editingId) ?? null : null),
+    [editingId, machines]
+  );
+  const deleteTarget = useMemo(
+    () => (deleteTargetId ? machines.find((m) => m.id === deleteTargetId) ?? null : null),
+    [deleteTargetId, machines]
+  );
+
+  useEffect(() => {
+    if (showModal && editingId && !editing) {
+      setShowModal(false);
+      setEditingId(null);
+    }
+  }, [showModal, editingId, editing]);
 
   const [machineNumber, setMachineNumber] = useState('');
   const [brand, setBrand] = useState('Fresenius 4008S');
   const [serialNumber, setSerialNumber] = useState('');
   const [roomZone, setRoomZone] = useState('Ruang A (Reguler)');
   const [status, setStatus] = useState<MachineStatus>('Ready');
-  const [lastMaintenanceDate, setLastMaintenanceDate] = useState(getTodayDateStr());
+  const [lastMaintenanceDate, setLastMaintenanceDate] = useState(todayDate);
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
 
   const openCreate = () => {
-    setEditing(null);
+    setEditingId(null);
     setMachineNumber('');
     setBrand('Fresenius 4008S');
     setSerialNumber('');
     setRoomZone('Ruang A (Reguler)');
     setStatus('Ready');
-    setLastMaintenanceDate(getTodayDateStr());
+    setLastMaintenanceDate(todayDate);
     setNotes('');
     setShowModal(true);
   };
 
   const openEdit = (m: Machine) => {
-    setEditing(m);
+    setEditingId(m.id);
     setMachineNumber(m.machineNumber);
     setBrand(m.brand);
     setSerialNumber(m.serialNumber || '');
@@ -96,7 +114,7 @@ export function MachinesPage({ machines }: MachinesPageProps) {
     if (!deleteTarget) return;
     try {
       await deleteDoc(doc(db, 'machines', deleteTarget.id));
-      setDeleteTarget(null);
+      setDeleteTargetId(null);
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, `machines/${deleteTarget.id}`);
     }
@@ -212,7 +230,7 @@ export function MachinesPage({ machines }: MachinesPageProps) {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setDeleteTarget(m)}
+                  onClick={() => setDeleteTargetId(m.id)}
                   className="rounded p-1.5 text-rose-500 hover:bg-rose-50"
                 >
                   <Trash2 className="h-4 w-4" />
@@ -344,7 +362,7 @@ export function MachinesPage({ machines }: MachinesPageProps) {
             <div className="mt-5 flex justify-end gap-2.5">
               <button
                 type="button"
-                onClick={() => setDeleteTarget(null)}
+                onClick={() => setDeleteTargetId(null)}
                 className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700"
               >
                 Batal

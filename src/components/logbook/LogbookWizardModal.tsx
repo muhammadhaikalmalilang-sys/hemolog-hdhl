@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { collection, doc, runTransaction, serverTimestamp } from 'firebase/firestore';
 import {
   Activity,
@@ -937,9 +937,13 @@ export function LogbookWizardModal({
       initialDetails?.section4.intraDiastolicBp ||
       ''
   );
-  const [arterialPressure] = useState(initialDetails?.section4.arterialPressure || '-120');
-  const [venousPressure] = useState(initialDetails?.section4.venousPressure || '130');
-  const [tmp] = useState(initialDetails?.section4.tmp || '85');
+  const [arterialPressure, setArterialPressure] = useState(
+    initialDetails?.section4.arterialPressure || '-120'
+  );
+  const [venousPressure, setVenousPressure] = useState(
+    initialDetails?.section4.venousPressure || '130'
+  );
+  const [tmp, setTmp] = useState(initialDetails?.section4.tmp || '85');
   const [noComplication, setNoComplication] = useState<boolean>(
     initialDetails?.section4.noComplication ??
       (editingEntry
@@ -975,7 +979,7 @@ export function LogbookWizardModal({
   const [teachBackStatus, setTeachBackStatus] = useState<'Baik' | 'Perlu Pengulangan'>(
     initialDetails?.section5.teachBackStatus || 'Baik'
   );
-  const [educationNotes] = useState(
+  const [educationNotes, setEducationNotes] = useState(
     initialDetails?.section5.educationNotes ||
       'Pasien dan keluarga mampu mengulang kembali cara pembatasan cairan harian dan perawatan AV Shunt.'
   );
@@ -987,7 +991,7 @@ export function LogbookWizardModal({
   const [hemostasisDone, setHemostasisDone] = useState(
     initialDetails?.section6.hemostasisDone ?? true
   );
-  const [bleedingStopMinutes] = useState(
+  const [bleedingStopMinutes, setBleedingStopMinutes] = useState(
     initialDetails?.section6.bleedingStopMinutes || '10'
   );
   const [postWeight, setPostWeight] = useState(
@@ -998,18 +1002,18 @@ export function LogbookWizardModal({
   );
   const [postBp, setPostBp] = useState(editingEntry ? editingEntry.postBp || '' : '');
   const [ktv, setKtv] = useState(initialDetails?.section6.ktv || '');
-  const [postPulse] = useState(initialDetails?.section6.postPulse || '80');
-  const [postResp] = useState(initialDetails?.section6.postResp || '18');
-  const [postTemp] = useState(initialDetails?.section6.postTemp || '36.5');
-  const [postSpo2] = useState(initialDetails?.section6.postSpo2 || '99');
+  const [postPulse, setPostPulse] = useState(initialDetails?.section6.postPulse || '80');
+  const [postResp, setPostResp] = useState(initialDetails?.section6.postResp || '18');
+  const [postTemp, setPostTemp] = useState(initialDetails?.section6.postTemp || '36.5');
+  const [postSpo2, setPostSpo2] = useState(initialDetails?.section6.postSpo2 || '99');
   const [wasteDecontaminated, setWasteDecontaminated] = useState(
     initialDetails?.section6.wasteDecontaminated ?? true
   );
-  const [machineDisinfectionType] = useState<'Heat Disinfection' | 'Chemical Disinfection'>(
-    initialDetails?.section6.machineDisinfectionType || 'Heat Disinfection'
-  );
-  const [nursingNotes] = useState(editingEntry?.nursingNotes || '');
-  const [handoverSummary] = useState(
+  const [machineDisinfectionType, setMachineDisinfectionType] = useState<
+    'Heat Disinfection' | 'Chemical Disinfection'
+  >(initialDetails?.section6.machineDisinfectionType || 'Heat Disinfection');
+  const [nursingNotes, setNursingNotes] = useState(editingEntry?.nursingNotes || '');
+  const [handoverSummary, setHandoverSummary] = useState(
     initialDetails?.section6.handoverSummary || 'Kondisi stabil pasca dialisis, siap pulang / timbang terima.'
   );
 
@@ -1024,6 +1028,214 @@ export function LogbookWizardModal({
   const [submissionConfirmed, setSubmissionConfirmed] = useState(
     Boolean(editingEntry && editingEntry.verificationStatus !== 'Draft')
   );
+
+  const prevEntryMachineIdRef = useRef(editingEntry?.machineId || '');
+
+  // Real-time sync when viewing in readOnly mode (Detail / Verification Review modal)
+  useEffect(() => {
+    if (!readOnly || !editingEntry) return;
+    const d = editingEntry.wizardDetails;
+    setSpoChecklist(buildInitialSpoChecklist(d?.spoChecklist));
+    setPatientId(editingEntry.patientId || '');
+    setRmSearch(editingEntry.patientRm || '');
+    setMachineId(editingEntry.machineId || '');
+    setDoctorId(editingEntry.doctorId || '');
+    setDutyDoctorId(
+      editingEntry.dutyDoctorId || (editingEntry.dutyDoctorName ? '__manual__' : '')
+    );
+    setManualDutyDoctorName(
+      editingEntry.dutyDoctorId === '__manual__' ||
+        (!editingEntry.dutyDoctorId && editingEntry.dutyDoctorName)
+        ? editingEntry.dutyDoctorName || ''
+        : ''
+    );
+    setActionCategory(editingEntry.actionCategory || 'HD Reguler');
+    setDate(editingEntry.date || getTodayDateStr());
+    setShift(editingEntry.shift || 'Pagi');
+    setStartTime(editingEntry.startTime || '07:30');
+    setEndTime(editingEntry.endTime || '12:00');
+
+    setRoStatus(d?.section1.roStatus || 'Baik');
+    setRoAdequate(d?.section1.roAdequate ?? true);
+    setRoTds(d?.section1.roTds || '4 ppm');
+    setRoConductivity(d?.section1.roConductivity || '14.0 mS/cm');
+    setRoNotes(d?.section1.roNotes || 'Kualitas air RO memenuhi standar AAMI');
+    setInfectionZoneStatus(d?.section1.infectionZoneStatus || 'Sesuai');
+    setInfectionZoneChecked(d?.section1.infectionZoneChecked ?? true);
+    setEmergencyStatus(d?.section1.emergencyStatus || 'Lengkap');
+    setAedReady(d?.section1.aedReady ?? true);
+    setOxygenReady(d?.section1.oxygenReady ?? true);
+    setEmergencyDrugsReady(d?.section1.emergencyDrugsReady ?? true);
+    setEmergencyNotes(d?.section1.emergencyNotes || 'Troli emergensi tersegel dan siap digunakan');
+
+    setHandHygieneChecked(d?.spoChecklist?.['2.1'] === 'DIKERJAKAN');
+    setApdUsedChecked(d?.spoChecklist?.['2.1'] === 'DIKERJAKAN');
+    setApdMask(d?.section2.apdMask ?? true);
+    setApdGoggles(d?.section2.apdGoggles ?? true);
+    setApdGloves(d?.section2.apdGloves ?? true);
+    setApdApron(d?.section2.apdApron ?? true);
+    setMachineConductivity(d?.section2.machineConductivity || '13.8 mS/cm');
+    setMachinePh(d?.section2.machinePh || '7.3');
+    setLeakTestPassed(d?.section2.leakTestPassed ?? true);
+    setBloodlineIntegrity(d?.section2.bloodlineIntegrity ?? true);
+    setDialysateTemp(d?.section2.dialysateTemp || '36.5');
+    setDialysateType(d?.section2.dialysateType || 'Bikarbonat');
+    setPrimingDone(d?.section2.primingDone ?? true);
+    setPrimingVolume(d?.section2.primingVolume || '1000');
+    setAnticoagulantType(d?.section2.anticoagulantType || 'Heparin');
+    setLoadingDose(d?.section2.loadingDose || '');
+    setMaintenanceDose(d?.section2.maintenanceDose || '1000 IU/jam');
+    setFistulaNeedleSize(d?.section2.fistulaNeedleSize || '16G');
+
+    setServiceStatus(d?.section3.serviceStatus || '');
+    setInpatientWard(d?.section3.inpatientWard || '');
+    setCitoStatus(
+      d?.section3.citoStatus || (d?.section3.serviceStatus === 'Rawat Inap' ? 'Tidak' : '')
+    );
+    setPatientCategory(d?.section3.patientCategory || '');
+    setDryWeight(d?.section3.dryWeight !== undefined ? String(d.section3.dryWeight) : '');
+    setPreWeight(String(editingEntry.preWeight ?? ''));
+    const bpParts = (editingEntry.preBp || '').split('/');
+    setSystolicBp(bpParts[0] ? bpParts[0].trim() : '');
+    setDiastolicBp(bpParts[1] ? bpParts[1].trim() : '');
+    setPreBp(editingEntry.preBp || '');
+    setPrePulse(d?.section3.prePulse || '84');
+    setPreResp(d?.section3.preResp || '20');
+    setPreTemp(d?.section3.preTemp || '36.6');
+    setPreSpo2(d?.section3.preSpo2 || '98');
+    setFallRiskScale(d?.section3.fallRiskScale || 'Morse');
+    setFallRiskLevel(d?.section3.fallRiskLevel || 'Risiko Rendah');
+    setInformedConsent(d?.section3.informedConsent ?? true);
+    setDialyzerType(d?.section3.dialyzerType || 'High-Flux FX80');
+    setDialysisDurationHours(d?.section3.dialysisDurationHours || '');
+    setBfr(d?.section3.bfr || '');
+    setDfr(d?.section3.dfr || '');
+    setUfGoal(String(editingEntry.ufGoal ?? ''));
+    setVascularAccess(editingEntry.vascularAccess || 'AV Fistula');
+    setSelectedAccessOption(
+      editingEntry.vascularAccess === 'CDL' || editingEntry.vascularAccess === 'CVC'
+        ? 'CDL'
+        : editingEntry.vascularAccess === 'Femoral'
+        ? 'FEMORAL'
+        : 'CIMINO'
+    );
+    setVascularNurseId(d?.section3.vascularNurseId || editingEntry.nurseId || '');
+    setCiminoNote(
+      d?.section3.ciminoNote ||
+        (editingEntry.vascularAccess === 'AV Fistula' || editingEntry.vascularAccess === 'AV Shunt'
+          ? d?.section3.accessDetailNote || ''
+          : '')
+    );
+    setCdlNote(
+      d?.section3.cdlNote ||
+        (editingEntry.vascularAccess === 'CDL' || editingEntry.vascularAccess === 'CVC'
+          ? d?.section3.accessDetailNote || ''
+          : '')
+    );
+    setFemoralNote(
+      d?.section3.femoralNote ||
+        (editingEntry.vascularAccess === 'Femoral' ? d?.section3.accessDetailNote || '' : '')
+    );
+    setCannulationDone(d?.section3.cannulationDone ?? true);
+
+    setObservations(d?.section4.observations || DEFAULT_OBSERVATIONS);
+    const savedIntra = d?.section4.intraObservations;
+    setIntraObservations(
+      savedIntra && savedIntra.length > 0
+        ? savedIntra.map((obs, idx) => ({
+            id: obs.id || `obs_${idx + 1}`,
+            time: obs.time || '',
+            systolic: obs.systolic || '',
+            diastolic: obs.diastolic || '',
+            pulse: obs.pulse || '',
+            resp: obs.resp || '',
+            temp: obs.temp || '',
+            spo2: obs.spo2 || '',
+          }))
+        : [
+            {
+              id: 'obs_1',
+              time: d?.section4.intraObsTime || '',
+              systolic: d?.section4.intraSystolicBp || '',
+              diastolic: d?.section4.intraDiastolicBp || '',
+              pulse: '',
+              resp: '',
+              temp: '',
+              spo2: '',
+            },
+          ]
+    );
+    setIntraObsTime(d?.section4.intraObservations?.[0]?.time || d?.section4.intraObsTime || '');
+    setIntraSystolicBp(
+      d?.section4.intraObservations?.[0]?.systolic || d?.section4.intraSystolicBp || ''
+    );
+    setIntraDiastolicBp(
+      d?.section4.intraObservations?.[0]?.diastolic || d?.section4.intraDiastolicBp || ''
+    );
+    setArterialPressure(d?.section4.arterialPressure || '-120');
+    setVenousPressure(d?.section4.venousPressure || '130');
+    setTmp(d?.section4.tmp || '85');
+    setNoComplication(
+      d?.section4.noComplication ??
+        (!editingEntry.complications || editingEntry.complications.toLowerCase() === 'tidak ada')
+    );
+    setComplicationIncidents(
+      (d?.section4.complicationIncidents || []).map((inc) => ({
+        ...inc,
+        clinicalDetail: inc.clinicalDetail || '',
+      }))
+    );
+    setComplicationFlags(d?.section4.complicationFlags || ['Tidak ada']);
+    setComplications(editingEntry.complications || 'Tidak ada');
+    setEffectiveCommunicationNotes(
+      d?.section4.effectiveCommunicationNotes ||
+        'Pasien kooperatif, dijelaskan tanda gejala hipotensi/kram agar segera melapor.'
+    );
+
+    setEduFluidManagement(d?.section5.eduFluidManagement ?? true);
+    setEduNutrition(d?.section5.eduNutrition ?? true);
+    setEduVascularCare(d?.section5.eduVascularCare ?? true);
+    setEduMedicationSchedule(d?.section5.eduMedicationSchedule ?? true);
+    setTeachBackStatus(d?.section5.teachBackStatus || 'Baik');
+    setEducationNotes(
+      d?.section5.educationNotes ||
+        'Pasien dan keluarga mampu mengulang kembali cara pembatasan cairan harian dan perawatan AV Shunt.'
+    );
+
+    setReinfusionDone(d?.section6.reinfusionDone ?? true);
+    setHemostasisDone(d?.section6.hemostasisDone ?? true);
+    setBleedingStopMinutes(d?.section6.bleedingStopMinutes || '10');
+    setPostWeight(String(editingEntry.postWeight ?? ''));
+    setUfAchieved(String(editingEntry.ufAchieved ?? ''));
+    setPostBp(editingEntry.postBp || '');
+    setKtv(d?.section6.ktv || '');
+    setPostPulse(d?.section6.postPulse || '80');
+    setPostResp(d?.section6.postResp || '18');
+    setPostTemp(d?.section6.postTemp || '36.5');
+    setPostSpo2(d?.section6.postSpo2 || '99');
+    setWasteDecontaminated(d?.section6.wasteDecontaminated ?? true);
+    setMachineDisinfectionType(d?.section6.machineDisinfectionType || 'Heat Disinfection');
+    setNursingNotes(editingEntry.nursingNotes || '');
+    setHandoverSummary(
+      d?.section6.handoverSummary || 'Kondisi stabil pasca dialisis, siap pulang / timbang terima.'
+    );
+
+    setTargetVerifierRole(editingEntry.targetVerifierRole || 'Kepala Ruang');
+    setTargetVerifierId(editingEntry.targetVerifierId || '');
+    setSubmissionNote(d?.section6.handoverSummary || '');
+    setSubmissionConfirmed(editingEntry.verificationStatus !== 'Draft');
+  }, [readOnly, editingEntry]);
+
+  // In editable mode, mirror external BED/Mesin updates without clobbering user edits
+  useEffect(() => {
+    if (readOnly || !editingEntry) return;
+    if (editingEntry.machineId && editingEntry.machineId !== prevEntryMachineIdRef.current) {
+      if (machineId === prevEntryMachineIdRef.current) {
+        setMachineId(editingEntry.machineId);
+      }
+      prevEntryMachineIdRef.current = editingEntry.machineId;
+    }
+  }, [readOnly, editingEntry?.machineId, machineId]);
 
   // Computed SPO counts
   const totalSpoCount = SPO_POINTS.length;

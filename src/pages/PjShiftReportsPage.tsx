@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { addDoc, collection, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import {
   CheckCircle2,
@@ -19,10 +19,10 @@ import {
   formatDateId,
   formatFullDayDateId,
   getDayNameId,
-  getTodayDateStr,
   isPatientScheduledOnDay,
 } from '../lib/formatters';
 import { useAuth } from '../context/AuthContext';
+import { useLiveClock } from '../hooks/useLiveClock';
 import { useF4OnePagePrint } from '../hooks/useF4OnePagePrint';
 import type {
   DoctorScheduleEntry,
@@ -235,12 +235,32 @@ export function PjShiftReportsPage({
     });
   }, [allApprovedLogbooks]);
 
+  const { todayDate: liveTodayDate } = useLiveClock();
+  const [trackedTodayDate, setTrackedTodayDate] = useState(liveTodayDate);
+  const [hasManualPeriod, setHasManualPeriod] = useState(false);
+
   const defaultPeriod = availableVerifiedPeriods[0];
-  const [selectedDate, setSelectedDate] = useState(defaultPeriod?.date || getTodayDateStr());
+  const [selectedDate, setSelectedDate] = useState(defaultPeriod?.date || liveTodayDate);
   const [shiftFilter, setShiftFilter] = useState<'ALL' | ShiftType>(
     defaultPeriod?.shift || 'Pagi'
   );
   const [verifierFilter, setVerifierFilter] = useState<'ALL' | 'PJ Shift' | 'Kepala Ruang'>('ALL');
+
+  useEffect(() => {
+    if (!hasManualPeriod && defaultPeriod) {
+      setSelectedDate(defaultPeriod.date);
+      setShiftFilter(defaultPeriod.shift);
+    }
+  }, [hasManualPeriod, defaultPeriod?.date, defaultPeriod?.shift]);
+
+  useEffect(() => {
+    if (liveTodayDate !== trackedTodayDate) {
+      setTrackedTodayDate(liveTodayDate);
+      if (!hasManualPeriod && !defaultPeriod) {
+        setSelectedDate(liveTodayDate);
+      }
+    }
+  }, [liveTodayDate, trackedTodayDate, hasManualPeriod, defaultPeriod]);
 
   // Create/Save PJ Shift report modal
   const [showModal, setShowModal] = useState(false);
@@ -268,8 +288,14 @@ export function PjShiftReportsPage({
     message: string;
   } | null>(null);
 
-  // Review modal (Kepala Ruang Digital Approval)
-  const [reviewTarget, setReviewTarget] = useState<ReportEntry | null>(null);
+  // Review modal (Kepala Ruang Digital Approval) resolved live from reports
+  const [reviewTargetId, setReviewTargetId] = useState<string | null>(null);
+  const [newReviewDraft, setNewReviewDraft] = useState<ReportEntry | null>(null);
+  const reviewTarget = useMemo(() => {
+    if (!reviewTargetId) return null;
+    if (reviewTargetId === '__NEW__') return newReviewDraft;
+    return reports.find((r) => r.id === reviewTargetId) || null;
+  }, [reviewTargetId, newReviewDraft, reports]);
   const [reviewNote, setReviewNote] = useState('');
   const [reviewing, setReviewing] = useState(false);
 
@@ -1120,7 +1146,8 @@ export function PjShiftReportsPage({
         type: 'success',
         message: `Pengesahan Digital Kepala Ruang oleh ${userProfile.fullName} berhasil disimpan.`,
       });
-      setReviewTarget(null);
+      setReviewTargetId(null);
+      setNewReviewDraft(null);
       setReviewNote('');
     } catch (err) {
       setSignFeedback({
@@ -1220,9 +1247,10 @@ export function PjShiftReportsPage({
   const handleOpenKaruSign = () => {
     if (!kolom3Auth.allowed || shiftFilter === 'ALL') return;
     if (activeSavedReport) {
-      setReviewTarget(activeSavedReport);
+      setNewReviewDraft(null);
+      setReviewTargetId(activeSavedReport.id);
     } else {
-      setReviewTarget({
+      setNewReviewDraft({
         id: '__NEW__',
         reportType: 'pj_shift',
         date: selectedDate,
@@ -1232,6 +1260,7 @@ export function PjShiftReportsPage({
         authorRole: 'PJ Shift',
         shift: shiftFilter,
       });
+      setReviewTargetId('__NEW__');
     }
     setReviewNote(activeSavedReport?.reviewNote || '');
   };
@@ -1832,7 +1861,10 @@ export function PjShiftReportsPage({
             <input
               type="date"
               value={selectedDate}
-              onChange={(e) => setSelectedDate(e.target.value)}
+              onChange={(e) => {
+                setHasManualPeriod(true);
+                setSelectedDate(e.target.value);
+              }}
               className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-800 focus:border-[#0e4e78] focus:outline-none"
             />
           </div>
@@ -1843,7 +1875,10 @@ export function PjShiftReportsPage({
             </label>
             <select
               value={shiftFilter}
-              onChange={(e) => setShiftFilter(e.target.value as 'ALL' | ShiftType)}
+              onChange={(e) => {
+                setHasManualPeriod(true);
+                setShiftFilter(e.target.value as 'ALL' | ShiftType);
+              }}
               className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 focus:border-[#0e4e78] focus:outline-none"
             >
               <option value="Pagi">Shift Pagi (07.00 - 14.00 WIB)</option>
@@ -1885,6 +1920,7 @@ export function PjShiftReportsPage({
                   key={`${p.date}_${p.shift}`}
                   type="button"
                   onClick={() => {
+                    setHasManualPeriod(true);
                     setSelectedDate(p.date);
                     setShiftFilter(p.shift);
                   }}
@@ -2484,7 +2520,7 @@ export function PjShiftReportsPage({
           const colWidthClass = showNextPjColumn ? 'w-1/3' : 'w-1/2';
           return (
             <div className="f4-scroll-wrap overflow-x-auto">
-              <table className="w-full border-collapse text-[11px] text-slate-900">
+              <table className="pj-sig-table w-full border-collapse text-[11px] text-slate-900">
                 <thead>
                   <tr className="bg-[#1b4670] text-white">
                     <th
@@ -2782,7 +2818,10 @@ export function PjShiftReportsPage({
               </h3>
               <button
                 type="button"
-                onClick={() => setReviewTarget(null)}
+                onClick={() => {
+                  setReviewTargetId(null);
+                  setNewReviewDraft(null);
+                }}
                 className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100"
               >
                 <X className="h-5 w-5" />
@@ -2808,7 +2847,10 @@ export function PjShiftReportsPage({
               <div className="flex justify-end gap-2.5">
                 <button
                   type="button"
-                  onClick={() => setReviewTarget(null)}
+                  onClick={() => {
+                    setReviewTargetId(null);
+                    setNewReviewDraft(null);
+                  }}
                   className="rounded-lg border border-slate-300 px-4 py-2 font-semibold text-slate-700 hover:bg-slate-50"
                 >
                   Batal

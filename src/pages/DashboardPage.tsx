@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Calendar,
   CheckCircle2,
@@ -13,10 +13,10 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useLiveClock } from '../hooks/useLiveClock';
 import {
   formatDateId,
   formatMonthLabel,
-  getCurrentMonthKey,
   isLogbookAssignedToVerifier,
   MONTH_NAMES_ID,
 } from '../lib/formatters';
@@ -54,7 +54,8 @@ export function DashboardPage({
   onNavigate,
 }: DashboardPageProps) {
   const { userProfile } = useAuth();
-  const realCurrentMonthKey = getCurrentMonthKey();
+  const { currentMonthKey: realCurrentMonthKey } = useLiveClock();
+  const [trackedMonthKey, setTrackedMonthKey] = useState(realCurrentMonthKey);
   const [realYearStr, realMonthStr] = realCurrentMonthKey.split('-');
   const realYear = Number(realYearStr);
   const realMonth = Number(realMonthStr);
@@ -63,6 +64,17 @@ export function DashboardPage({
   const [selectedMonth, setSelectedMonth] = useState<number>(realMonth);
   const [seeding, setSeeding] = useState(false);
   const [seedFeedback, setSeedFeedback] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (realCurrentMonthKey !== trackedMonthKey) {
+      const [prevY, prevM] = trackedMonthKey.split('-').map(Number);
+      setTrackedMonthKey(realCurrentMonthKey);
+      if (selectedYear === prevY && selectedMonth === prevM) {
+        setSelectedYear(realYear);
+        setSelectedMonth(realMonth);
+      }
+    }
+  }, [realCurrentMonthKey, trackedMonthKey, realYear, realMonth, selectedYear, selectedMonth]);
 
   if (!userProfile) return null;
 

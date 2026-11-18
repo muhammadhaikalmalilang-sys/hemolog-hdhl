@@ -6,10 +6,10 @@ import {
   clampString,
   formatDateId,
   formatFullDayDateId,
-  getTodayDateStr,
   isLogbookAssignedToVerifier,
 } from '../lib/formatters';
 import { useAuth } from '../context/AuthContext';
+import { useLiveClock } from '../hooks/useLiveClock';
 import { ShiftBadge, VerificationBadge } from '../components/ui/StatusBadge';
 import { LogbookWizardModal } from '../components/logbook/LogbookWizardModal';
 import type {
@@ -46,42 +46,35 @@ export function VerificationPage({
   staffDirectory,
 }: VerificationPageProps) {
   const { firebaseUser, userProfile } = useAuth();
-  const [todayDate, setTodayDate] = useState(() => getTodayDateStr());
-  const [dateFilter, setDateFilter] = useState(() => getTodayDateStr());
+  const { todayDate: liveTodayDate } = useLiveClock();
+  const [todayDate, setTodayDate] = useState(liveTodayDate);
+  const [dateFilter, setDateFilter] = useState(liveTodayDate);
   const [shiftFilter, setShiftFilter] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState<'Pending' | 'Revision' | 'Approved' | 'ALL'>('Pending');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
-  const [editingWizardEntry, setEditingWizardEntry] = useState<LogbookEntry | null>(null);
+  const [editingWizardEntryId, setEditingWizardEntryId] = useState<string | null>(null);
   const [reopenReviewEntryId, setReopenReviewEntryId] = useState<string | null>(null);
   const [editSuccessMsg, setEditSuccessMsg] = useState<string | null>(null);
   const [verificationNote, setVerificationNote] = useState('');
   const [processingId, setProcessingId] = useState<string | null>(null);
 
   useEffect(() => {
-    const syncDay = () => {
-      const currentToday = getTodayDateStr();
-      if (currentToday !== todayDate) {
-        setTodayDate(currentToday);
-        setDateFilter((prev) => (prev === todayDate ? currentToday : prev));
-      }
-    };
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') syncDay();
-    };
-    const id = window.setInterval(syncDay, 15000);
-    window.addEventListener('focus', syncDay);
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => {
-      window.clearInterval(id);
-      window.removeEventListener('focus', syncDay);
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
-  }, [todayDate]);
+    if (liveTodayDate !== todayDate) {
+      setTodayDate(liveTodayDate);
+      setDateFilter((prev) => (prev === todayDate ? liveTodayDate : prev));
+    }
+  }, [liveTodayDate, todayDate]);
 
   const selectedEntry = useMemo(
     () => (selectedEntryId ? logbooks.find((item) => item.id === selectedEntryId) || null : null),
     [logbooks, selectedEntryId]
+  );
+
+  const editingWizardEntry = useMemo(
+    () =>
+      editingWizardEntryId ? logbooks.find((item) => item.id === editingWizardEntryId) || null : null,
+    [logbooks, editingWizardEntryId]
   );
 
   const canEditBeforeVerify =
@@ -121,7 +114,7 @@ export function VerificationPage({
     } else {
       setReopenReviewEntryId(null);
     }
-    setEditingWizardEntry(entry);
+    setEditingWizardEntryId(entry.id);
   };
 
   const handleVerify = async (entry: LogbookEntry, nextStatus: VerificationStatus, note?: string) => {
@@ -213,7 +206,7 @@ export function VerificationPage({
             ) : (
               <button
                 type="button"
-                onClick={() => setDateFilter(getTodayDateStr())}
+                onClick={() => setDateFilter(todayDate)}
                 className="rounded-lg border border-slate-300 px-2.5 py-2 text-[11px] font-semibold text-teal-700 hover:bg-teal-50 shrink-0"
                 title="Kembali ke hari aktif"
               >
@@ -251,13 +244,13 @@ export function VerificationPage({
               {dateFilter ? formatFullDayDateId(dateFilter) : 'Semua Tanggal'}
             </strong>
           </span>
-          {dateFilter && dateFilter !== getTodayDateStr() && (
+          {dateFilter && dateFilter !== todayDate && (
             <button
               type="button"
-              onClick={() => setDateFilter(getTodayDateStr())}
+              onClick={() => setDateFilter(todayDate)}
               className="font-semibold text-teal-700 hover:underline"
             >
-              Kembali ke Hari Ini ({formatDateId(getTodayDateStr())})
+              Kembali ke Hari Ini ({formatDateId(todayDate)})
             </button>
           )}
         </div>
@@ -466,7 +459,7 @@ export function VerificationPage({
           }}
           onClose={() => {
             const toReopen = reopenReviewEntryId;
-            setEditingWizardEntry(null);
+            setEditingWizardEntryId(null);
             setReopenReviewEntryId(null);
             if (toReopen) {
               setSelectedEntryId(toReopen);

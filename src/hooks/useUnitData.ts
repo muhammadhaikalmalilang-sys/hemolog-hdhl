@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { collection, deleteDoc, doc, getDoc, onSnapshot, query, where } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import {
+  db,
+  formatFirestoreError,
+  isTransientFirestoreError,
+  onFirestoreReconnect,
+  OperationType,
+  reconnectFirestore,
+} from '../lib/firebase';
 import { useAuth } from '../context/AuthContext';
 import type {
   ActionCategory,
@@ -47,6 +54,8 @@ export function useUnitData() {
   const [supervisorReady, setSupervisorReady] = useState(false);
   const [locksReady, setLocksReady] = useState(false);
   const [machineLocksReady, setMachineLocksReady] = useState(false);
+  const [fatalError, setFatalError] = useState<string | null>(null);
+  const [resubscribeEpoch, setResubscribeEpoch] = useState(0);
   const prunedLockIdsRef = useRef<Set<string>>(new Set());
   const prunedMachineLockIdsRef = useRef<Set<string>>(new Set());
 
@@ -65,6 +74,7 @@ export function useUnitData() {
     }
 
     setLoading(true);
+    setFatalError(null);
     setApprovedReady(false);
     setOwnReady(false);
     setSupervisorReady(false);
@@ -73,6 +83,34 @@ export function useUnitData() {
     prunedLockIdsRef.current.clear();
     prunedMachineLockIdsRef.current.clear();
     const unsubs: (() => void)[] = [];
+    let needsResubscribe = false;
+    let retryTimer: number | null = null;
+    let cancelled = false;
+
+    const handleSnapshotError = (err: unknown, path: string) => {
+      if (cancelled) return;
+      if (isTransientFirestoreError(err)) {
+        needsResubscribe = true;
+        setLoading(false);
+        console.warn(`Sinkronisasi ${path} terputus sementara, menyambungkan ulang...`);
+        void reconnectFirestore();
+        if (retryTimer !== null) window.clearTimeout(retryTimer);
+        retryTimer = window.setTimeout(() => {
+          if (!cancelled && (typeof navigator === 'undefined' || navigator.onLine)) {
+            setResubscribeEpoch((e) => e + 1);
+          }
+        }, 3000);
+        return;
+      }
+      setFatalError(formatFirestoreError(err, OperationType.LIST, path));
+    };
+
+    const unsubReconnect = onFirestoreReconnect(() => {
+      if (needsResubscribe && !cancelled) {
+        needsResubscribe = false;
+        setResubscribeEpoch((e) => e + 1);
+      }
+    });
 
     // 1. Patients
     unsubs.push(
@@ -83,7 +121,7 @@ export function useUnitData() {
           items.sort((a, b) => a.fullName.localeCompare(b.fullName));
           setPatients(items);
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'patients')
+        (err) => handleSnapshotError(err, 'patients')
       )
     );
 
@@ -96,7 +134,7 @@ export function useUnitData() {
           items.sort((a, b) => a.fullName.localeCompare(b.fullName));
           setDoctors(items);
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'doctors')
+        (err) => handleSnapshotError(err, 'doctors')
       )
     );
 
@@ -109,7 +147,7 @@ export function useUnitData() {
           items.sort((a, b) => a.machineNumber.localeCompare(b.machineNumber));
           setMachines(items);
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'machines')
+        (err) => handleSnapshotError(err, 'machines')
       )
     );
 
@@ -122,7 +160,7 @@ export function useUnitData() {
           items.sort((a, b) => a.name.localeCompare(b.name));
           setActionCategories(items);
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'action_categories')
+        (err) => handleSnapshotError(err, 'action_categories')
       )
     );
 
@@ -135,7 +173,7 @@ export function useUnitData() {
           items.sort((a, b) => a.fullName.localeCompare(b.fullName));
           setStaffDirectory(items);
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'staff_directory')
+        (err) => handleSnapshotError(err, 'staff_directory')
       )
     );
 
@@ -149,7 +187,7 @@ export function useUnitData() {
             items.sort((a, b) => a.fullName.localeCompare(b.fullName));
             setAllUsers(items);
           },
-          (err) => handleFirestoreError(err, OperationType.LIST, 'users')
+          (err) => handleSnapshotError(err, 'users')
         )
       );
     } else {
@@ -165,7 +203,7 @@ export function useUnitData() {
           setApprovedReady(true);
           setLoading(false);
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'logbook')
+        (err) => handleSnapshotError(err, 'logbook')
       )
     );
 
@@ -184,7 +222,7 @@ export function useUnitData() {
           setOwnLogbooks(items);
           setOwnReady(true);
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'logbook')
+        (err) => handleSnapshotError(err, 'logbook')
       )
     );
 
@@ -199,7 +237,7 @@ export function useUnitData() {
           );
           setSupervisorReady(true);
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'logbook')
+        (err) => handleSnapshotError(err, 'logbook')
       )
     );
 
@@ -211,7 +249,7 @@ export function useUnitData() {
           setLogbookLocks(snap.docs.map((d) => ({ id: d.id, ...d.data() } as LogbookLock)));
           setLocksReady(true);
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'logbook_locks')
+        (err) => handleSnapshotError(err, 'logbook_locks')
       )
     );
 
@@ -223,7 +261,7 @@ export function useUnitData() {
           setMachineLocks(snap.docs.map((d) => ({ id: d.id, ...d.data() } as MachineLock)));
           setMachineLocksReady(true);
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'machine_locks')
+        (err) => handleSnapshotError(err, 'machine_locks')
       )
     );
 
@@ -238,7 +276,7 @@ export function useUnitData() {
           (snap) => {
             setSchedules(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ScheduleEntry)));
           },
-          (err) => handleFirestoreError(err, OperationType.LIST, 'schedules')
+          (err) => handleSnapshotError(err, 'schedules')
         )
       );
     } else {
@@ -248,7 +286,7 @@ export function useUnitData() {
           (snap) => {
             setSchedules(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ScheduleEntry)));
           },
-          (err) => handleFirestoreError(err, OperationType.LIST, 'schedules')
+          (err) => handleSnapshotError(err, 'schedules')
         )
       );
     }
@@ -262,7 +300,7 @@ export function useUnitData() {
             snap.docs.map((d) => ({ id: d.id, ...d.data() } as DoctorScheduleEntry))
           );
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'doctor_schedules')
+        (err) => handleSnapshotError(err, 'doctor_schedules')
       )
     );
 
@@ -278,7 +316,7 @@ export function useUnitData() {
             snap.docs.map((d) => ({ id: d.id, ...d.data() } as PjShiftAssignmentEntry))
           );
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'pj_shift_assignments')
+        (err) => handleSnapshotError(err, 'pj_shift_assignments')
       )
     );
 
@@ -289,7 +327,7 @@ export function useUnitData() {
         (snap) => {
           setPatientReports(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ReportEntry)));
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'reports')
+        (err) => handleSnapshotError(err, 'reports')
       )
     );
 
@@ -302,7 +340,7 @@ export function useUnitData() {
           (snap) => {
             setUnitReports(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ReportEntry)));
           },
-          (err) => handleFirestoreError(err, OperationType.LIST, 'reports')
+          (err) => handleSnapshotError(err, 'reports')
         )
       );
     } else {
@@ -312,7 +350,7 @@ export function useUnitData() {
           (snap) => {
             setUnitReports(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ReportEntry)));
           },
-          (err) => handleFirestoreError(err, OperationType.LIST, 'reports')
+          (err) => handleSnapshotError(err, 'reports')
         )
       );
       unsubs.push(
@@ -327,15 +365,22 @@ export function useUnitData() {
               snap.docs.map((d) => ({ id: d.id, ...d.data() } as ReportEntry))
             );
           },
-          (err) => handleFirestoreError(err, OperationType.LIST, 'reports')
+          (err) => handleSnapshotError(err, 'reports')
         )
       );
     }
 
     return () => {
+      cancelled = true;
+      unsubReconnect();
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
       unsubs.forEach((fn) => fn());
     };
-  }, [authReady, firebaseUser?.uid, userProfile?.role, userProfile?.isActive, isLeaderOrAdmin, isAdmin]);
+  }, [authReady, firebaseUser?.uid, userProfile?.role, userProfile?.isActive, isLeaderOrAdmin, isAdmin, resubscribeEpoch]);
+
+  if (fatalError) {
+    throw new Error(fatalError);
+  }
 
   const allLogbooks = useMemo(() => {
     const map = new Map<string, LogbookEntry>();
@@ -356,14 +401,15 @@ export function useUnitData() {
 
     const existingLogbookIds = new Set(allLogbooks.map((lb) => lb.id));
     for (const lk of logbookLocks) {
-      if (prunedLockIdsRef.current.has(lk.id) || existingLogbookIds.has(lk.logbookId)) {
+      const pruneKey = `${lk.id}::${lk.logbookId}`;
+      if (prunedLockIdsRef.current.has(pruneKey) || existingLogbookIds.has(lk.logbookId)) {
         continue;
       }
-      prunedLockIdsRef.current.add(lk.id);
+      prunedLockIdsRef.current.add(pruneKey);
 
       if (isAdmin || lk.nurseId === firebaseUser.uid) {
         deleteDoc(doc(db, 'logbook_locks', lk.id)).catch(() => {
-          // Ignore transient cleanup failure; Firestore create/update rules also handle orphan replacement
+          prunedLockIdsRef.current.delete(pruneKey);
         });
       } else {
         getDoc(doc(db, 'logbook', lk.logbookId))
@@ -396,18 +442,19 @@ export function useUnitData() {
 
     const existingLogbookIds = new Set(allLogbooks.map((lb) => lb.id));
     for (const lk of machineLocks) {
+      const pruneKey = `${lk.id}::${lk.logbookId || ''}`;
       if (
         !lk.logbookId ||
-        prunedMachineLockIdsRef.current.has(lk.id) ||
+        prunedMachineLockIdsRef.current.has(pruneKey) ||
         existingLogbookIds.has(lk.logbookId)
       ) {
         continue;
       }
-      prunedMachineLockIdsRef.current.add(lk.id);
+      prunedMachineLockIdsRef.current.add(pruneKey);
 
       if (isAdmin || lk.nurseId === firebaseUser.uid) {
         deleteDoc(doc(db, 'machine_locks', lk.id)).catch(() => {
-          // Ignore transient cleanup failure
+          prunedMachineLockIdsRef.current.delete(pruneKey);
         });
       } else {
         getDoc(doc(db, 'logbook', lk.logbookId))

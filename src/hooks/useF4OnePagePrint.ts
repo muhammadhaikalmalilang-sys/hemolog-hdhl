@@ -3,7 +3,7 @@ import { useCallback, useEffect, type RefObject } from 'react';
 export type F4Orientation = 'landscape' | 'portrait';
 
 const PX_PER_MM = 96 / 25.4;
-const MARGIN_MM = 5;
+const MARGIN_MM = 4;
 
 // Indonesian F4 / Folio paper size: 215mm x 330mm
 const F4_SHORT_MM = 215;
@@ -20,10 +20,10 @@ function getPrintableTargetPx(orientation: F4Orientation) {
   const heightMm =
     (orientation === 'landscape' ? F4_SHORT_MM : F4_LONG_MM) - MARGIN_MM * 2;
 
-  // Leave a small safety buffer (~6px) to avoid subpixel rounding spilling onto a blank page 2
+  // Leave a small safety buffer (~4px) to avoid subpixel rounding spilling onto a blank page 2
   return {
-    targetWidth: Math.floor(widthMm * PX_PER_MM) - 6,
-    targetHeight: Math.floor(heightMm * PX_PER_MM) - 6,
+    targetWidth: Math.floor(widthMm * PX_PER_MM) - 4,
+    targetHeight: Math.floor(heightMm * PX_PER_MM) - 4,
   };
 }
 
@@ -83,33 +83,45 @@ export function useF4OnePagePrint({
     el.classList.add('f4-measuring');
     el.style.width = `${targetWidth}px`;
 
-    // Force layout measurement at target printable width using exact compact print styles
-    let naturalW = Math.max(el.scrollWidth, targetWidth);
-    let naturalH = Math.max(el.scrollHeight, 1);
+    // Measure natural dimensions at target printable width using exact print styles
+    const baseW = Math.max(el.scrollWidth, targetWidth);
+    const baseH = Math.max(el.scrollHeight, 1);
 
-    const wScale = targetWidth / naturalW;
-    const hScale = targetHeight / naturalH;
-    let zoom = Math.min(wScale, hScale, 1);
+    const wScale = targetWidth / baseW;
+    const hScale = targetHeight / baseH;
+    let bestWidth = baseW;
+    let bestZoom = Math.min(wScale, hScale, 1);
 
-    // If height is the bottleneck while table width fits, widen the virtual layout container
-    // proportionally so content wraps into fewer lines and still fills 100% of page width
-    if (hScale < wScale && naturalW <= targetWidth + 2 && zoom < 0.99) {
-      const expandedWidth = Math.min(
-        Math.round(targetWidth / Math.max(zoom, 0.45)),
-        Math.round(targetWidth * 1.6)
-      );
-      el.style.width = `${expandedWidth}px`;
-      naturalW = Math.max(el.scrollWidth, expandedWidth);
-      naturalH = Math.max(el.scrollHeight, 1);
-      zoom = Math.min(targetWidth / naturalW, targetHeight / naturalH, 1);
+    // If vertical height is the bottleneck while width fits, sweep wider layout widths
+    // to unwrap lines and pick the width yielding the LARGEST physical font scale (zoom)
+    if (hScale < wScale && baseW <= targetWidth + 2 && bestZoom < 0.995) {
+      const steps = 12;
+      const maxMultiplier = 1.85;
+      for (let i = 1; i <= steps; i++) {
+        const mult = 1 + ((maxMultiplier - 1) * i) / steps;
+        const candWidth = Math.round(targetWidth * mult);
+        // Width upper bound check: resulting wScale cannot beat bestZoom
+        if (targetWidth / candWidth <= bestZoom) break;
+
+        el.style.width = `${candWidth}px`;
+        const nW = Math.max(el.scrollWidth, candWidth);
+        const nH = Math.max(el.scrollHeight, 1);
+        const candZoom = Math.min(targetWidth / nW, targetHeight / nH, 1);
+
+        if (candZoom > bestZoom) {
+          bestZoom = candZoom;
+          bestWidth = nW;
+        }
+        if (bestZoom >= 0.995) break;
+      }
     }
 
-    // Apply a tiny 0.5% safety factor when scaling down so border/subpixel never triggers page 2
-    const finalZoom = zoom < 1 ? zoom * 0.995 : 1;
+    // Apply a tiny 0.7% safety factor when scaling down so border/subpixel never triggers page 2
+    const finalZoom = bestZoom < 1 ? bestZoom * 0.993 : 1;
     const finalWidth =
       finalZoom < 1
-        ? Math.max(naturalW, Math.floor(targetWidth / finalZoom))
-        : targetWidth;
+        ? Math.max(bestWidth, Math.floor(targetWidth / finalZoom))
+        : bestWidth;
 
     el.classList.remove('f4-measuring');
     el.style.width = '';

@@ -22,7 +22,8 @@ import {
   X,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { formatFullDayDateId, getTodayDateStr } from '../../lib/formatters';
+import { useLiveClock } from '../../hooks/useLiveClock';
+import { formatFullDayDateId } from '../../lib/formatters';
 import { ROLE_MENUS, type MenuId, type ScheduleEntry } from '../../types';
 
 const MENU_ICONS: Record<MenuId, React.ComponentType<{ className?: string }>> = {
@@ -62,7 +63,7 @@ export function SidebarLayout({
   const [logoFailed, setLogoFailed] = useState(false);
   const [bgFailed, setBgFailed] = useState(false);
 
-  const todayStr = getTodayDateStr();
+  const { todayDate: todayStr } = useLiveClock();
   const todayLabel = formatFullDayDateId(todayStr);
 
   const todaySchedule = useMemo(() => {

@@ -31,12 +31,11 @@ import {
   clampString,
   formatDateId,
   getCurrentMonthKey,
-  getCurrentShiftLabel,
   getDayNameId,
-  getTodayDateStr,
   isPatientScheduledOnDay,
 } from '../lib/formatters';
 import { useAuth } from '../context/AuthContext';
+import { useLiveClock } from '../hooks/useLiveClock';
 import { ShiftBadge, VerificationBadge } from '../components/ui/StatusBadge';
 import { LogbookWizardModal } from '../components/logbook/LogbookWizardModal';
 import { LogbookDetailModal } from '../components/logbook/LogbookDetailModal';
@@ -75,6 +74,7 @@ interface LogbookPageProps {
 interface QueuedPatientSlot {
   patientId: string;
   machineId: string;
+  confirmedInLocks?: boolean;
 }
 
 const SHIFT_TIME_LABEL: Record<ShiftType, string> = {
@@ -133,19 +133,32 @@ export function LogbookPage({
   const [shiftFilter, setShiftFilter] = useState<string>('ALL');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
 
-  // Modals
+  // Modals (resolved live from logbooks so open modals update in real time without refresh)
   const [showWizardModal, setShowWizardModal] = useState(false);
   const [showAddPatientModal, setShowAddPatientModal] = useState(false);
-  const [editingEntry, setEditingEntry] = useState<LogbookEntry | null>(null);
-  const [detailEntry, setDetailEntry] = useState<LogbookEntry | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<LogbookEntry | null>(null);
+  const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
+  const [detailEntryId, setDetailEntryId] = useState<string | null>(null);
+  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [wizardPatientId, setWizardPatientId] = useState<string | null>(null);
   const [wizardMachineId, setWizardMachineId] = useState<string | undefined>(undefined);
 
+  const editingEntry = useMemo(
+    () => (editingEntryId ? logbooks.find((lb) => lb.id === editingEntryId) || null : null),
+    [logbooks, editingEntryId]
+  );
+  const detailEntry = useMemo(
+    () => (detailEntryId ? logbooks.find((lb) => lb.id === detailEntryId) || null : null),
+    [logbooks, detailEntryId]
+  );
+  const deleteTarget = useMemo(
+    () => (deleteTargetId ? logbooks.find((lb) => lb.id === deleteTargetId) || null : null),
+    [logbooks, deleteTargetId]
+  );
+
   // Active Date & Shift (automatically follows calendar day rollover + Administrator schedule matrix)
-  const [todayDate, setTodayDate] = useState(() => getTodayDateStr());
-  const [clockTick, setClockTick] = useState(0);
-  const [inputDate, setInputDate] = useState(() => getTodayDateStr());
+  const { todayDate: liveTodayDate, currentShift: systemShiftFallback } = useLiveClock();
+  const [todayDate, setTodayDate] = useState(liveTodayDate);
+  const [inputDate, setInputDate] = useState(liveTodayDate);
   const [manualShiftOverride, setManualShiftOverride] = useState<ShiftType | null>(null);
   const [showScheduleEditor, setShowScheduleEditor] = useState(false);
 
@@ -168,44 +181,25 @@ export function LogbookPage({
 
   // Automatically reset Logbook workspace to an empty slate whenever the calendar day changes
   useEffect(() => {
-    const syncCalendarDay = () => {
-      const currentToday = getTodayDateStr();
-      setClockTick((prev) => (prev + 1) % 100000);
-      if (currentToday !== todayDate) {
-        setTodayDate(currentToday);
-        setInputDate(currentToday);
-        setMonthFilter(currentToday.slice(0, 7));
-        setManualShiftOverride(null);
-        setQueuedSlots([]);
-        setShowScheduleEditor(false);
-        setDpjpOverride('');
-        setDutyDoctorOverride('');
-        setManualDutyDoctorName('');
-        setIncludeOutsideShift(false);
-        setSelectedDropdownPatientId('');
-        setDraftPatientName('');
-        setDraftPatientRm('');
-        setDraftMachineId('');
-        setPickerFeedback(null);
-        setListFeedback(null);
-      }
-    };
-
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        syncCalendarDay();
-      }
-    };
-
-    const intervalId = window.setInterval(syncCalendarDay, 15000);
-    window.addEventListener('focus', syncCalendarDay);
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => {
-      window.clearInterval(intervalId);
-      window.removeEventListener('focus', syncCalendarDay);
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
-  }, [todayDate]);
+    if (liveTodayDate !== todayDate) {
+      setTodayDate(liveTodayDate);
+      setInputDate(liveTodayDate);
+      setMonthFilter(liveTodayDate.slice(0, 7));
+      setManualShiftOverride(null);
+      setQueuedSlots([]);
+      setShowScheduleEditor(false);
+      setDpjpOverride('');
+      setDutyDoctorOverride('');
+      setManualDutyDoctorName('');
+      setIncludeOutsideShift(false);
+      setSelectedDropdownPatientId('');
+      setDraftPatientName('');
+      setDraftPatientRm('');
+      setDraftMachineId('');
+      setPickerFeedback(null);
+      setListFeedback(null);
+    }
+  }, [liveTodayDate, todayDate]);
 
   const inputDayName = useMemo(() => getDayNameId(inputDate), [inputDate]);
 
@@ -226,13 +220,6 @@ export function LogbookPage({
     }
     return null;
   }, [userScheduleForDate]);
-
-  const systemShiftFallback: ShiftType = useMemo(() => {
-    const label = getCurrentShiftLabel();
-    if (label === 'Shift Pagi') return 'Pagi';
-    if (label === 'Shift Siang') return 'Siang';
-    return 'Malam';
-  }, [clockTick]);
 
   const activeShift: ShiftType = manualShiftOverride || scheduledNurseShift || systemShiftFallback;
 
@@ -495,6 +482,47 @@ export function LogbookPage({
       ),
     [logbooks, inputDate, activeShift, userProfile?.uid]
   );
+
+  // Reconcile optimistic queuedSlots across tabs with real-time machineLocks and saved ownShiftLogbooks
+  useEffect(() => {
+    if (!userProfile || queuedSlots.length === 0) return;
+    setQueuedSlots((prev) => {
+      let changed = false;
+      const next: QueuedPatientSlot[] = [];
+      for (const slot of prev) {
+        if (ownShiftLogbooks.some((lb) => lb.patientId === slot.patientId)) {
+          changed = true;
+          continue;
+        }
+        const matchingLock = machineLocks.find(
+          (lk) =>
+            lk.date === inputDate &&
+            lk.shift === activeShift &&
+            lk.nurseId === userProfile.uid &&
+            lk.patientId === slot.patientId &&
+            !lk.logbookId
+        );
+        if (matchingLock) {
+          if (!slot.confirmedInLocks || matchingLock.machineId !== slot.machineId) {
+            changed = true;
+            next.push({
+              patientId: slot.patientId,
+              machineId: matchingLock.machineId,
+              confirmedInLocks: true,
+            });
+          } else {
+            next.push(slot);
+          }
+        } else if (slot.confirmedInLocks) {
+          // Lock was removed in another tab/window; drop stale local slot
+          changed = true;
+        } else {
+          next.push(slot);
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [queuedSlots.length, machineLocks, ownShiftLogbooks, inputDate, activeShift, userProfile?.uid]);
 
   const totalShiftSubmittedCount = useMemo(
     () =>
@@ -1013,14 +1041,14 @@ export function LogbookPage({
     machineIdForSlot?: string,
     existing?: LogbookEntry | null
   ) => {
-    setEditingEntry(existing || null);
+    setEditingEntryId(existing?.id || null);
     setWizardPatientId(pat.id);
     setWizardMachineId(machineIdForSlot);
     setShowWizardModal(true);
   };
 
   const openEditModal = (entry: LogbookEntry) => {
-    setEditingEntry(entry);
+    setEditingEntryId(entry.id);
     setWizardPatientId(entry.patientId);
     setWizardMachineId(entry.machineId);
     setShowWizardModal(true);
@@ -1077,7 +1105,7 @@ export function LogbookPage({
       }
 
       await batch.commit();
-      setDeleteTarget(null);
+      setDeleteTargetId(null);
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, `logbook/${deleteTarget.id}`);
     }
@@ -1827,7 +1855,7 @@ export function LogbookPage({
                           <div
                             onClick={() => {
                               if (isPendingOrApproved && own) {
-                                setDetailEntry(own);
+                                setDetailEntryId(own.id);
                               } else {
                                 openWizardForPatient(pat, item.machineId, own || null);
                               }
@@ -1856,7 +1884,7 @@ export function LogbookPage({
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     if (isPendingOrApproved && own) {
-                                      setDetailEntry(own);
+                                      setDetailEntryId(own.id);
                                     } else {
                                       openWizardForPatient(pat, item.machineId, own || null);
                                     }
@@ -1989,7 +2017,7 @@ export function LogbookPage({
                             {isPendingOrApproved && own && (
                               <button
                                 type="button"
-                                onClick={() => setDetailEntry(own)}
+                                onClick={() => setDetailEntryId(own.id)}
                                 className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
                               >
                                 <Eye className="h-3.5 w-3.5" />
@@ -2147,7 +2175,7 @@ export function LogbookPage({
                                 <div className="inline-flex items-center gap-1">
                                   <button
                                     type="button"
-                                    onClick={() => setDetailEntry(item)}
+                                    onClick={() => setDetailEntryId(item.id)}
                                     className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900"
                                     title="Detail Lengkap 7 Bagian"
                                   >
@@ -2178,7 +2206,7 @@ export function LogbookPage({
                                   {canDelete && (
                                     <button
                                       type="button"
-                                      onClick={() => setDeleteTarget(item)}
+                                      onClick={() => setDeleteTargetId(item.id)}
                                       className="rounded-md p-1.5 text-rose-600 hover:bg-rose-50"
                                       title="Hapus Logbook"
                                     >
@@ -2222,6 +2250,7 @@ export function LogbookPage({
           pjShiftAssignments={pjShiftAssignments}
           onClose={() => {
             setShowWizardModal(false);
+            setEditingEntryId(null);
             setWizardPatientId(null);
             setWizardMachineId(undefined);
           }}
@@ -2256,8 +2285,15 @@ export function LogbookPage({
       {detailEntry && (
         <LogbookDetailModal
           entry={detailEntry}
+          logbooks={logbooks}
+          logbookLocks={logbookLocks}
           machineLocks={machineLocks}
-          onClose={() => setDetailEntry(null)}
+          patients={patients}
+          doctors={doctors}
+          machines={machines}
+          actionCategories={actionCategories}
+          staffDirectory={staffDirectory}
+          onClose={() => setDetailEntryId(null)}
         />
       )}
 
@@ -2277,7 +2313,7 @@ export function LogbookPage({
             <div className="mt-5 flex justify-end gap-2.5">
               <button
                 type="button"
-                onClick={() => setDeleteTarget(null)}
+                onClick={() => setDeleteTargetId(null)}
                 className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
               >
                 Batal

@@ -8,10 +8,9 @@ import {
   formatDateId,
   formatFullDayDateId,
   formatMonthLabel,
-  getCurrentMonthKey,
-  getTodayDateStr,
 } from '../lib/formatters';
 import { useAuth } from '../context/AuthContext';
+import { useLiveClock } from '../hooks/useLiveClock';
 import { useF4OnePagePrint } from '../hooks/useF4OnePagePrint';
 import { LogbookDetailModal } from '../components/logbook/LogbookDetailModal';
 import { VerificationBadge } from '../components/ui/StatusBadge';
@@ -110,42 +109,34 @@ export function PatientReportsPage({
     orientation: 'landscape',
     sheetRef,
   });
-  const [todayDate, setTodayDate] = useState(() => getTodayDateStr());
+  const { todayDate: liveTodayDate } = useLiveClock();
+  const [todayDate, setTodayDate] = useState(liveTodayDate);
   const [selectedPatientId, setSelectedPatientId] = useState('ALL');
-  const [monthFilter, setMonthFilter] = useState(getCurrentMonthKey());
-  const [dateFilter, setDateFilter] = useState(() => getTodayDateStr());
+  const [monthFilter, setMonthFilter] = useState(liveTodayDate.slice(0, 7));
+  const [dateFilter, setDateFilter] = useState(liveTodayDate);
   const [shiftFilter, setShiftFilter] = useState<'ALL' | ShiftType>('ALL');
   const [searchTerm, setSearchTerm] = useState('');
   const [activeTab, setActiveTab] = useState<'services' | 'soap'>('services');
 
   useEffect(() => {
-    const syncDay = () => {
-      const currentToday = getTodayDateStr();
-      if (currentToday !== todayDate) {
-        setTodayDate(currentToday);
-        setDateFilter((prev) => (prev === todayDate ? currentToday : prev));
-        setMonthFilter((prev) =>
-          prev === todayDate.slice(0, 7) ? currentToday.slice(0, 7) : prev
-        );
-      }
-    };
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') syncDay();
-    };
-    const id = window.setInterval(syncDay, 15000);
-    window.addEventListener('focus', syncDay);
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => {
-      window.clearInterval(id);
-      window.removeEventListener('focus', syncDay);
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
-  }, [todayDate]);
+    if (liveTodayDate !== todayDate) {
+      setTodayDate(liveTodayDate);
+      setDateFilter((prev) => (prev === todayDate ? liveTodayDate : prev));
+      setMonthFilter((prev) =>
+        prev === todayDate.slice(0, 7) ? liveTodayDate.slice(0, 7) : prev
+      );
+      setSoapDate((prev) => (prev === todayDate ? liveTodayDate : prev));
+    }
+  }, [liveTodayDate, todayDate]);
 
-  const [detailEntry, setDetailEntry] = useState<LogbookEntry | null>(null);
+  const [detailEntryId, setDetailEntryId] = useState<string | null>(null);
+  const detailEntry = useMemo(
+    () => (detailEntryId ? logbooks.find((item) => item.id === detailEntryId) || null : null),
+    [logbooks, detailEntryId]
+  );
   const [showSoapModal, setShowSoapModal] = useState(false);
   const [soapPatientId, setSoapPatientId] = useState('');
-  const [soapDate, setSoapDate] = useState(getTodayDateStr());
+  const [soapDate, setSoapDate] = useState(liveTodayDate);
   const [soapS, setSoapS] = useState('');
   const [soapO, setSoapO] = useState('');
   const [soapA, setSoapA] = useState('');
@@ -473,7 +464,7 @@ export function PatientReportsPage({
 
   const handleOpenSoapModal = () => {
     setSoapPatientId(selectedPatientId !== 'ALL' ? selectedPatientId : patients[0]?.id || '');
-    setSoapDate(getTodayDateStr());
+    setSoapDate(liveTodayDate);
     setSoapS('');
     setSoapO('');
     setSoapA('');
@@ -693,9 +684,8 @@ export function PatientReportsPage({
             <button
               type="button"
               onClick={() => {
-                const today = getTodayDateStr();
-                setDateFilter(today);
-                setMonthFilter(today.slice(0, 7));
+                setDateFilter(todayDate);
+                setMonthFilter(todayDate.slice(0, 7));
               }}
               className="rounded-lg border border-slate-300 px-2.5 py-2 text-[11px] font-semibold text-[#0B5A8E] hover:bg-sky-50 shrink-0"
               title="Kembali ke hari aktif"
@@ -1133,8 +1123,8 @@ export function PatientReportsPage({
                         >
                           {row.compTime}
                         </td>
-                        <td className="border border-slate-200 px-2.5 py-2 max-w-[280px]">
-                          <span className="line-clamp-2" title={row.dpjpAdviceDisplay}>
+                        <td className="border border-slate-200 px-2.5 py-2 max-w-[280px] print:max-w-none">
+                          <span className="line-clamp-2 print:line-clamp-none" title={row.dpjpAdviceDisplay}>
                             {row.dpjpAdviceDisplay}
                           </span>
                         </td>
@@ -1175,7 +1165,7 @@ export function PatientReportsPage({
                         <td className="no-print border border-slate-200 px-2 py-2 text-center whitespace-nowrap">
                           <button
                             type="button"
-                            onClick={() => setDetailEntry(s)}
+                            onClick={() => setDetailEntryId(s.id)}
                             className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-[10px] font-semibold text-slate-700 hover:bg-slate-50"
                             title="Lihat Detail Lengkap 7 Bagian"
                           >
@@ -1300,7 +1290,14 @@ export function PatientReportsPage({
 
       {/* Logbook Detail 7-Part Modal */}
       {detailEntry && (
-        <LogbookDetailModal entry={detailEntry} onClose={() => setDetailEntry(null)} />
+        <LogbookDetailModal
+          entry={detailEntry}
+          logbooks={logbooks}
+          patients={patients}
+          machines={machines}
+          staffDirectory={staffDirectory}
+          onClose={() => setDetailEntryId(null)}
+        />
       )}
 
       {/* Modal Add SOAP Note */}

@@ -1,8 +1,9 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { doc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { CheckCircle2, Clock, Download, Eye, Lock, Printer, ShieldCheck, UserCheck } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { useAuth } from '../context/AuthContext';
+import { useLiveClock } from '../hooks/useLiveClock';
 import { useF4OnePagePrint } from '../hooks/useF4OnePagePrint';
 import {
   MONTH_NAMES_ID,
@@ -10,7 +11,6 @@ import {
   exportToCsv,
   formatDateId,
   formatMonthLabel,
-  getCurrentMonthKey,
   getDaysInMonth,
 } from '../lib/formatters';
 import { LogbookDetailModal } from '../components/logbook/LogbookDetailModal';
@@ -465,14 +465,28 @@ export function MonthlyReportsPage({
     orientation: 'landscape',
     sheetRef,
   });
-  const [monthKey, setMonthKey] = useState(getCurrentMonthKey());
+  const { currentMonthKey: liveMonthKey } = useLiveClock();
+  const [trackedMonthKey, setTrackedMonthKey] = useState(liveMonthKey);
+  const [monthKey, setMonthKey] = useState(liveMonthKey);
   const [selectedNurseId, setSelectedNurseId] = useState<string>('');
-  const [detailEntry, setDetailEntry] = useState<LogbookEntry | null>(null);
+  const [detailEntryId, setDetailEntryId] = useState<string | null>(null);
   const [signingSlot, setSigningSlot] = useState<'nurse' | 'karu' | null>(null);
   const [signFeedback, setSignFeedback] = useState<{
     type: 'success' | 'error';
     message: string;
   } | null>(null);
+
+  useEffect(() => {
+    if (liveMonthKey !== trackedMonthKey) {
+      setTrackedMonthKey(liveMonthKey);
+      setMonthKey((prev) => (prev === trackedMonthKey ? liveMonthKey : prev));
+    }
+  }, [liveMonthKey, trackedMonthKey]);
+
+  const detailEntry = useMemo(
+    () => (detailEntryId ? logbooks.find((item) => item.id === detailEntryId) || null : null),
+    [logbooks, detailEntryId]
+  );
 
   const isNurseOnly = userProfile?.role === 'Perawat Pelaksana';
 
@@ -1191,25 +1205,25 @@ export function MonthlyReportsPage({
               <tr className="bg-[#1e3a5f] text-white">
                 <th
                   rowSpan={2}
-                  className="border border-slate-500 px-1.5 py-2 text-center font-bold w-9"
+                  className="monthly-col-no border border-slate-500 px-1.5 py-2 text-center font-bold w-9"
                 >
                   NO
                 </th>
                 <th
                   rowSpan={2}
-                  className="border border-slate-500 px-2 py-2 text-left font-bold min-w-[130px] max-w-[160px]"
+                  className="monthly-col-cat border border-slate-500 px-2 py-2 text-left font-bold min-w-[130px] max-w-[160px]"
                 >
                   KATEGORI FASE ASUHAN
                 </th>
                 <th
                   rowSpan={2}
-                  className="border border-slate-500 px-2 py-2 text-left font-bold min-w-[230px]"
+                  className="monthly-col-desc border border-slate-500 px-2 py-2 text-left font-bold min-w-[230px]"
                 >
                   URAIAN KEGIATAN SPESIFIK PERAWAT HEMODIALISIS
                 </th>
                 <th
                   rowSpan={2}
-                  className="border border-slate-500 px-2 py-2 text-left font-bold min-w-[155px] max-w-[190px]"
+                  className="monthly-col-spo border border-slate-500 px-2 py-2 text-left font-bold min-w-[155px] max-w-[190px]"
                 >
                   STANDAR SPO / INDIKATOR MUTU
                 </th>
@@ -1221,19 +1235,19 @@ export function MonthlyReportsPage({
                 </th>
                 <th
                   rowSpan={2}
-                  className="border border-slate-500 px-1.5 py-2 text-center font-bold w-11"
+                  className="monthly-col-total border border-slate-500 px-1.5 py-2 text-center font-bold w-11"
                 >
                   TOTAL
                 </th>
                 <th
                   rowSpan={2}
-                  className="border border-slate-500 px-1.5 py-2 text-center font-bold w-14"
+                  className="monthly-col-pct border border-slate-500 px-1.5 py-2 text-center font-bold w-14"
                 >
                   % CAPAIAN
                 </th>
                 <th
                   rowSpan={2}
-                  className="border border-slate-500 px-2 py-2 text-center font-bold min-w-[78px]"
+                  className="monthly-col-ket border border-slate-500 px-2 py-2 text-center font-bold min-w-[78px]"
                 >
                   KETERANGAN
                 </th>
@@ -1590,7 +1604,7 @@ export function MonthlyReportsPage({
                       <td className="px-4 py-2.5 text-right">
                         <button
                           type="button"
-                          onClick={() => setDetailEntry(entry)}
+                          onClick={() => setDetailEntryId(entry.id)}
                           className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
                         >
                           <Eye className="h-3.5 w-3.5" />
@@ -1616,7 +1630,7 @@ export function MonthlyReportsPage({
                 <button
                   key={`cross-vasc-${entry.id}`}
                   type="button"
-                  onClick={() => setDetailEntry(entry)}
+                  onClick={() => setDetailEntryId(entry.id)}
                   className="inline-flex items-center gap-1.5 rounded-md border border-teal-200 bg-white px-2.5 py-1 text-[11px] text-slate-700 hover:border-teal-400 hover:bg-teal-50"
                 >
                   <span className="font-mono font-semibold text-teal-800">
@@ -1633,7 +1647,12 @@ export function MonthlyReportsPage({
       </div>
 
       {detailEntry && (
-        <LogbookDetailModal entry={detailEntry} onClose={() => setDetailEntry(null)} />
+        <LogbookDetailModal
+          entry={detailEntry}
+          logbooks={logbooks}
+          staffDirectory={staffDirectory}
+          onClose={() => setDetailEntryId(null)}
+        />
       )}
     </div>
   );
@@ -1663,7 +1682,7 @@ function FragmentSection({
       <tr className="bg-[#e3edf7] text-[#153152]">
         <td
           colSpan={totalColumns}
-          className="border border-slate-400 px-2 py-1.5 font-bold tracking-wide uppercase"
+          className="monthly-section-title border border-slate-400 px-2 py-1.5 font-bold tracking-wide uppercase"
         >
           {section.title}
         </td>
