@@ -1,6 +1,13 @@
 @import "tailwindcss";
 
 @layer base {
+  :root,
+  html,
+  body {
+    color-scheme: light;
+    color-scheme: light only;
+  }
+
   body {
     font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
     background-color: #f8fafc;
