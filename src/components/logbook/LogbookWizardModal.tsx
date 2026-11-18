@@ -439,97 +439,97 @@ const COMPLICATION_INPUT_CONFIG: Record<string, ComplicationInputMeta> = {
     field: 'bp',
     label: 'TEKANAN DARAH',
     unit: '(mmHg)',
-    placeholder: 'Cth: 180/100',
+    placeholder: '',
     required: true,
     summaryPrefix: 'TD',
     summaryUnit: 'mmHg',
-    advicePlaceholder: 'Evaluasi obat antihipertensi, istirahatkan pasien',
+    advicePlaceholder: '',
   },
   Hipotensi: {
     field: 'bp',
     label: 'TEKANAN DARAH',
     unit: '(mmHg)',
-    placeholder: 'Cth: 85/55',
+    placeholder: '',
     required: true,
     summaryPrefix: 'TD',
     summaryUnit: 'mmHg',
-    advicePlaceholder: 'Posisi Trendelenburg, stop/turunkan UFR, bolus NaCl 0.9%',
+    advicePlaceholder: '',
   },
   Hipoglikemi: {
     field: 'clinicalDetail',
     label: 'KADAR GULA DARAH / GDS',
     unit: '(mg/dL)',
-    placeholder: 'Cth: 54',
+    placeholder: '',
     required: true,
     summaryPrefix: 'GDS',
     summaryUnit: 'mg/dL',
-    advicePlaceholder: 'Berikan D40% IV / asupan glukosa oral, cek GDS ulang',
+    advicePlaceholder: '',
   },
   Hipertermi: {
     field: 'clinicalDetail',
     label: 'SUHU TUBUH',
     unit: '(°C)',
-    placeholder: 'Cth: 38.6',
+    placeholder: '',
     required: true,
     summaryPrefix: 'Suhu',
     summaryUnit: '°C',
-    advicePlaceholder: 'Kompres hangat, antipiretik / kultur darah sesuai advis',
+    advicePlaceholder: '',
   },
   'Kram Otot': {
     field: 'clinicalDetail',
     label: 'LOKASI KRAM & TINDAKAN',
-    placeholder: 'Cth: Betis kanan/kiri, turunkan UFR',
+    placeholder: '',
     required: false,
-    advicePlaceholder: 'Peregangan otot, turunkan UFR, bolus NaCl 0.9%',
+    advicePlaceholder: '',
   },
   Mual: {
     field: 'clinicalDetail',
     label: 'KELUHAN & TTV TERKAIT',
-    placeholder: 'Cth: Mual sedang, TD 110/70 mmHg',
+    placeholder: '',
     required: false,
-    advicePlaceholder: 'Posisi nyaman, antiemetik sesuai advis dokter',
+    advicePlaceholder: '',
   },
   Muntah: {
     field: 'clinicalDetail',
     label: 'FREKUENSI & VOLUME MUNTAH',
-    placeholder: 'Cth: Muntah 1x ±100 mL, bersihkan jalan napas',
+    placeholder: '',
     required: false,
-    advicePlaceholder: 'Miringkan kepala, antiemetik IV, pantau hemodinamik',
+    advicePlaceholder: '',
   },
   Clotting: {
     field: 'clinicalDetail',
     label: 'LOKASI CLOTTING & TINDAKAN',
-    placeholder: 'Cth: Dialiser / venous chamber, bilas NaCl 0.9%',
+    placeholder: '',
     required: false,
-    advicePlaceholder: 'Evaluasi dosis heparin, ganti bloodline/dialiser bila perlu',
+    advicePlaceholder: '',
   },
   'Akses Bleeding': {
     field: 'clinicalDetail',
     label: 'LOKASI PERDARAHAN & TINDAKAN',
-    placeholder: 'Cth: Rembesan jarum AVF / exit-site CDL, balut tekan',
+    placeholder: '',
     required: false,
-    advicePlaceholder: 'Penekanan steril titik akses, evaluasi dosis heparin',
+    advicePlaceholder: '',
   },
   'First-Use Syndrome': {
     field: 'clinicalDetail',
     label: 'GEJALA REAKSI & TTV (TD / SpO₂)',
-    placeholder: 'Cth: Sesak napas, gatal, SpO₂ 93%',
+    placeholder: '',
     required: false,
-    advicePlaceholder: 'Hentikan pompa darah, oksigenasi, antihistamin/steroid',
+    advicePlaceholder: '',
   },
   'Penurunan Kesadaran': {
     field: 'clinicalDetail',
     label: 'SKOR GCS / KESADARAN & TTV',
-    placeholder: 'Cth: GCS E3V4M5 (Somnolen), TD 90/60',
+    placeholder: '',
     required: true,
-    advicePlaceholder: 'Amankan ABC, cek TD & GDS cito, lapor DPJP/Dokter Jaga',
+    advicePlaceholder: '',
   },
   'Komplikasi Lainnya': {
     field: 'clinicalDetail',
     label: 'DETAIL KOMPLIKASI & PARAMETER KLINIS',
-    placeholder: 'Tuliskan jenis komplikasi & hasil pemeriksaan',
+    placeholder: '',
     required: true,
-    advicePlaceholder: 'Tatalaksana sesuai keluhan klinis & instruksi dokter',
+    advicePlaceholder: '',
   },
 };
 
@@ -549,9 +549,9 @@ function getComplicationInputMeta(type: string): ComplicationInputMeta {
   return {
     field: 'clinicalDetail',
     label: 'DETAIL KLINIS KOMPLIKASI',
-    placeholder: 'Tuliskan parameter / kondisi klinis terkait',
+    placeholder: '',
     required: false,
-    advicePlaceholder: 'Tatalaksana sesuai advis DPJP / Dokter Jaga',
+    advicePlaceholder: '',
   };
 }
 
@@ -570,10 +570,10 @@ function getCurrentTimeHHmm(): string {
 }
 
 const DEFAULT_OBSERVATIONS: IntraObservationRow[] = [
-  { hourLabel: 'Jam ke-1', bp: '140/90', pulse: '82', bfr: '250', ufr: '600', arterialPressure: '-120', venousPressure: '130', tmp: '85' },
-  { hourLabel: 'Jam ke-2', bp: '135/85', pulse: '80', bfr: '250', ufr: '600', arterialPressure: '-125', venousPressure: '135', tmp: '90' },
-  { hourLabel: 'Jam ke-3', bp: '130/80', pulse: '78', bfr: '250', ufr: '600', arterialPressure: '-125', venousPressure: '135', tmp: '90' },
-  { hourLabel: 'Jam ke-4', bp: '130/80', pulse: '78', bfr: '250', ufr: '600', arterialPressure: '-120', venousPressure: '130', tmp: '85' },
+  { hourLabel: 'Jam ke-1', bp: '', pulse: '', bfr: '', ufr: '', arterialPressure: '', venousPressure: '', tmp: '' },
+  { hourLabel: 'Jam ke-2', bp: '', pulse: '', bfr: '', ufr: '', arterialPressure: '', venousPressure: '', tmp: '' },
+  { hourLabel: 'Jam ke-3', bp: '', pulse: '', bfr: '', ufr: '', arterialPressure: '', venousPressure: '', tmp: '' },
+  { hourLabel: 'Jam ke-4', bp: '', pulse: '', bfr: '', ufr: '', arterialPressure: '', venousPressure: '', tmp: '' },
 ];
 
 function buildInitialSpoChecklist(
@@ -1824,12 +1824,12 @@ export function LogbookWizardModal({
         const existingRow = base[i] || {
           hourLabel: `Jam ke-${i + 1}`,
           bp: '',
-          pulse: '80',
-          bfr: bfr || '250',
-          ufr: '600',
-          arterialPressure,
-          venousPressure,
-          tmp,
+          pulse: '',
+          bfr: bfr || '',
+          ufr: '',
+          arterialPressure: '',
+          venousPressure: '',
+          tmp: '',
         };
         const ttvItem = nextList[i];
         if (ttvItem) {
@@ -2121,7 +2121,7 @@ export function LogbookWizardModal({
     const resolvedPreBp =
       systolicBp.trim() && diastolicBp.trim()
         ? `${systolicBp.trim()}/${diastolicBp.trim()}`
-        : preBp.trim() || '120/80';
+        : preBp.trim();
     const resolvedAccessNote =
       selectedAccessOption === 'CDL'
         ? cdlNote
@@ -2158,7 +2158,7 @@ export function LogbookWizardModal({
         primingDone,
         primingVolume: clampString(primingVolume, 20),
         anticoagulantType,
-        loadingDose: clampString(loadingDose || '2000 IU', 40),
+        loadingDose: clampString(loadingDose, 40),
         maintenanceDose: clampString(maintenanceDose, 40),
         fistulaNeedleSize,
       },
@@ -2178,8 +2178,8 @@ export function LogbookWizardModal({
         informedConsent,
         dialyzerType: clampString(dialyzerType, 80),
         dialysisDurationHours: clampString(dialysisDurationHours, 20),
-        bfr: clampString(bfr || '220', 20),
-        dfr: clampString(dfr || '500', 20),
+        bfr: clampString(bfr, 20),
+        dfr: clampString(dfr, 20),
         cannulationDone,
         vascularNurseId: selectedVascularNurse?.uid || vascularNurseId || '',
         vascularNurseName: clampString(
@@ -2254,8 +2254,8 @@ export function LogbookWizardModal({
     const resolvedHandover = submissionNote.trim() || handoverSummary;
     const safeStartTime = clampString(startTime.trim() || '07:30', 10) || '07:30';
     const safeEndTime = clampString(endTime.trim() || '12:00', 10) || '12:00';
-    const safePreBp = clampString(resolvedPreBp.length >= 3 ? resolvedPreBp : '120/80', 20);
-    const safePostBp = clampString(postBp.trim().length >= 3 ? postBp.trim() : '120/80', 20);
+    const safePreBp = clampString(resolvedPreBp, 20);
+    const safePostBp = clampString(postBp.trim(), 20);
 
     const normalizedSpoChecklist: Record<string, SpoCheckStatus> = {};
     for (const pt of SPO_POINTS) {
@@ -3450,7 +3450,6 @@ export function LogbookWizardModal({
                           step="0.1"
                           value={preWeight}
                           onChange={(e) => updateWeightFields(e.target.value, postWeight, dryWeight)}
-                          placeholder="Contoh: 64.2"
                           className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-10 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                         />
                         <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
@@ -3469,7 +3468,6 @@ export function LogbookWizardModal({
                           step="0.1"
                           value={postWeight}
                           onChange={(e) => updateWeightFields(preWeight, e.target.value, dryWeight)}
-                          placeholder="Contoh: 61.6"
                           className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-10 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                         />
                         <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
@@ -3488,7 +3486,6 @@ export function LogbookWizardModal({
                           step="0.1"
                           value={dryWeight}
                           onChange={(e) => updateWeightFields(preWeight, postWeight, e.target.value)}
-                          placeholder="Contoh: 61.5"
                           className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-10 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                         />
                         <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
@@ -3643,7 +3640,7 @@ export function LogbookWizardModal({
                       inputMode="numeric"
                       value={systolicBp}
                       onChange={(e) => updateSystolicDiastolic(e.target.value, diastolicBp)}
-                      placeholder="Sistolik (140)"
+                      placeholder="Sistolik"
                       className="w-36 sm:w-44 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                     />
                     <span className="text-sm font-semibold text-slate-400">/</span>
@@ -3652,7 +3649,7 @@ export function LogbookWizardModal({
                       inputMode="numeric"
                       value={diastolicBp}
                       onChange={(e) => updateSystolicDiastolic(systolicBp, e.target.value)}
-                      placeholder="Diastolik (85)"
+                      placeholder="Diastolik"
                       className="w-36 sm:w-44 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                     />
                     <span className="text-xs font-semibold text-slate-500">mmHg</span>
@@ -3683,7 +3680,6 @@ export function LogbookWizardModal({
                           type="text"
                           value={dialysisDurationHours}
                           onChange={(e) => handleDurationHoursChange(e.target.value)}
-                          placeholder="4.5"
                           className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-11 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                         />
                         <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
@@ -3705,7 +3701,6 @@ export function LogbookWizardModal({
                             setUfGoal(val);
                             syncPoint35Checklist(dialysisDurationHours, val, bfr, dfr, loadingDose);
                           }}
-                          placeholder="2500"
                           className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-10 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                         />
                         <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
@@ -3727,7 +3722,6 @@ export function LogbookWizardModal({
                             setBfr(val);
                             syncPoint35Checklist(dialysisDurationHours, ufGoal, val, dfr, loadingDose);
                           }}
-                          placeholder="220"
                           className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-16 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                         />
                         <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
@@ -3749,7 +3743,6 @@ export function LogbookWizardModal({
                             setDfr(val);
                             syncPoint35Checklist(dialysisDurationHours, ufGoal, bfr, val, loadingDose);
                           }}
-                          placeholder="500"
                           className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-16 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                         />
                         <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
@@ -3777,7 +3770,6 @@ export function LogbookWizardModal({
                           }
                           syncPoint35Checklist(dialysisDurationHours, ufGoal, bfr, dfr, val);
                         }}
-                        placeholder="2000 IU / Free"
                         className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                       />
                     </div>
@@ -3853,7 +3845,6 @@ export function LogbookWizardModal({
                             handleSelectVascularOption('CIMINO');
                           }
                         }}
-                        placeholder="Contoh: Sinistra, thrill (+) kuat"
                         className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                       />
                     </div>
@@ -3893,7 +3884,6 @@ export function LogbookWizardModal({
                             handleSelectVascularOption('CDL');
                           }
                         }}
-                        placeholder="Contoh: Jugularis Dextra, bersih"
                         className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                       />
                     </div>
@@ -3933,7 +3923,6 @@ export function LogbookWizardModal({
                             handleSelectVascularOption('FEMORAL');
                           }
                         }}
-                        placeholder="Contoh: Femoralis Dextra, lancar"
                         className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                       />
                     </div>
@@ -4033,7 +4022,6 @@ export function LogbookWizardModal({
                               onChange={(e) =>
                                 handleUpdateIntraObservation(obs.id, 'time', e.target.value)
                               }
-                              placeholder="Contoh: 10:00"
                               className="w-40 sm:w-48 rounded-lg border border-slate-300 bg-white pl-3 pr-9 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                             />
                             <Clock className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
@@ -4054,7 +4042,7 @@ export function LogbookWizardModal({
                               onChange={(e) =>
                                 handleUpdateIntraObservation(obs.id, 'systolic', e.target.value)
                               }
-                              placeholder="Sistolik (130)"
+                              placeholder="Sistolik"
                               className="w-32 sm:w-40 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                             />
                             <span className="text-sm font-semibold text-slate-400">/</span>
@@ -4065,7 +4053,7 @@ export function LogbookWizardModal({
                               onChange={(e) =>
                                 handleUpdateIntraObservation(obs.id, 'diastolic', e.target.value)
                               }
-                              placeholder="Diastolik (80)"
+                              placeholder="Diastolik"
                               className="w-32 sm:w-40 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                             />
                             <span className="text-xs font-semibold text-slate-500">mmHg</span>
@@ -4085,7 +4073,6 @@ export function LogbookWizardModal({
                             onChange={(e) =>
                               handleUpdateIntraObservation(obs.id, 'pulse', e.target.value)
                             }
-                            placeholder="82"
                             className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                           />
                         </div>
@@ -4100,7 +4087,6 @@ export function LogbookWizardModal({
                             onChange={(e) =>
                               handleUpdateIntraObservation(obs.id, 'resp', e.target.value)
                             }
-                            placeholder="20"
                             className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                           />
                         </div>
@@ -4115,7 +4101,6 @@ export function LogbookWizardModal({
                             onChange={(e) =>
                               handleUpdateIntraObservation(obs.id, 'temp', e.target.value)
                             }
-                            placeholder="36.6"
                             className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                           />
                         </div>
@@ -4130,7 +4115,6 @@ export function LogbookWizardModal({
                             onChange={(e) =>
                               handleUpdateIntraObservation(obs.id, 'spo2', e.target.value)
                             }
-                            placeholder="99"
                             className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                           />
                         </div>
@@ -4268,7 +4252,6 @@ export function LogbookWizardModal({
                                 onChange={(e) =>
                                   handleUpdateComplicationIncident(inc.id, 'time', e.target.value)
                                 }
-                                placeholder="22:39"
                                 className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-8 py-2 font-mono text-xs font-semibold text-slate-800 focus:border-[#0e4e78] focus:outline-none"
                               />
                               <Clock className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
@@ -4362,7 +4345,6 @@ export function LogbookWizardModal({
                         type="text"
                         value={postBp}
                         onChange={(e) => updatePostHdEvaluation(e.target.value, ufAchieved, ktv)}
-                        placeholder="Contoh: 120/80"
                         className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                       />
                     </div>
@@ -4380,7 +4362,6 @@ export function LogbookWizardModal({
                         type="number"
                         value={ufAchieved}
                         onChange={(e) => updatePostHdEvaluation(postBp, e.target.value, ktv)}
-                        placeholder="Contoh: 2500"
                         className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                       />
                     </div>
@@ -4393,7 +4374,6 @@ export function LogbookWizardModal({
                         type="text"
                         value={ktv}
                         onChange={(e) => updatePostHdEvaluation(postBp, ufAchieved, e.target.value)}
-                        placeholder="Contoh: 1.8 atau 1.2"
                         className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                       />
                     </div>

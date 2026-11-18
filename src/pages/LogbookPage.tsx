@@ -2126,7 +2126,7 @@ export function LogbookPage({
                                   BB: {item.preWeight} &rarr; {item.postWeight} kg
                                 </div>
                                 <div>
-                                  TD: {item.preBp} &rarr; {item.postBp} · UF: {item.ufAchieved} ml
+                                  TD: {item.preBp || '-'} &rarr; {item.postBp || '-'} · UF: {item.ufAchieved} ml
                                 </div>
                               </td>
                               <td className="px-4 py-3">

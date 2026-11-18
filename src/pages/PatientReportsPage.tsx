@@ -1104,10 +1104,10 @@ export function PatientReportsPage({
 
                         {/* TANDA VITAL */}
                         <td className="border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
-                          {s.preBp}
+                          {s.preBp || '-'}
                         </td>
                         <td className="border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
-                          {s.postBp}
+                          {s.postBp || '-'}
                         </td>
 
                         {/* SPESIFIKASI DIALISER & HEPARINISASI */}
