@@ -57,21 +57,6 @@ function formatIntId(val: number | null | undefined): string {
   return Math.round(val).toLocaleString('id-ID');
 }
 
-function mapMachineStatusId(status?: Machine['status']): string {
-  switch (status) {
-    case 'Ready':
-      return 'Siap Pakai';
-    case 'In Use':
-      return 'Digunakan';
-    case 'Maintenance':
-      return 'Maintenance';
-    case 'Sterilisasi':
-      return 'Sterilisasi';
-    default:
-      return 'Siap Pakai';
-  }
-}
-
 function getShiftRangeLabel(shift: 'ALL' | ShiftType): string {
   if (shift === 'Pagi') return 'Pagi (07.00 - 14.00 WIB)';
   if (shift === 'Siang') return 'Siang (12.00 - 19.00 WIB)';
@@ -84,16 +69,6 @@ const SHIFT_SORT_ORDER: Record<ShiftType, number> = {
   Siang: 2,
   Malam: 3,
 };
-
-function subtractMinutes(timeStr: string, mins: number): string {
-  const m = /^(\d{1,2}):(\d{2})$/.exec(timeStr?.trim() || '');
-  if (!m) return '06:30';
-  let total = Number(m[1]) * 60 + Number(m[2]) - mins;
-  if (total < 0) total += 24 * 60;
-  const hh = String(Math.floor(total / 60) % 24).padStart(2, '0');
-  const mm = String(total % 60).padStart(2, '0');
-  return `${hh}:${mm}`;
-}
 
 export function PatientReportsPage({
   patients,
@@ -266,7 +241,6 @@ export function PatientReportsPage({
     return filteredServices.map((s, idx) => {
       const pat = patientMap.get(s.patientId);
       const mach = machineMap.get(s.machineId);
-      const sec1 = s.wizardDetails?.section1;
       const sec2 = s.wizardDetails?.section2;
       const sec3 = s.wizardDetails?.section3;
       const sec4 = s.wizardDetails?.section4;
@@ -309,45 +283,54 @@ export function PatientReportsPage({
         !/^tidak ada\b/i.test(s.complications.trim()) &&
         s.complications.trim() !== '-';
 
-      const incidentTimes = (sec4?.complicationIncidents || [])
-        .map((inc) => inc.time?.trim())
-        .filter(Boolean);
-      const compTime = hasComplication
-        ? incidentTimes.length > 0
-          ? incidentTimes.join(', ')
-          : s.endTime || '-'
-        : '-';
-      const incidentAdvices = (sec4?.complicationIncidents || [])
-        .map((inc) => inc.doctorAdvice?.trim())
-        .filter(Boolean);
-      const dpjpAdviceDisplay = !hasComplication
-        ? '-'
-        : incidentAdvices.length > 0
-        ? incidentAdvices.join('; ')
-        : s.nursingNotes || '-';
+      const structuredIncidents = sec4?.complicationIncidents || [];
+      let complicationLines: string[] = [];
+      let compTimeLines: string[] = [];
+      let dpjpAdviceLines: string[] = [];
 
-      const machineStatus = mapMachineStatusId(mach?.status);
-      const disinfectionMethod = sec6?.machineDisinfectionType
-        ? sec6.machineDisinfectionType === 'Chemical Disinfection'
-          ? 'Chemical Clean'
-          : 'Heat Clean'
-        : 'Heat Clean';
+      if (structuredIncidents.length > 0) {
+        complicationLines = structuredIncidents.map((inc) => {
+          const bpVal = inc.bp?.trim();
+          const detailVal = inc.clinicalDetail?.trim();
+          if (bpVal) return `${inc.type} (TD ${bpVal})`;
+          if (detailVal) return `${inc.type} (${detailVal})`;
+          return inc.type;
+        });
+        compTimeLines = structuredIncidents.map((inc) => inc.time?.trim() || s.endTime || '-');
+        const hasAnyAdvice = structuredIncidents.some((inc) => Boolean(inc.doctorAdvice?.trim()));
+        dpjpAdviceLines = hasAnyAdvice
+          ? structuredIncidents.map((inc) => inc.doctorAdvice?.trim() || '-')
+          : [s.nursingNotes?.trim() || '-'];
+      } else if (hasComplication) {
+        const raw = s.complications.trim();
+        const semiSplit = raw
+          .split(/\s*[;\n]+\s*/)
+          .map((item) => item.trim())
+          .filter((item) => item && !/^tidak ada\b/i.test(item) && item !== '-');
+        const splitItems =
+          semiSplit.length > 1
+            ? semiSplit
+            : raw
+                .split(/,\s*(?![^(]*\))/)
+                .map((item) => item.trim())
+                .filter((item) => item && !/^tidak ada\b/i.test(item) && item !== '-');
 
-      const techNote =
-        sec2 && sec2.leakTestPassed === false
-          ? 'Perlu Cek'
-          : /hep\s*b/i.test(roomCategory)
-          ? 'Khusus Hep B'
-          : /hep\s*c/i.test(roomCategory)
-          ? 'Khusus Hep C'
-          : mach?.notes || 'Normal';
+        complicationLines = splitItems.length > 0 ? splitItems : [raw];
+        compTimeLines = [s.endTime || '-'];
+        const rawAdvice = (sec4?.effectiveCommunicationNotes?.trim() || s.nursingNotes?.trim() || '-');
+        const adviceSplit = rawAdvice
+          .split(/\s*[;\n]+\s*/)
+          .map((item) => item.trim())
+          .filter(Boolean);
+        dpjpAdviceLines = adviceSplit.length > 1 ? adviceSplit : [rawAdvice];
+      } else {
+        complicationLines = ['Tidak ada'];
+        compTimeLines = ['-'];
+        dpjpAdviceLines = ['-'];
+      }
 
-      const roCheckTime = s.startTime ? subtractMinutes(s.startTime, 60) : '06:30';
-      const roCondition = sec1?.roStatus
-        ? sec1.roStatus === 'Baik'
-          ? 'Memenuhi Syarat'
-          : sec1.roStatus
-        : 'Memenuhi Syarat';
+      const compTime = compTimeLines.join(', ');
+      const dpjpAdviceDisplay = dpjpAdviceLines.join('; ');
 
       return {
         index: idx + 1,
@@ -363,13 +346,11 @@ export function PatientReportsPage({
         heparinDisplay,
         ktvDisplay: sec6?.ktv?.trim() || '-',
         hasComplication,
+        complicationLines,
+        compTimeLines,
+        dpjpAdviceLines,
         compTime,
         dpjpAdviceDisplay,
-        machineStatus,
-        disinfectionMethod,
-        techNote,
-        roCheckTime,
-        roCondition,
       };
     });
   }, [filteredServices, patientMap, machineMap]);
@@ -514,14 +495,11 @@ export function PatientReportsPage({
         'NO',
         'TANGGAL',
         'SHIFT',
-        'NO. RM',
-        'NAMA LENGKAP PASIEN',
+        'NAMA LENGKAP PASIEN / NO. RM',
         'STATUS RAWAT',
         'RUANG / KATEGORI',
         'NO. BED / MESIN',
         'AKSES VASKULAR',
-        'WAKTU MULAI',
-        'WAKTU SELESAI',
         'DURASI (JAM)',
         'BB KERING (KG)',
         'BB PRE HD (KG)',
@@ -538,11 +516,6 @@ export function PatientReportsPage({
         'KOMPLIKASI INTRA-HD',
         'JAM KOMPLIKASI',
         'TINDAKAN & ADVIS MEDIS DPJP',
-        'STATUS MESIN',
-        'METODE DISINFEKSI',
-        'KET. TEKNIS',
-        'JAM CEK RO',
-        'KONDISI AIR RO',
         'PERAWAT PELAKSANA',
         'DOKTER DPJP',
         'STATUS VERIFIKASI',
@@ -551,14 +524,11 @@ export function PatientReportsPage({
         r.index,
         r.entry.date,
         r.entry.shift,
-        r.entry.patientRm,
-        r.entry.patientName,
+        `${r.entry.patientName} (${r.entry.patientRm})`,
         r.statusRawat,
         r.roomCategory,
         r.bedMachine,
         r.entry.vascularAccess,
-        r.entry.startTime,
-        r.entry.endTime,
         r.durationHours !== null ? r.durationHours : '-',
         r.dryWeight !== null ? r.dryWeight : '-',
         r.entry.preWeight,
@@ -572,14 +542,9 @@ export function PatientReportsPage({
         r.entry.postBp,
         r.dialyzer,
         r.heparinDisplay,
-        r.entry.complications || 'Tidak ada',
-        r.compTime,
-        r.dpjpAdviceDisplay,
-        r.machineStatus,
-        r.disinfectionMethod,
-        r.techNote,
-        r.roCheckTime,
-        r.roCondition,
+        r.complicationLines.join('\n'),
+        r.compTimeLines.join('\n'),
+        r.dpjpAdviceLines.join('\n'),
         r.entry.nurseName,
         r.entry.doctorName,
         r.entry.verificationStatus,
@@ -842,13 +807,13 @@ export function PatientReportsPage({
                       NO
                     </th>
                     <th
-                      colSpan={4}
+                      colSpan={3}
                       className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-nowrap"
                     >
                       DATA IDENTITAS &amp; STATUS PASIEN
                     </th>
                     <th
-                      colSpan={5}
+                      colSpan={3}
                       className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-nowrap"
                     >
                       PENGATURAN TEKNIS &amp; PRE-HD
@@ -884,18 +849,6 @@ export function PatientReportsPage({
                       KOMPLIKASI, TATALAKSANA &amp; ADVIS DPJP
                     </th>
                     <th
-                      colSpan={3}
-                      className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-nowrap"
-                    >
-                      STATUS OPERASIONAL MESIN &amp; DISINFEKSI
-                    </th>
-                    <th
-                      colSpan={2}
-                      className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-nowrap"
-                    >
-                      STATUS MUTU WATER TREATMENT RO
-                    </th>
-                    <th
                       rowSpan={2}
                       className="border border-[#2d6687] px-2.5 py-2 text-center font-bold whitespace-nowrap"
                     >
@@ -917,11 +870,8 @@ export function PatientReportsPage({
 
                   {/* Row 2: Specific Sub-Columns */}
                   <tr className="bg-[#236084] text-white text-[9.5px] uppercase tracking-wide">
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
-                      NO. RM
-                    </th>
                     <th className="border border-[#34759b] px-2.5 py-1.5 text-left font-semibold whitespace-nowrap">
-                      NAMA LENGKAP PASIEN
+                      NAMA PASIEN / NO. RM
                     </th>
                     <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
                       STATUS RAWAT
@@ -935,12 +885,6 @@ export function PatientReportsPage({
                     </th>
                     <th className="border border-[#34759b] px-2.5 py-1.5 text-left font-semibold whitespace-nowrap">
                       AKSES VASKULAR
-                    </th>
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
-                      WAKTU MULAI
-                    </th>
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
-                      WAKTU SELESAI
                     </th>
                     <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
                       DURASI (JAM)
@@ -995,23 +939,6 @@ export function PatientReportsPage({
                     <th className="border border-[#34759b] px-2.5 py-1.5 text-left font-semibold whitespace-nowrap min-w-[220px]">
                       TINDAKAN &amp; ADVIS MEDIS DPJP
                     </th>
-
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
-                      STATUS MESIN
-                    </th>
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
-                      METODE DISINFEKSI
-                    </th>
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
-                      KET. TEKNIS
-                    </th>
-
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
-                      JAM CEK RO
-                    </th>
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-nowrap">
-                      KONDISI AIR RO
-                    </th>
                   </tr>
                 </thead>
 
@@ -1030,11 +957,11 @@ export function PatientReportsPage({
                         </td>
 
                         {/* DATA IDENTITAS & STATUS PASIEN */}
-                        <td className="border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
-                          {s.patientRm}
-                        </td>
-                        <td className="border border-slate-200 px-2.5 py-2 font-medium text-slate-900 whitespace-nowrap">
-                          {s.patientName}
+                        <td className="border border-slate-200 px-2.5 py-2 whitespace-nowrap">
+                          <div className="font-medium text-slate-900">{s.patientName}</div>
+                          <div className="f4-patient-sub font-mono text-[10px] text-slate-500 tabular-nums">
+                            {s.patientRm}
+                          </div>
                         </td>
                         <td className="border border-slate-200 px-2 py-2 text-center whitespace-nowrap">
                           {row.statusRawat}
@@ -1053,12 +980,6 @@ export function PatientReportsPage({
                         </td>
                         <td className="border border-slate-200 px-2.5 py-2 whitespace-nowrap">
                           {s.vascularAccess}
-                        </td>
-                        <td className="border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
-                          {s.startTime}
-                        </td>
-                        <td className="border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
-                          {s.endTime}
                         </td>
                         <td className="border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                           {formatNumId(row.durationHours, 1)}
@@ -1110,48 +1031,74 @@ export function PatientReportsPage({
 
                         {/* KOMPLIKASI, TATALAKSANA & ADVIS DPJP */}
                         <td
-                          className={`border border-slate-200 px-2.5 py-2 whitespace-nowrap ${
+                          className={`border border-slate-200 px-2.5 py-2 align-top ${
                             row.hasComplication ? 'font-bold text-rose-700 bg-rose-50/70' : ''
                           }`}
                         >
-                          {s.complications || 'Tidak ada'}
+                          {row.complicationLines.length > 1 ? (
+                            <div className="space-y-1">
+                              {row.complicationLines.map((line, lineIdx) => (
+                                <div
+                                  key={`${s.id}-comp-${lineIdx}`}
+                                  className={
+                                    lineIdx > 0 ? 'border-t border-rose-200/80 pt-1' : undefined
+                                  }
+                                >
+                                  {lineIdx + 1}. {line}
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            row.complicationLines[0]
+                          )}
                         </td>
                         <td
-                          className={`border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap ${
+                          className={`border border-slate-200 px-2 py-2 text-center font-mono tabular-nums align-top whitespace-nowrap ${
                             row.hasComplication ? 'font-bold text-rose-700 bg-rose-50/70' : ''
                           }`}
                         >
-                          {row.compTime}
+                          {row.compTimeLines.length > 1 ? (
+                            <div className="space-y-1">
+                              {row.compTimeLines.map((tLine, lineIdx) => (
+                                <div
+                                  key={`${s.id}-ctime-${lineIdx}`}
+                                  className={
+                                    lineIdx > 0 ? 'border-t border-rose-200/80 pt-1' : undefined
+                                  }
+                                >
+                                  {tLine}
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            row.compTimeLines[0]
+                          )}
                         </td>
-                        <td className="border border-slate-200 px-2.5 py-2 max-w-[280px] print:max-w-none">
-                          <span className="line-clamp-2 print:line-clamp-none" title={row.dpjpAdviceDisplay}>
-                            {row.dpjpAdviceDisplay}
-                          </span>
-                        </td>
-
-                        {/* STATUS OPERASIONAL MESIN & DISINFEKSI */}
-                        <td className="border border-slate-200 px-2 py-2 text-center whitespace-nowrap">
-                          {row.machineStatus}
-                        </td>
-                        <td className="border border-slate-200 px-2 py-2 text-center whitespace-nowrap">
-                          {row.disinfectionMethod}
-                        </td>
-                        <td className="border border-slate-200 px-2 py-2 text-center whitespace-nowrap">
-                          {row.techNote}
-                        </td>
-
-                        {/* STATUS MUTU WATER TREATMENT RO */}
-                        <td className="border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
-                          {row.roCheckTime}
-                        </td>
-                        <td className="border border-slate-200 px-2 py-2 text-center whitespace-nowrap">
-                          {row.roCondition}
+                        <td className="border border-slate-200 px-2.5 py-2 max-w-[280px] align-top print:max-w-none">
+                          {row.dpjpAdviceLines.length > 1 ? (
+                            <div className="space-y-1">
+                              {row.dpjpAdviceLines.map((adv, lineIdx) => (
+                                <div
+                                  key={`${s.id}-adv-${lineIdx}`}
+                                  className={
+                                    lineIdx > 0 ? 'border-t border-slate-200/80 pt-1' : undefined
+                                  }
+                                >
+                                  {lineIdx + 1}. {adv}
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="line-clamp-2 print:line-clamp-none" title={row.dpjpAdviceDisplay}>
+                              {row.dpjpAdviceLines[0]}
+                            </span>
+                          )}
                         </td>
 
                         {/* PERAWAT PELAKSANA */}
                         <td className="border border-slate-200 px-2.5 py-2 whitespace-nowrap">
                           <div className="font-medium text-slate-900">{s.nurseName}</div>
-                          <div className="text-[10px] font-mono text-slate-500">
+                          <div className="f4-patient-sub text-[10px] font-mono text-slate-500">
                             Shift {s.shift}
                           </div>
                         </td>
@@ -1182,7 +1129,7 @@ export function PatientReportsPage({
                   <tfoot>
                     <tr className="bg-slate-100 font-bold text-slate-900">
                       <td
-                        colSpan={9}
+                        colSpan={6}
                         className="border border-slate-300 px-3 py-2 text-center uppercase tracking-wide"
                       >
                         TOTAL &amp; RATA-RATA
@@ -1214,11 +1161,6 @@ export function PatientReportsPage({
                       <td className="border border-slate-300 px-2 py-2 text-center font-mono tabular-nums">
                         {formatIntId(summaryStats.totalAchievedUf)}
                       </td>
-                      <td className="border border-slate-300 px-2 py-2 text-center">-</td>
-                      <td className="border border-slate-300 px-2 py-2 text-center">-</td>
-                      <td className="border border-slate-300 px-2 py-2 text-center">-</td>
-                      <td className="border border-slate-300 px-2 py-2 text-center">-</td>
-                      <td className="border border-slate-300 px-2 py-2 text-center">-</td>
                       <td className="border border-slate-300 px-2 py-2 text-center">-</td>
                       <td className="border border-slate-300 px-2 py-2 text-center">-</td>
                       <td className="border border-slate-300 px-2 py-2 text-center">-</td>
