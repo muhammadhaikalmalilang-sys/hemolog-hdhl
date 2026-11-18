@@ -94,7 +94,9 @@ export function VerificationPage({
       if (!isLogbookAssignedToVerifier(item, userProfile)) return false;
       if (dateFilter && item.date !== dateFilter) return false;
       if (statusFilter === 'ALL') {
-        if (item.verificationStatus === 'Approved') return false;
+        if (item.verificationStatus === 'Approved' || item.verificationStatus === 'Draft') {
+          return false;
+        }
       } else if (item.verificationStatus !== statusFilter) {
         return false;
       }

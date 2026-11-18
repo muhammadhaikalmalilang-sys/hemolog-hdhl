@@ -161,7 +161,9 @@ export function LogbookPage({
   const [draftPatientRm, setDraftPatientRm] = useState('');
   const [draftMachineId, setDraftMachineId] = useState('');
   const [pickerFeedback, setPickerFeedback] = useState<string | null>(null);
+  const [listFeedback, setListFeedback] = useState<string | null>(null);
   const [claimingSlot, setClaimingSlot] = useState(false);
+  const [changingMachinePatientId, setChangingMachinePatientId] = useState<string | null>(null);
   const [queuedSlots, setQueuedSlots] = useState<QueuedPatientSlot[]>([]);
 
   // Automatically reset Logbook workspace to an empty slate whenever the calendar day changes
@@ -185,6 +187,7 @@ export function LogbookPage({
         setDraftPatientRm('');
         setDraftMachineId('');
         setPickerFeedback(null);
+        setListFeedback(null);
       }
     };
 
@@ -242,6 +245,7 @@ export function LogbookPage({
     setDraftPatientName('');
     setDraftPatientRm('');
     setPickerFeedback(null);
+    setListFeedback(null);
   }, [inputDate, activeShift]);
 
   const matrixStatusText = useMemo(() => {
@@ -797,6 +801,210 @@ export function LogbookPage({
       } catch (err) {
         handleFirestoreError(err, OperationType.DELETE, `machine_locks/${matchingLock.id}`);
       }
+    }
+  };
+
+  const handleChangeSlotMachine = async (
+    item: {
+      patient: Patient;
+      machineId: string;
+      machineNumber: string;
+      ownEntry: LogbookEntry | null;
+    },
+    newMachineId: string
+  ) => {
+    if (!userProfile || !newMachineId || newMachineId === item.machineId) return;
+    if (changingMachinePatientId) return;
+
+    const own = item.ownEntry;
+    if (own && own.verificationStatus !== 'Draft' && own.verificationStatus !== 'Revision') {
+      setListFeedback(
+        `Logbook ${item.patient.fullName} sudah berstatus ${own.verificationStatus} sehingga Bed/Mesin tidak dapat diubah lagi.`
+      );
+      return;
+    }
+
+    const newMach = machines.find((m) => m.id === newMachineId);
+    if (!newMach) {
+      setListFeedback('Mesin / Bed HD tujuan tidak ditemukan di master data.');
+      return;
+    }
+
+    const targetDate = own?.date || inputDate;
+    const targetShift = own?.shift || activeShift;
+    const existingLock = lockedMachinesForSlot.get(newMach.id);
+    if (existingLock) {
+      const sameOwnSlot =
+        (own && existingLock.logbookId === own.id) ||
+        (!own &&
+          existingLock.nurseId === userProfile.uid &&
+          !existingLock.logbookId &&
+          existingLock.patientId === item.patient.id);
+      if (!sameOwnSlot) {
+        const lockerLabel =
+          existingLock.nurseId !== userProfile.uid
+            ? `oleh ${existingLock.nurseName}`
+            : `untuk pasien ${existingLock.patientName}`;
+        setListFeedback(
+          `Mesin / Bed HD ${newMach.machineNumber} pada Shift ${targetShift} sudah dipilih ${lockerLabel}. Silakan pilih Bed/Mesin lain.`
+        );
+        return;
+      }
+    }
+
+    setListFeedback(null);
+    setChangingMachinePatientId(item.patient.id);
+    const oldLockId = `${targetDate}_${targetShift}_${item.machineId}`;
+    const newLockId = `${targetDate}_${targetShift}_${newMach.id}`;
+    const existingLogbookIds = new Set(logbooks.map((lb) => lb.id));
+    const safeMachineNumber = clampString(newMach.machineNumber, 40) || 'HD';
+    const safePatientName = clampString(item.patient.fullName, 120) || 'Pasien HD';
+    const safeNurseName = clampString(userProfile.fullName, 120) || 'Perawat';
+    const isAdminRole = userProfile.role === 'Administrator';
+    const isFirestoreTimestamp = (val: unknown): boolean =>
+      Boolean(val && typeof (val as { toMillis?: unknown }).toMillis === 'function');
+
+    let txOp: OperationType = OperationType.WRITE;
+    let txPath = `machine_locks/${newLockId}`;
+
+    try {
+      await runTransaction(db, async (tx) => {
+        const newLockRef = doc(db, 'machine_locks', newLockId);
+        const oldLockRef = oldLockId !== newLockId ? doc(db, 'machine_locks', oldLockId) : null;
+        const logRef = own ? doc(db, 'logbook', own.id) : null;
+
+        let logSnap: Awaited<ReturnType<typeof tx.get>> | null = null;
+        if (logRef) {
+          txOp = OperationType.GET;
+          txPath = logRef.path;
+          logSnap = await tx.get(logRef);
+        }
+
+        txOp = OperationType.GET;
+        txPath = newLockRef.path;
+        const newLockSnap = await tx.get(newLockRef);
+
+        let oldLockSnap: Awaited<ReturnType<typeof tx.get>> | null = null;
+        if (oldLockRef) {
+          txOp = OperationType.GET;
+          txPath = oldLockRef.path;
+          oldLockSnap = await tx.get(oldLockRef);
+        }
+
+        if (own && logRef) {
+          if (!logSnap || !logSnap.exists()) {
+            throw new Error('LOGBOOK_MISSING');
+          }
+          const logData = logSnap.data() as Partial<LogbookEntry>;
+          if (!isAdminRole && logData.nurseId !== userProfile.uid) {
+            throw new Error('LOGBOOK_NOT_OWNER');
+          }
+          if (
+            !isAdminRole &&
+            logData.verificationStatus !== 'Draft' &&
+            logData.verificationStatus !== 'Revision'
+          ) {
+            throw new Error(`LOGBOOK_LOCKED:${logData.verificationStatus || 'Pending'}`);
+          }
+        }
+
+        if (newLockSnap.exists()) {
+          const ld = newLockSnap.data() as Partial<MachineLock>;
+          const ownedByCurrent = ld.nurseId === userProfile.uid;
+          const matchesThisSlot =
+            (own && ld.logbookId === own.id) ||
+            (!own && !ld.logbookId && ld.patientId === item.patient.id);
+          const knownOrphan = Boolean(
+            (isAdminRole || ownedByCurrent) &&
+              ld.logbookId &&
+              !existingLogbookIds.has(ld.logbookId)
+          );
+          if (!(ownedByCurrent && matchesThisSlot) && !knownOrphan) {
+            throw new Error(`MACHINE_LOCKED:${ld.nurseName || 'staf lain'}`);
+          }
+        }
+
+        if (own && logRef) {
+          txOp = OperationType.UPDATE;
+          txPath = logRef.path;
+          tx.update(logRef, {
+            machineId: newMach.id,
+            machineNumber: safeMachineNumber,
+            updatedAt: serverTimestamp(),
+          });
+        }
+
+        if (oldLockSnap && oldLockSnap.exists() && oldLockRef) {
+          const oldML = oldLockSnap.data() as Partial<MachineLock>;
+          const canDeleteOld =
+            isAdminRole ||
+            (oldML.nurseId === userProfile.uid && (own ? true : !oldML.logbookId));
+          if (canDeleteOld) {
+            txOp = OperationType.DELETE;
+            txPath = oldLockRef.path;
+            tx.delete(oldLockRef);
+          }
+        }
+
+        const existingML = newLockSnap.exists()
+          ? (newLockSnap.data() as Partial<MachineLock>)
+          : null;
+        const keepCreatedAt = Boolean(
+          existingML &&
+            existingML.nurseId === userProfile.uid &&
+            isFirestoreTimestamp(existingML.createdAt)
+        );
+
+        txOp = existingML ? OperationType.UPDATE : OperationType.CREATE;
+        txPath = newLockRef.path;
+        tx.set(newLockRef, {
+          id: newLockId,
+          date: targetDate,
+          monthKey: targetDate.slice(0, 7),
+          shift: targetShift,
+          machineId: newMach.id,
+          machineNumber: safeMachineNumber,
+          patientId: item.patient.id,
+          patientName: safePatientName,
+          nurseId: userProfile.uid,
+          nurseName: safeNurseName,
+          logbookId: own ? own.id : '',
+          createdAt: keepCreatedAt ? existingML!.createdAt : serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      });
+
+      if (!own) {
+        setQueuedSlots((prev) =>
+          prev.map((slot) =>
+            slot.patientId === item.patient.id ? { ...slot, machineId: newMach.id } : slot
+          )
+        );
+      }
+    } catch (err) {
+      const errCode = (err as { code?: string })?.code || '';
+      const msg = err instanceof Error ? err.message : '';
+      if (msg.startsWith('MACHINE_LOCKED:') || errCode === 'permission-denied') {
+        const lockerName = msg.startsWith('MACHINE_LOCKED:')
+          ? msg.replace('MACHINE_LOCKED:', '').trim() || 'staf lain'
+          : 'staf lain';
+        setListFeedback(
+          `Mesin / Bed HD ${newMach.machineNumber} pada Shift ${targetShift} baru saja dipilih oleh ${lockerName}. Silakan pilih Bed/Mesin lain.`
+        );
+      } else if (msg === 'LOGBOOK_MISSING') {
+        setListFeedback('Entri logbook tidak ditemukan atau sudah dihapus.');
+      } else if (msg === 'LOGBOOK_NOT_OWNER') {
+        setListFeedback('Anda tidak memiliki izin mengubah Bed/Mesin pada logbook milik perawat lain.');
+      } else if (msg.startsWith('LOGBOOK_LOCKED:')) {
+        const st = msg.replace('LOGBOOK_LOCKED:', '').trim();
+        setListFeedback(
+          `Logbook sudah berstatus ${st} sehingga Bed/Mesin tidak dapat diubah.`
+        );
+      } else {
+        handleFirestoreError(err, txOp, txPath);
+      }
+    } finally {
+      setChangingMachinePatientId(null);
     }
   };
 
@@ -1558,6 +1766,23 @@ export function LogbookPage({
                   </span>
                 </div>
 
+                {listFeedback && (
+                  <div className="flex items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900">
+                    <span className="flex items-center gap-2">
+                      <AlertCircle className="h-4 w-4 text-amber-600 shrink-0" />
+                      {listFeedback}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setListFeedback(null)}
+                      className="rounded p-1 text-amber-700 hover:bg-amber-100"
+                      aria-label="Tutup pesan"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
+
                 {shiftPatientList.length === 0 ? (
                   <div className="py-10 px-4 text-center">
                     <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-sky-50 border border-sky-100 text-[#0B5A8E]">
@@ -1583,6 +1808,10 @@ export function LogbookPage({
                         own &&
                         (own.verificationStatus === 'Pending' ||
                           own.verificationStatus === 'Approved');
+                      const isChangingMachine = changingMachinePatientId === pat.id;
+                      const hasCurrentInOptions = availableMachineOptions.some(
+                        (m) => m.id === item.machineId
+                      );
 
                       return (
                         <div
@@ -1595,8 +1824,7 @@ export function LogbookPage({
                               : 'border-slate-200 bg-white hover:border-[#0B5A8E]/50'
                           }`}
                         >
-                          <button
-                            type="button"
+                          <div
                             onClick={() => {
                               if (isPendingOrApproved && own) {
                                 setDetailEntry(own);
@@ -1604,7 +1832,7 @@ export function LogbookPage({
                                 openWizardForPatient(pat, item.machineId, own || null);
                               }
                             }}
-                            className="flex flex-1 items-start gap-3 text-left min-w-0"
+                            className="flex flex-1 items-start gap-3 text-left min-w-0 cursor-pointer"
                           >
                             <span
                               className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg font-mono text-xs font-bold tabular-nums ${
@@ -1623,9 +1851,20 @@ export function LogbookPage({
                             </span>
                             <div className="min-w-0 space-y-1">
                               <div className="flex flex-wrap items-center gap-2">
-                                <span className="text-sm font-bold text-[#0B5A8E] hover:underline">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (isPendingOrApproved && own) {
+                                      setDetailEntry(own);
+                                    } else {
+                                      openWizardForPatient(pat, item.machineId, own || null);
+                                    }
+                                  }}
+                                  className="text-sm font-bold text-[#0B5A8E] hover:underline text-left"
+                                >
                                   {pat.fullName}
-                                </span>
+                                </button>
                                 <span className="font-mono text-xs text-slate-500">
                                   ({pat.mrn})
                                 </span>
@@ -1637,17 +1876,84 @@ export function LogbookPage({
                                   </span>
                                 )}
                               </div>
-                              <div className="text-xs text-slate-500">
-                                Bed/Mesin: <strong className="font-mono text-slate-700">{item.machineNumber}</strong>
+                              <div className="flex flex-wrap items-center gap-y-1 text-xs text-slate-500">
+                                {!isPendingOrApproved ? (
+                                  <span
+                                    className="inline-flex items-center gap-1.5"
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    <label
+                                      htmlFor={`slot-machine-${pat.id}`}
+                                      className="text-slate-500"
+                                    >
+                                      Bed/Mesin:
+                                    </label>
+                                    <select
+                                      id={`slot-machine-${pat.id}`}
+                                      value={item.machineId}
+                                      disabled={isChangingMachine}
+                                      onClick={(e) => e.stopPropagation()}
+                                      onChange={(e) => {
+                                        e.stopPropagation();
+                                        void handleChangeSlotMachine(item, e.target.value);
+                                      }}
+                                      aria-label={`Pilih Bed/Mesin untuk ${pat.fullName}`}
+                                      className="rounded-md border border-slate-300 bg-white px-2 py-0.5 font-mono text-xs font-bold text-slate-800 focus:border-[#0B5A8E] focus:outline-none disabled:opacity-60"
+                                    >
+                                      {!hasCurrentInOptions && item.machineId && (
+                                        <option value={item.machineId}>{item.machineNumber}</option>
+                                      )}
+                                      {availableMachineOptions.map((m) => {
+                                        const lock = lockedMachinesForSlot.get(m.id);
+                                        const isCurrent = m.id === item.machineId;
+                                        const isLockedByOther = Boolean(
+                                          lock && lock.nurseId !== userProfile?.uid
+                                        );
+                                        const isUsedByOtherSlot = Boolean(lock && !isCurrent);
+                                        const suffix = isCurrent
+                                          ? ''
+                                          : isLockedByOther
+                                          ? ` [Dipakai: ${lock?.nurseName}]`
+                                          : isUsedByOtherSlot
+                                          ? ` [Dipilih: ${lock?.patientName}]`
+                                          : '';
+                                        return (
+                                          <option
+                                            key={m.id}
+                                            value={m.id}
+                                            disabled={!isCurrent && isUsedByOtherSlot}
+                                          >
+                                            {m.machineNumber}
+                                            {suffix}
+                                          </option>
+                                        );
+                                      })}
+                                    </select>
+                                    {isChangingMachine && (
+                                      <span className="text-[10px] font-medium text-[#0B5A8E]">
+                                        Menyimpan...
+                                      </span>
+                                    )}
+                                  </span>
+                                ) : (
+                                  <span>
+                                    Bed/Mesin:{' '}
+                                    <strong className="font-mono text-slate-700">
+                                      {item.machineNumber}
+                                    </strong>
+                                  </span>
+                                )}
                                 <span className="mx-1.5" aria-hidden="true">·</span>
-                                {pat.vascularAccess}
+                                <span>{pat.vascularAccess}</span>
                                 <span className="mx-1.5" aria-hidden="true">·</span>
-                                {pat.routineSchedule}
+                                <span>{pat.routineSchedule}</span>
                                 <span className="mx-1.5" aria-hidden="true">·</span>
-                                DPJP: {doctors.find((d) => d.id === resolvedDpjpId)?.fullName || 'Sesuai Jadwal Shift'}
+                                <span>
+                                  DPJP: {doctors.find((d) => d.id === resolvedDpjpId)?.fullName || 'Sesuai Jadwal Shift'}
+                                </span>
                               </div>
                             </div>
-                          </button>
+                          </div>
 
                           <div className="flex items-center gap-2 shrink-0">
                             {!own && (

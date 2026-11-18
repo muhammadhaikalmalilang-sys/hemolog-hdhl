@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { collection, doc, runTransaction, serverTimestamp } from 'firebase/firestore';
 import {
   Activity,
@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   Building2,
+  Calculator,
   Check,
   CheckCircle2,
   CheckSquare,
@@ -654,6 +655,27 @@ export function LogbookWizardModal({
   const [onlyScheduledForDay, setOnlyScheduledForDay] = useState<boolean>(
     editingEntry ? false : initialIsScheduled
   );
+
+  type TrackedWizardEntry = Pick<
+    LogbookEntry,
+    | 'id'
+    | 'date'
+    | 'shift'
+    | 'machineId'
+    | 'patientId'
+    | 'verificationStatus'
+    | 'nurseId'
+    | 'nurseName'
+  >;
+  const [autoSavedEntry, setAutoSavedEntry] = useState<TrackedWizardEntry | null>(null);
+  const autoSavedEntryRef = useRef<TrackedWizardEntry | null>(null);
+  const activeEntry = editingEntry || autoSavedEntry;
+  const activeEntryId = activeEntry?.id;
+  const [autoSaveInfo, setAutoSaveInfo] = useState<{
+    status: 'idle' | 'saving' | 'saved';
+    timeLabel?: string;
+    docStatus?: 'Draft' | 'Revision';
+  }>({ status: 'idle' });
 
   // SPO Checklist state ("TIDAK DIKERJAKAN" / "DIKERJAKAN") for every point 1.1 - 7.2
   const [spoChecklist, setSpoChecklist] = useState<Record<string, SpoCheckStatus>>(() =>
@@ -1438,12 +1460,69 @@ export function LogbookWizardModal({
     setSubmissionConfirmed(false);
   };
 
-  // Computed IDWG (BB Pre - BB Kering)
-  const idwg = useMemo(() => {
-    const pre = Number(preWeight) || 0;
-    const dry = Number(dryWeight) || 0;
-    return Number((pre - dry).toFixed(2));
-  }, [preWeight, dryWeight]);
+  // Computed IDWG (BB Datang - BB Kering) & Persentase IDWG ((IDWG / BB Kering) * 100)
+  const idwgMetrics = useMemo(() => {
+    const pre = Number(String(preWeight).replace(',', '.'));
+    const post = Number(String(postWeight).replace(',', '.'));
+    const dry = Number(String(dryWeight).replace(',', '.'));
+    const hasPreAndDry =
+      Boolean(preWeight.trim()) &&
+      Boolean(dryWeight.trim()) &&
+      !Number.isNaN(pre) &&
+      !Number.isNaN(dry) &&
+      pre > 0 &&
+      dry > 0;
+    const hasPreAndPost =
+      Boolean(preWeight.trim()) &&
+      Boolean(postWeight.trim()) &&
+      !Number.isNaN(pre) &&
+      !Number.isNaN(post) &&
+      pre > 0 &&
+      post > 0;
+
+    if (!hasPreAndDry) {
+      return {
+        ready: false,
+        idwgKg: 0,
+        idwgPercent: 0,
+        ufEstimateMl: 0,
+        weightLossKg: hasPreAndPost ? Number((pre - post).toFixed(2)) : null,
+        categoryLabel: 'Menunggu Input BB Datang & BB Kering',
+        categoryTone: 'neutral' as const,
+      };
+    }
+
+    const diffKg = Number((pre - dry).toFixed(2));
+    const pct = Number(((diffKg / dry) * 100).toFixed(2));
+    const ufEstimateMl = Math.max(0, Math.round(diffKg * 1000));
+    const weightLossKg = hasPreAndPost ? Number((pre - post).toFixed(2)) : null;
+
+    let categoryLabel = 'Normal / Terkendali (≤ 4%)';
+    let categoryTone: 'neutral' | 'emerald' | 'amber' | 'rose' = 'emerald';
+
+    if (diffKg < 0) {
+      categoryLabel = 'Di Bawah BB Kering';
+      categoryTone = 'amber';
+    } else if (pct > 6) {
+      categoryLabel = 'Overload Berat (> 6%)';
+      categoryTone = 'rose';
+    } else if (pct > 4) {
+      categoryLabel = 'Melebihi Target (> 4%)';
+      categoryTone = 'amber';
+    }
+
+    return {
+      ready: true,
+      idwgKg: diffKg,
+      idwgPercent: pct,
+      ufEstimateMl,
+      weightLossKg,
+      categoryLabel,
+      categoryTone,
+    };
+  }, [preWeight, postWeight, dryWeight]);
+
+  const idwg = idwgMetrics.ready ? idwgMetrics.idwgKg : 0;
 
   const currentDayName = useMemo(() => getDayNameId(date), [date]);
 
@@ -1451,7 +1530,7 @@ export function LogbookWizardModal({
     const map = new Map<string, { nurseName: string; status: string; logbookId: string }>();
     const existingLogbookIds = new Set(logbooks.map((lb) => lb.id));
     for (const lk of logbookLocks) {
-      if (lk.date === date && lk.logbookId !== editingEntry?.id) {
+      if (lk.date === date && lk.logbookId !== activeEntryId) {
         if (lk.nurseId === userProfile?.uid && !existingLogbookIds.has(lk.logbookId)) {
           continue;
         }
@@ -1463,7 +1542,7 @@ export function LogbookWizardModal({
       }
     }
     for (const lb of logbooks) {
-      if (lb.date === date && lb.id !== editingEntry?.id && !map.has(lb.patientId)) {
+      if (lb.date === date && lb.id !== activeEntryId && !map.has(lb.patientId)) {
         map.set(lb.patientId, {
           nurseName: lb.nurseName,
           status: lb.verificationStatus,
@@ -1472,7 +1551,7 @@ export function LogbookWizardModal({
       }
     }
     return map;
-  }, [logbookLocks, logbooks, date, editingEntry?.id, userProfile?.uid]);
+  }, [logbookLocks, logbooks, date, activeEntryId, userProfile?.uid]);
 
   const lockedMachinesForSlot = useMemo(() => {
     const map = new Map<
@@ -1483,7 +1562,7 @@ export function LogbookWizardModal({
 
     for (const lk of machineLocks) {
       if (lk.date !== date || lk.shift !== shift) continue;
-      if (lk.logbookId && lk.logbookId === editingEntry?.id) continue;
+      if (lk.logbookId && lk.logbookId === activeEntryId) continue;
       if (!lk.logbookId && lk.nurseId === userProfile?.uid && lk.patientId === patientId) continue;
       if (lk.logbookId && lk.nurseId === userProfile?.uid && !existingLogbookIds.has(lk.logbookId)) {
         continue;
@@ -1498,7 +1577,7 @@ export function LogbookWizardModal({
     }
 
     for (const lb of logbooks) {
-      if (lb.date === date && lb.shift === shift && lb.id !== editingEntry?.id && !map.has(lb.machineId)) {
+      if (lb.date === date && lb.shift === shift && lb.id !== activeEntryId && !map.has(lb.machineId)) {
         map.set(lb.machineId, {
           nurseId: lb.nurseId,
           nurseName: lb.nurseName,
@@ -1509,7 +1588,7 @@ export function LogbookWizardModal({
       }
     }
     return map;
-  }, [machineLocks, logbooks, date, shift, editingEntry?.id, userProfile?.uid, patientId]);
+  }, [machineLocks, logbooks, date, shift, activeEntryId, userProfile?.uid, patientId]);
 
   const scheduledPatientsForDate = useMemo(
     () =>
@@ -1961,43 +2040,61 @@ export function LogbookWizardModal({
     setStep((s) => Math.min(7, s + 1));
   };
 
-  const handleSave = async (submitStatus: 'Draft' | 'Pending' | 'Revision') => {
-    if (!userProfile) return;
-    setErrorMsg(null);
+  const getAutoDraftStatus = (): 'Draft' | 'Revision' => {
+    const current = editingEntry || autoSavedEntryRef.current;
+    return current?.verificationStatus === 'Revision' ? 'Revision' : 'Draft';
+  };
+
+  const handleSave = async (
+    submitStatus: 'Draft' | 'Pending' | 'Revision',
+    options?: { keepOpen?: boolean; silentIfNotReady?: boolean }
+  ): Promise<'saved' | 'skipped' | 'error'> => {
+    if (!userProfile) return 'error';
+    const keepOpen = Boolean(options?.keepOpen);
+    const silentIfNotReady = Boolean(options?.silentIfNotReady);
+    if (!keepOpen) {
+      setErrorMsg(null);
+    }
+
+    const currentEntry = editingEntry || autoSavedEntryRef.current;
 
     const pat = patients.find((p) => p.id === patientId);
     const mach = machines.find((m) => m.id === machineId) || machines[0];
     const docObj = doctors.find((d) => d.id === doctorId) || activeDoctors[0];
 
     if (!pat) {
+      if (silentIfNotReady) return 'skipped';
       setStep(3);
       setErrorMsg('Pilih pasien yang belum memiliki catatan logbook pada tanggal tindakan ini.');
-      return;
+      return 'error';
     }
 
     const existingLock = lockedPatientsForDate.get(pat.id);
     if (existingLock) {
+      if (silentIfNotReady && !currentEntry) return 'skipped';
       setStep(3);
       setErrorMsg(
         `Pasien ${pat.fullName} sudah diinput logbooknya pada ${date} oleh ${existingLock.nurseName} dan tidak dapat dipilih kembali.`
       );
-      return;
+      return 'error';
     }
 
     if (!mach || !docObj) {
+      if (silentIfNotReady) return 'skipped';
       setErrorMsg(
         'Data master Mesin HD atau Dokter DPJP belum tersedia. Hubungi Administrator untuk mengisi data master terlebih dahulu.'
       );
-      return;
+      return 'error';
     }
 
     const existingMachineLock = lockedMachinesForSlot.get(mach.id);
     if (existingMachineLock) {
+      if (silentIfNotReady && !currentEntry) return 'skipped';
       setStep(3);
       setErrorMsg(
         `Mesin / Bed HD ${mach.machineNumber} pada Shift ${shift} tanggal ${date} sudah dipilih oleh ${existingMachineLock.nurseName} (Pasien: ${existingMachineLock.patientName}).`
       );
-      return;
+      return 'error';
     }
 
     if (submitStatus === 'Pending' || isVerifierEdit) {
@@ -2006,7 +2103,7 @@ export function LogbookWizardModal({
         if (err) {
           setStep(s);
           setErrorMsg(err);
-          return;
+          return 'error';
         }
       }
       if (submitStatus === 'Pending' && !isVerifierEdit && !submissionConfirmed) {
@@ -2014,7 +2111,7 @@ export function LogbookWizardModal({
         setErrorMsg(
           'Centang pernyataan konfirmasi bahwa seluruh indikator SPO Bagian I–VI telah diperiksa sebelum mengajukan verifikasi.'
         );
-        return;
+        return 'error';
       }
     }
 
@@ -2228,13 +2325,16 @@ export function LogbookWizardModal({
     };
 
     setSaving(true);
-    let txOp: OperationType = editingEntry ? OperationType.UPDATE : OperationType.CREATE;
-    let txPath = editingEntry ? `logbook/${editingEntry.id}` : 'logbook';
+    if (keepOpen) {
+      setAutoSaveInfo((prev) => ({ ...prev, status: 'saving' }));
+    }
+    let txOp: OperationType = currentEntry ? OperationType.UPDATE : OperationType.CREATE;
+    let txPath = currentEntry ? `logbook/${currentEntry.id}` : 'logbook';
     try {
       const monthKey = safeDate.slice(0, 7);
       const newMachineLockId = `${safeDate}_${safeShift}_${mach.id}`;
-      const oldMachineLockId = editingEntry
-        ? `${editingEntry.date}_${editingEntry.shift}_${editingEntry.machineId}`
+      const oldMachineLockId = currentEntry
+        ? `${currentEntry.date}_${currentEntry.shift}_${currentEntry.machineId}`
         : '';
       const isAdminRole = userProfile.role === 'Administrator';
       const isVerifierRole =
@@ -2244,14 +2344,18 @@ export function LogbookWizardModal({
       const safeLockPatientName = clampString(pat.fullName, 120) || 'Pasien HD';
       const safeLockNurseName = clampString(userProfile.fullName, 120) || 'Perawat HD';
       const existingLogbookIds = new Set(logbooks.map((lb) => lb.id));
+      let savedDocId = currentEntry?.id || '';
+      let savedOwnerId = userProfile.uid;
+      let savedOwnerName = safeLockNurseName;
 
       await runTransaction(db, async (tx) => {
-        const targetLogRef = editingEntry
-          ? doc(db, 'logbook', editingEntry.id)
+        const targetLogRef = currentEntry
+          ? doc(db, 'logbook', currentEntry.id)
           : doc(collection(db, 'logbook'));
+        savedDocId = targetLogRef.id;
 
         let existingLogSnap: Awaited<ReturnType<typeof tx.get>> | null = null;
-        if (editingEntry) {
+        if (currentEntry) {
           txOp = OperationType.GET;
           txPath = targetLogRef.path;
           existingLogSnap = await tx.get(targetLogRef);
@@ -2278,8 +2382,8 @@ export function LogbookWizardModal({
         let oldPatientLockRef: ReturnType<typeof doc> | null = null;
         let oldPatientLockSnap: Awaited<ReturnType<typeof tx.get>> | null = null;
 
-        if (editingEntry) {
-          const oldLockId = `${editingEntry.date}_${editingEntry.patientId}`;
+        if (currentEntry) {
+          const oldLockId = `${currentEntry.date}_${currentEntry.patientId}`;
           const newLockId = `${safeDate}_${pat.id}`;
           if (oldLockId !== newLockId) {
             newPatientLockRef = doc(db, 'logbook_locks', newLockId);
@@ -2302,7 +2406,7 @@ export function LogbookWizardModal({
         let entryOwnerName = safeLockNurseName;
         let canVerifierEditCurrent = false;
 
-        if (editingEntry) {
+        if (currentEntry) {
           if (!existingLogSnap || !existingLogSnap.exists()) {
             throw new Error('LOGBOOK_MISSING');
           }
@@ -2335,10 +2439,12 @@ export function LogbookWizardModal({
             entryOwnerName = clampString(currentLogData.nurseName, 120) || safeLockNurseName;
           }
         }
+        savedOwnerId = entryOwnerId;
+        savedOwnerName = entryOwnerName;
 
         if (newPatientLockSnap && newPatientLockSnap.exists()) {
           const plData = newPatientLockSnap.data() as Partial<LogbookLock>;
-          const sameEntry = Boolean(editingEntry && plData.logbookId === editingEntry.id);
+          const sameEntry = Boolean(currentEntry && plData.logbookId === currentEntry.id);
           const knownOrphan = Boolean(
             (isAdminRole || plData.nurseId === userProfile.uid || canVerifierEditCurrent) &&
               plData.logbookId &&
@@ -2353,7 +2459,7 @@ export function LogbookWizardModal({
           const lockData = newMachineLockSnap.data() as MachineLock;
           const ownedByCurrent = lockData.nurseId === userProfile.uid;
           const matchesThisSlot =
-            (editingEntry && lockData.logbookId === editingEntry.id) ||
+            (currentEntry && lockData.logbookId === currentEntry.id) ||
             (!lockData.logbookId && lockData.patientId === pat.id);
           const knownOrphan = Boolean(
             (isAdminRole || ownedByCurrent || canVerifierEditCurrent) &&
@@ -2362,7 +2468,7 @@ export function LogbookWizardModal({
           );
           if (
             !(ownedByCurrent && matchesThisSlot) &&
-            !((isAdminRole || canVerifierEditCurrent) && editingEntry && lockData.logbookId === editingEntry.id) &&
+            !((isAdminRole || canVerifierEditCurrent) && currentEntry && lockData.logbookId === currentEntry.id) &&
             !knownOrphan
           ) {
             throw new Error(
@@ -2374,9 +2480,9 @@ export function LogbookWizardModal({
         const isFirestoreTimestamp = (val: unknown): boolean =>
           Boolean(val && typeof (val as { toMillis?: unknown }).toMillis === 'function');
 
-        txOp = editingEntry ? OperationType.UPDATE : OperationType.CREATE;
+        txOp = currentEntry ? OperationType.UPDATE : OperationType.CREATE;
         txPath = `logbook/${targetLogRef.id}`;
-        if (editingEntry && existingLogSnap?.exists()) {
+        if (currentEntry && existingLogSnap?.exists()) {
           const currentLogData = existingLogSnap.data() as Partial<LogbookEntry>;
           const updatePayload: Record<string, unknown> = { ...payload };
           if (!isFirestoreTimestamp(currentLogData.createdAt)) {
@@ -2528,8 +2634,39 @@ export function LogbookWizardModal({
           });
         }
       });
+      const tracked: TrackedWizardEntry = {
+        id: savedDocId,
+        date: safeDate,
+        shift: safeShift,
+        machineId: mach.id,
+        patientId: pat.id,
+        verificationStatus: submitStatus,
+        nurseId: savedOwnerId,
+        nurseName: savedOwnerName,
+      };
+      if (!editingEntry) {
+        autoSavedEntryRef.current = tracked;
+        setAutoSavedEntry(tracked);
+      }
+
+      if (keepOpen) {
+        const nowTime = new Date().toLocaleTimeString('id-ID', {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        });
+        setAutoSaveInfo({
+          status: 'saved',
+          timeLabel: nowTime,
+          docStatus: submitStatus === 'Revision' ? 'Revision' : 'Draft',
+        });
+        onSaved?.();
+        return 'saved';
+      }
+
       onSaved?.();
       onClose();
+      return 'saved';
     } catch (err) {
       const msg = err instanceof Error ? err.message : '';
       if (msg.startsWith('MACHINE_LOCKED:')) {
@@ -2554,9 +2691,41 @@ export function LogbookWizardModal({
       } else {
         handleFirestoreError(err, txOp, txPath);
       }
+      if (keepOpen) {
+        setAutoSaveInfo((prev) => ({ ...prev, status: prev.timeLabel ? 'saved' : 'idle' }));
+      }
+      return 'error';
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleSwitchStep = async (
+    targetStep: number,
+    options?: { validateCurrent?: boolean }
+  ) => {
+    if (targetStep === step || saving) return;
+    setErrorMsg(null);
+
+    if (options?.validateCurrent) {
+      const err = validateStep(step);
+      if (err) {
+        setErrorMsg(err);
+        return;
+      }
+    }
+
+    if (!readOnly && !isVerifierEdit) {
+      const result = await handleSave(getAutoDraftStatus(), {
+        keepOpen: true,
+        silentIfNotReady: true,
+      });
+      if (result === 'error') {
+        return;
+      }
+    }
+
+    setStep(targetStep);
   };
 
   const renderSpoPointCard = (
@@ -2724,8 +2893,8 @@ export function LogbookWizardModal({
                 <h3 className="truncate font-display text-sm sm:text-base font-bold text-white">
                   {activeStepMeta.title}
                 </h3>
-                {readOnly && editingEntry && (
-                  <VerificationBadge status={editingEntry.verificationStatus} />
+                {activeEntry && (
+                  <VerificationBadge status={activeEntry.verificationStatus} />
                 )}
               </div>
             </div>
@@ -2798,10 +2967,10 @@ export function LogbookWizardModal({
                   <button
                     key={s.num}
                     type="button"
+                    disabled={saving}
                     title={s.title}
                     onClick={() => {
-                      setErrorMsg(null);
-                      setStep(s.num);
+                      void handleSwitchStep(s.num);
                     }}
                     className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition-colors whitespace-nowrap ${
                       isActive
@@ -2853,6 +3022,20 @@ export function LogbookWizardModal({
             {selectedPatient && (
               <span className="font-mono text-[11px] text-slate-500">
                 RM: {selectedPatient.mrn}
+              </span>
+            )}
+            {!readOnly && !isVerifierEdit && autoSaveInfo.status === 'saving' && (
+              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-sky-700">
+                <Clock className="h-3 w-3 animate-spin" />
+                Menyimpan otomatis...
+              </span>
+            )}
+            {!readOnly && !isVerifierEdit && autoSaveInfo.status === 'saved' && (
+              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 tabular-nums">
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                {autoSaveInfo.docStatus === 'Revision'
+                  ? `Revisi tersimpan otomatis (${autoSaveInfo.timeLabel})`
+                  : `Draft tersimpan otomatis (${autoSaveInfo.timeLabel})`}
               </span>
             )}
           </div>
@@ -3314,6 +3497,130 @@ export function LogbookWizardModal({
                       </div>
                     </div>
                   </div>
+
+                  {/* Kalkulator IDWG Otomatis */}
+                  <div className="rounded-lg border border-sky-200/80 bg-sky-50/45 p-3 space-y-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <Calculator className="h-3.5 w-3.5 text-[#0e4e78]" />
+                        <span className="text-[11px] font-bold uppercase tracking-wide text-[#0e4e78]">
+                          Kalkulator IDWG Otomatis
+                        </span>
+                        <span className="text-[11px] text-slate-500">
+                          (BB Datang − BB Kering)
+                        </span>
+                      </div>
+
+                      <span
+                        className={`rounded border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                          idwgMetrics.categoryTone === 'emerald'
+                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                            : idwgMetrics.categoryTone === 'amber'
+                            ? 'border-amber-200 bg-amber-50 text-amber-800'
+                            : idwgMetrics.categoryTone === 'rose'
+                            ? 'border-rose-200 bg-rose-50 text-rose-700'
+                            : 'border-slate-200 bg-white text-slate-500'
+                        }`}
+                      >
+                        {idwgMetrics.categoryLabel}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                      <div className="rounded-md border border-slate-200/80 bg-white px-3 py-2">
+                        <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                          Nilai IDWG (kg)
+                        </span>
+                        <span
+                          className={`mt-0.5 block font-mono text-sm font-bold tabular-nums ${
+                            !idwgMetrics.ready
+                              ? 'text-slate-400'
+                              : idwgMetrics.categoryTone === 'rose'
+                              ? 'text-rose-700'
+                              : idwgMetrics.categoryTone === 'amber'
+                              ? 'text-amber-700'
+                              : 'text-emerald-700'
+                          }`}
+                        >
+                          {idwgMetrics.ready
+                            ? `${idwgMetrics.idwgKg > 0 ? '+' : ''}${idwgMetrics.idwgKg.toFixed(2)} kg`
+                            : '—'}
+                        </span>
+                      </div>
+
+                      <div className="rounded-md border border-slate-200/80 bg-white px-3 py-2">
+                        <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                          Persentase IDWG
+                        </span>
+                        <span
+                          className={`mt-0.5 block font-mono text-sm font-bold tabular-nums ${
+                            !idwgMetrics.ready
+                              ? 'text-slate-400'
+                              : idwgMetrics.categoryTone === 'rose'
+                              ? 'text-rose-700'
+                              : idwgMetrics.categoryTone === 'amber'
+                              ? 'text-amber-700'
+                              : 'text-[#0e4e78]'
+                          }`}
+                        >
+                          {idwgMetrics.ready ? `${idwgMetrics.idwgPercent.toFixed(2)}%` : '—'}
+                        </span>
+                        <span className="block text-[10px] text-slate-400">
+                          Target SPO ≤ 4% BB Kering
+                        </span>
+                      </div>
+
+                      <div className="rounded-md border border-slate-200/80 bg-white px-3 py-2">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                            Estimasi UF Cairan
+                          </span>
+                          {!readOnly && idwgMetrics.ready && idwgMetrics.ufEstimateMl > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const val = String(idwgMetrics.ufEstimateMl);
+                                setUfGoal(val);
+                                syncPoint35Checklist(
+                                  dialysisDurationHours,
+                                  val,
+                                  bfr,
+                                  dfr,
+                                  loadingDose
+                                );
+                              }}
+                              className="text-[10px] font-bold text-[#0B5A8E] hover:underline"
+                            >
+                              Isi ke UFG
+                            </button>
+                          )}
+                        </div>
+                        <span className="mt-0.5 block font-mono text-sm font-bold tabular-nums text-slate-800">
+                          {idwgMetrics.ready
+                            ? `${idwgMetrics.ufEstimateMl.toLocaleString('id-ID')} mL`
+                            : '—'}
+                        </span>
+                        <span className="block text-[10px] text-slate-400">
+                          Acuan target UFG (Poin 3.5)
+                        </span>
+                      </div>
+
+                      <div className="rounded-md border border-slate-200/80 bg-white px-3 py-2">
+                        <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                          Selisih Pre − Post HD
+                        </span>
+                        <span className="mt-0.5 block font-mono text-sm font-bold tabular-nums text-slate-800">
+                          {idwgMetrics.weightLossKg !== null
+                            ? `${idwgMetrics.weightLossKg.toFixed(2)} kg`
+                            : '—'}
+                        </span>
+                        <span className="block text-[10px] text-slate-400">
+                          Penurunan BB setelah HD
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
                   {!isPoint32Complete(preWeight, postWeight, dryWeight) && (
                     <p className="text-[11px] font-medium text-amber-600">
                       Wajib mengisi kolom Berat Badan Datang, Berat Badan Pulang, dan Berat Badan Kering agar Poin 3.2 bernilai DIKERJAKAN.
@@ -4456,11 +4763,11 @@ export function LogbookWizardModal({
             {step > 1 && (
               <button
                 type="button"
+                disabled={saving}
                 onClick={() => {
-                  setErrorMsg(null);
-                  setStep((s) => Math.max(1, s - 1));
+                  void handleSwitchStep(Math.max(1, step - 1));
                 }}
-                className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
               >
                 <ChevronLeft className="h-4 w-4" />
                 Sebelumnya
@@ -4549,20 +4856,30 @@ export function LogbookWizardModal({
                 <button
                   type="button"
                   disabled={saving}
-                  onClick={() => handleSave('Draft')}
+                  onClick={() => {
+                    void handleSave(getAutoDraftStatus());
+                  }}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
                 >
                   <Save className="h-4 w-4 text-slate-500" />
-                  {saving ? 'Menyimpan...' : 'Simpan sebagai Draft'}
+                  {saving
+                    ? 'Menyimpan...'
+                    : getAutoDraftStatus() === 'Revision'
+                    ? 'Simpan Revisi'
+                    : 'Simpan sebagai Draft'}
                 </button>
 
                 {step < 7 ? (
                   <button
                     type="button"
-                    onClick={handleNextStep}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#0e4e78] px-4 py-2 text-xs font-semibold text-white hover:bg-[#093b5c] transition-colors"
+                    disabled={saving}
+                    onClick={() => {
+                      void handleSwitchStep(Math.min(7, step + 1), { validateCurrent: true });
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#0e4e78] px-4 py-2 text-xs font-semibold text-white hover:bg-[#093b5c] transition-colors disabled:opacity-60"
                   >
-                    Simpan & Lanjut Bagian {step + 1}
+                    <Save className="h-3.5 w-3.5 opacity-80" />
+                    {saving ? 'Menyimpan...' : `Simpan & Lanjut Bagian ${step + 1}`}
                     <ChevronRight className="h-4 w-4" />
                   </button>
                 ) : (

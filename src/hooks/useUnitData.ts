@@ -67,7 +67,7 @@ export function useUnitData() {
     setLoading(true);
     setApprovedReady(false);
     setOwnReady(false);
-    setSupervisorReady(!isLeaderOrAdmin);
+    setSupervisorReady(false);
     setLocksReady(false);
     setMachineLocksReady(false);
     prunedLockIdsRef.current.clear();
@@ -188,27 +188,20 @@ export function useUnitData() {
       )
     );
 
-    // 9. Logbook: Pending & Revision (and Draft for Admin) unit logbooks
-    if (isLeaderOrAdmin) {
-      const targetStatuses = isAdmin
-        ? ['Draft', 'Pending', 'Revision']
-        : ['Pending', 'Revision'];
-      unsubs.push(
-        onSnapshot(
-          query(collection(db, 'logbook'), where('verificationStatus', 'in', targetStatuses)),
-          (snap) => {
-            setSupervisorPendingLogbooks(
-              snap.docs.map((d) => ({ id: d.id, ...d.data() } as LogbookEntry))
-            );
-            setSupervisorReady(true);
-          },
-          (err) => handleFirestoreError(err, OperationType.LIST, 'logbook')
-        )
-      );
-    } else {
-      setSupervisorPendingLogbooks([]);
-      setSupervisorReady(true);
-    }
+    // 9. Logbook: Draft, Pending & Revision unit logbooks so all active staff see all nurses' entries (Draft remains read-only for non-owners)
+    const targetStatuses = ['Draft', 'Pending', 'Revision'];
+    unsubs.push(
+      onSnapshot(
+        query(collection(db, 'logbook'), where('verificationStatus', 'in', targetStatuses)),
+        (snap) => {
+          setSupervisorPendingLogbooks(
+            snap.docs.map((d) => ({ id: d.id, ...d.data() } as LogbookEntry))
+          );
+          setSupervisorReady(true);
+        },
+        (err) => handleFirestoreError(err, OperationType.LIST, 'logbook')
+      )
+    );
 
     // 9b. Logbook Locks (cross-account daily patient lock visibility for all active staff)
     unsubs.push(

@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { Download, Eye, Plus, Printer, Search, X } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
@@ -14,6 +14,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { useF4OnePagePrint } from '../hooks/useF4OnePagePrint';
 import { LogbookDetailModal } from '../components/logbook/LogbookDetailModal';
+import { VerificationBadge } from '../components/ui/StatusBadge';
 import type {
   LogbookEntry,
   Machine,
@@ -76,8 +77,14 @@ function getShiftRangeLabel(shift: 'ALL' | ShiftType): string {
   if (shift === 'Pagi') return 'Pagi (07.00 - 14.00 WIB)';
   if (shift === 'Siang') return 'Siang (12.00 - 19.00 WIB)';
   if (shift === 'Malam') return 'Malam (21.00 - 07.00 WIB)';
-  return 'Semua Shift (Pagi / Siang)';
+  return 'Semua Shift (Pagi / Siang / Malam)';
 }
+
+const SHIFT_SORT_ORDER: Record<ShiftType, number> = {
+  Pagi: 1,
+  Siang: 2,
+  Malam: 3,
+};
 
 function subtractMinutes(timeStr: string, mins: number): string {
   const m = /^(\d{1,2}):(\d{2})$/.exec(timeStr?.trim() || '');
@@ -103,12 +110,37 @@ export function PatientReportsPage({
     orientation: 'landscape',
     sheetRef,
   });
+  const [todayDate, setTodayDate] = useState(() => getTodayDateStr());
   const [selectedPatientId, setSelectedPatientId] = useState('ALL');
   const [monthFilter, setMonthFilter] = useState(getCurrentMonthKey());
-  const [dateFilter, setDateFilter] = useState(getTodayDateStr());
+  const [dateFilter, setDateFilter] = useState(() => getTodayDateStr());
   const [shiftFilter, setShiftFilter] = useState<'ALL' | ShiftType>('ALL');
   const [searchTerm, setSearchTerm] = useState('');
   const [activeTab, setActiveTab] = useState<'services' | 'soap'>('services');
+
+  useEffect(() => {
+    const syncDay = () => {
+      const currentToday = getTodayDateStr();
+      if (currentToday !== todayDate) {
+        setTodayDate(currentToday);
+        setDateFilter((prev) => (prev === todayDate ? currentToday : prev));
+        setMonthFilter((prev) =>
+          prev === todayDate.slice(0, 7) ? currentToday.slice(0, 7) : prev
+        );
+      }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') syncDay();
+    };
+    const id = window.setInterval(syncDay, 15000);
+    window.addEventListener('focus', syncDay);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener('focus', syncDay);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [todayDate]);
 
   const [detailEntry, setDetailEntry] = useState<LogbookEntry | null>(null);
   const [showSoapModal, setShowSoapModal] = useState(false);
@@ -126,35 +158,96 @@ export function PatientReportsPage({
   const machineMap = useMemo(() => new Map(machines.map((m) => [m.id, m])), [machines]);
   const patientMap = useMemo(() => new Map(patients.map((p) => [p.id, p])), [patients]);
 
+  // All logbooks (including Draft, Pending, Revision, Approved) matching date/month, patient & search query
+  const periodServices = useMemo(() => {
+    return logbooks.filter((item) => {
+      if (selectedPatientId !== 'ALL' && item.patientId !== selectedPatientId) return false;
+      if (dateFilter) {
+        if (item.date !== dateFilter) return false;
+      } else if (monthFilter && item.monthKey !== monthFilter) {
+        return false;
+      }
+      if (searchTerm.trim()) {
+        const q = searchTerm.toLowerCase();
+        const hit =
+          item.patientName.toLowerCase().includes(q) ||
+          item.patientRm.toLowerCase().includes(q) ||
+          item.doctorName.toLowerCase().includes(q) ||
+          item.nurseName.toLowerCase().includes(q) ||
+          item.machineNumber.toLowerCase().includes(q) ||
+          item.nursingNotes.toLowerCase().includes(q);
+        if (!hit) return false;
+      }
+      return true;
+    });
+  }, [logbooks, selectedPatientId, dateFilter, monthFilter, searchTerm]);
+
+  const shiftCounts = useMemo(() => {
+    const counts = { ALL: periodServices.length, Pagi: 0, Siang: 0, Malam: 0 };
+    for (const item of periodServices) {
+      if (item.shift === 'Pagi' || item.shift === 'Siang' || item.shift === 'Malam') {
+        counts[item.shift] += 1;
+      }
+    }
+    return counts;
+  }, [periodServices]);
+
+  const shiftFilteredServices = useMemo(() => {
+    if (shiftFilter === 'ALL') return periodServices;
+    return periodServices.filter((item) => item.shift === shiftFilter);
+  }, [periodServices, shiftFilter]);
+
+  const nurseBreakdown = useMemo(() => {
+    const map = new Map<string, { nurseId: string; nurseName: string; count: number }>();
+    for (const item of shiftFilteredServices) {
+      const existing = map.get(item.nurseId);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        map.set(item.nurseId, {
+          nurseId: item.nurseId,
+          nurseName: item.nurseName || 'Perawat HD',
+          count: 1,
+        });
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => a.nurseName.localeCompare(b.nurseName));
+  }, [shiftFilteredServices]);
+
   const filteredServices = useMemo(() => {
-    return logbooks
-      .filter((item) => {
-        if (selectedPatientId !== 'ALL' && item.patientId !== selectedPatientId) return false;
-        if (dateFilter) {
-          if (item.date !== dateFilter) return false;
-        } else if (monthFilter && item.monthKey !== monthFilter) {
-          return false;
-        }
-        if (shiftFilter !== 'ALL' && item.shift !== shiftFilter) return false;
-        if (searchTerm.trim()) {
-          const q = searchTerm.toLowerCase();
-          const hit =
-            item.patientName.toLowerCase().includes(q) ||
-            item.patientRm.toLowerCase().includes(q) ||
-            item.doctorName.toLowerCase().includes(q) ||
-            item.nurseName.toLowerCase().includes(q) ||
-            item.machineNumber.toLowerCase().includes(q) ||
-            item.nursingNotes.toLowerCase().includes(q);
-          if (!hit) return false;
-        }
-        return true;
-      })
-      .sort((a, b) => {
-        const dCmp = a.date.localeCompare(b.date);
-        if (dCmp !== 0) return dCmp;
-        return a.startTime.localeCompare(b.startTime);
-      });
-  }, [logbooks, selectedPatientId, dateFilter, monthFilter, shiftFilter, searchTerm]);
+    const getBedLabel = (entry: LogbookEntry) =>
+      (entry.machineNumber || machineMap.get(entry.machineId)?.machineNumber || '').trim();
+
+    return [...shiftFilteredServices].sort((a, b) => {
+      const dCmp = a.date.localeCompare(b.date);
+      if (dCmp !== 0) return dCmp;
+      const sCmp = (SHIFT_SORT_ORDER[a.shift] || 9) - (SHIFT_SORT_ORDER[b.shift] || 9);
+      if (sCmp !== 0) return sCmp;
+      const bedA = getBedLabel(a);
+      const bedB = getBedLabel(b);
+      if (bedA && !bedB) return -1;
+      if (!bedA && bedB) return 1;
+      const mCmp = bedA.localeCompare(bedB, 'id', { numeric: true, sensitivity: 'base' });
+      if (mCmp !== 0) return mCmp;
+      const tCmp = a.startTime.localeCompare(b.startTime);
+      if (tCmp !== 0) return tCmp;
+      return a.patientName.localeCompare(b.patientName);
+    });
+  }, [shiftFilteredServices, machineMap]);
+
+  const statusBreakdown = useMemo(() => {
+    let approved = 0;
+    let pending = 0;
+    let revision = 0;
+    let draft = 0;
+    for (const item of filteredServices) {
+      if (item.verificationStatus === 'Approved') approved += 1;
+      else if (item.verificationStatus === 'Revision') revision += 1;
+      else if (item.verificationStatus === 'Draft') draft += 1;
+      else pending += 1;
+    }
+    return { approved, pending, revision, draft };
+  }, [filteredServices]);
 
   const filteredSoap = useMemo(() => {
     return reports.filter((r) => {
@@ -429,6 +522,7 @@ export function PatientReportsPage({
       [
         'NO',
         'TANGGAL',
+        'SHIFT',
         'NO. RM',
         'NAMA LENGKAP PASIEN',
         'STATUS RAWAT',
@@ -465,6 +559,7 @@ export function PatientReportsPage({
       tableRows.map((r) => [
         r.index,
         r.entry.date,
+        r.entry.shift,
         r.entry.patientRm,
         r.entry.patientName,
         r.statusRawat,
@@ -512,7 +607,7 @@ export function PatientReportsPage({
               : 'Laporan Pasien: Detail Pelayanan Asuhan Keperawatan & Medis'}
           </h2>
           <p className="text-xs text-slate-500">
-            Format tabel rekap klinis hemodialisis terintegrasi langsung dari logbook pasien yang diinput.
+            Menampilkan seluruh logbook (termasuk status Draft secara read-only) yang diinput oleh semua perawat sesuai tanggal dan shift yang dipilih.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -616,10 +711,10 @@ export function PatientReportsPage({
           onChange={(e) => setShiftFilter(e.target.value as 'ALL' | ShiftType)}
           className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 focus:border-[#0B5A8E] focus:outline-none"
         >
-          <option value="ALL">Semua Shift</option>
-          <option value="Pagi">Shift Pagi</option>
-          <option value="Siang">Shift Siang</option>
-          <option value="Malam">Shift Malam</option>
+          <option value="ALL">Semua Shift ({shiftCounts.ALL})</option>
+          <option value="Pagi">Shift Pagi ({shiftCounts.Pagi})</option>
+          <option value="Siang">Shift Siang ({shiftCounts.Siang})</option>
+          <option value="Malam">Shift Malam ({shiftCounts.Malam})</option>
         </select>
 
         <div className="relative">
@@ -628,11 +723,74 @@ export function PatientReportsPage({
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Cari pasien, RM, mesin, DPJP..."
+            placeholder="Cari pasien, RM, perawat, mesin..."
             className="w-full rounded-lg border border-slate-300 bg-white pl-9 pr-3 py-2 text-xs focus:border-[#0B5A8E] focus:outline-none"
           />
         </div>
       </div>
+
+      {/* Quick Shift Switcher & Contributing Nurses Summary */}
+      {activeTab === 'services' && (
+        <div className="no-print rounded-xl border border-slate-200 bg-white px-4 py-3 space-y-2.5">
+          <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between">
+            <div className="inline-flex flex-wrap items-center gap-1 rounded-lg bg-slate-100 p-1 w-fit">
+              {(
+                [
+                  { id: 'Pagi', label: 'Shift Pagi', count: shiftCounts.Pagi },
+                  { id: 'Siang', label: 'Shift Siang', count: shiftCounts.Siang },
+                  { id: 'Malam', label: 'Shift Malam', count: shiftCounts.Malam },
+                ] as const
+              ).map((opt) => {
+                const active = shiftFilter === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setShiftFilter(opt.id)}
+                    className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+                      active
+                        ? 'bg-white text-slate-900 shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {opt.label}{' '}
+                    <span className="font-mono tabular-nums text-[11px] text-slate-500">
+                      ({opt.count})
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600 font-mono tabular-nums">
+              <span>
+                Total:{' '}
+                <strong className="text-slate-900">{filteredServices.length} logbook</strong>
+              </span>
+              <span>
+                Perawat:{' '}
+                <strong className="text-slate-900">{nurseBreakdown.length} orang</strong>
+              </span>
+              <span className="text-emerald-700">
+                Approved: <strong>{statusBreakdown.approved}</strong>
+              </span>
+              <span className="text-amber-700">
+                Pending: <strong>{statusBreakdown.pending}</strong>
+              </span>
+              {statusBreakdown.draft > 0 && (
+                <span className="text-slate-600">
+                  Draft: <strong>{statusBreakdown.draft}</strong>
+                </span>
+              )}
+              {statusBreakdown.revision > 0 && (
+                <span className="text-rose-700">
+                  Revisi: <strong>{statusBreakdown.revision}</strong>
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="no-print flex items-center gap-1 rounded-lg bg-slate-100 p-1 w-fit">
@@ -671,13 +829,15 @@ export function PatientReportsPage({
               <span className="font-semibold">Hari/Tanggal:</span> {bannerMeta.dateLabel}{' '}
               &nbsp;|&nbsp; <span className="font-semibold">PJ Shift:</span> {bannerMeta.pjShift}{' '}
               &nbsp;|&nbsp; <span className="font-semibold">DPJP:</span> {bannerMeta.dpjpLabel}{' '}
-              &nbsp;|&nbsp; <span className="font-semibold">Ka. Ruang:</span> {bannerMeta.kaRuang}
+              &nbsp;|&nbsp; <span className="font-semibold">Ka. Ruang:</span> {bannerMeta.kaRuang}{' '}
+              &nbsp;|&nbsp; <span className="font-semibold">Total Logbook:</span>{' '}
+              {tableRows.length} pasien ({nurseBreakdown.length} perawat)
             </p>
           </div>
 
           {tableRows.length === 0 ? (
             <div className="p-10 text-center text-xs text-slate-500">
-              Belum ada data logbook pasien untuk periode / filter yang dipilih.
+              Belum ada logbook yang diinput perawat untuk tanggal dan shift yang dipilih.
             </div>
           ) : (
             <div className="f4-scroll-wrap overflow-x-auto">
@@ -750,6 +910,12 @@ export function PatientReportsPage({
                       className="border border-[#2d6687] px-2.5 py-2 text-center font-bold whitespace-nowrap"
                     >
                       PERAWAT PELAKSANA
+                    </th>
+                    <th
+                      rowSpan={2}
+                      className="no-print border border-[#2d6687] px-2 py-2 text-center font-bold whitespace-nowrap"
+                    >
+                      STATUS
                     </th>
                     <th
                       rowSpan={2}
@@ -993,8 +1159,16 @@ export function PatientReportsPage({
                         </td>
 
                         {/* PERAWAT PELAKSANA */}
-                        <td className="border border-slate-200 px-2.5 py-2 whitespace-nowrap font-medium">
-                          {s.nurseName}
+                        <td className="border border-slate-200 px-2.5 py-2 whitespace-nowrap">
+                          <div className="font-medium text-slate-900">{s.nurseName}</div>
+                          <div className="text-[10px] font-mono text-slate-500">
+                            Shift {s.shift}
+                          </div>
+                        </td>
+
+                        {/* STATUS VERIFIKASI */}
+                        <td className="no-print border border-slate-200 px-2 py-2 text-center whitespace-nowrap">
+                          <VerificationBadge status={s.verificationStatus} />
                         </td>
 
                         {/* DETAIL BUTTON */}
@@ -1063,6 +1237,7 @@ export function PatientReportsPage({
                       <td className="border border-slate-300 px-2 py-2 text-center">-</td>
                       <td className="border border-slate-300 px-2 py-2 text-center">-</td>
                       <td className="border border-slate-300 px-2 py-2 text-center">-</td>
+                      <td className="no-print border border-slate-300 px-2 py-2 text-center">-</td>
                       <td className="no-print border border-slate-300 px-2 py-2 text-center">-</td>
                     </tr>
                   </tfoot>

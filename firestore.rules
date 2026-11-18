@@ -225,7 +225,9 @@ service cloud.firestore {
         && (
           // Action: PJ Shift / Kepala Ruang / Admin verifies entry
           (
-            data.verificationStatus in ['Approved', 'Revision']
+            'verificationStatus' in prev
+            && prev.verificationStatus in ['Pending', 'Revision']
+            && data.verificationStatus in ['Approved', 'Revision']
             && 'verifiedBy' in data
             && data.verifiedBy == request.auth.uid
             && 'verifiedAt' in data
@@ -241,8 +243,10 @@ service cloud.firestore {
           (
             'nurseId' in prev
             && prev.nurseId == request.auth.uid
-            && prev.verificationStatus in ['Draft', 'Revision']
-            && data.verificationStatus in ['Draft', 'Pending']
+            && (
+              (prev.verificationStatus == 'Draft' && data.verificationStatus in ['Draft', 'Pending']) ||
+              (prev.verificationStatus == 'Revision' && data.verificationStatus in ['Revision', 'Pending'])
+            )
             && data.diff(prev).affectedKeys().hasOnly([
               'nurseNip', 'patientId', 'patientName', 'patientRm', 'machineId', 'machineNumber',
               'doctorId', 'doctorName', 'dutyDoctorId', 'dutyDoctorName', 'actionCategory', 'date', 'monthKey', 'shift',
@@ -624,13 +628,12 @@ service cloud.firestore {
       allow get: if isSignedIn() && isValidId(logbookId) && isActiveStaff() && (
         resource == null ||
         ('nurseId' in existing() && existing().nurseId == request.auth.uid) ||
-        ('verificationStatus' in existing() && existing().verificationStatus == 'Approved') ||
-        isLeadershipOrAdmin()
+        ('verificationStatus' in existing() && existing().verificationStatus in ['Approved', 'Pending', 'Revision', 'Draft']) ||
+        isAdmin()
       );
       allow list: if isSignedIn() && (
         resource.data.nurseId == request.auth.uid ||
-        resource.data.verificationStatus == 'Approved' ||
-        (resource.data.verificationStatus in ['Pending', 'Revision'] && isLeadershipOrAdmin()) ||
+        (resource.data.verificationStatus in ['Approved', 'Pending', 'Revision', 'Draft'] && isActiveStaff()) ||
         (resource.data.verificationStatus in ['Draft', 'Pending', 'Revision'] && isAdmin())
       );
       allow create: if isSignedIn()
