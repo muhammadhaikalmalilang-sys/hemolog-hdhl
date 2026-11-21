@@ -1,29 +1,66 @@
-import React, { Component, useEffect, useMemo, useState } from 'react';
+import React, { Component, Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
 import { Activity, AlertTriangle } from 'lucide-react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { useUnitData } from './hooks/useUnitData';
 import { useIdleTimeout } from './hooks/useIdleTimeout';
-import { LoginPage } from './components/auth/LoginPage';
-import { IdleTimeoutModal } from './components/auth/IdleTimeoutModal';
 import { RoleGuard } from './components/auth/RoleGuard';
 import { SidebarLayout } from './components/layout/SidebarLayout';
-import { DashboardPage } from './pages/DashboardPage';
-import { LogbookPage } from './pages/LogbookPage';
-import { VerificationPage } from './pages/VerificationPage';
-import { HistoryPage } from './pages/HistoryPage';
-import { PatientReportsPage } from './pages/PatientReportsPage';
-import { PjShiftReportsPage } from './pages/PjShiftReportsPage';
-import { MonthlyReportsPage } from './pages/MonthlyReportsPage';
-import { SchedulesPage } from './pages/SchedulesPage';
-import { PatientsPage } from './pages/PatientsPage';
-import { DoctorsPage } from './pages/DoctorsPage';
-import { MachinesPage } from './pages/MachinesPage';
-import { AccountsPage } from './pages/AccountsPage';
-import { MyAccountPage } from './pages/MyAccountPage';
 import { OfflineIndicator } from './components/ui/OfflineIndicator';
 import { reconnectFirestore } from './lib/firebase';
 import { isLogbookAssignedToVerifier } from './lib/formatters';
 import { ROLE_MENUS, type MenuId } from './types';
+
+const loadLoginPage = () =>
+  import('./components/auth/LoginPage').then((m) => ({ default: m.LoginPage }));
+const loadIdleTimeoutModal = () =>
+  import('./components/auth/IdleTimeoutModal').then((m) => ({ default: m.IdleTimeoutModal }));
+
+const pageLoaders: Record<MenuId, () => Promise<{ default: React.ComponentType<any> }>> = {
+  dashboard: () => import('./pages/DashboardPage').then((m) => ({ default: m.DashboardPage })),
+  logbook: () => import('./pages/LogbookPage').then((m) => ({ default: m.LogbookPage })),
+  master_logbook: () => import('./pages/LogbookPage').then((m) => ({ default: m.LogbookPage })),
+  verifikasi: () => import('./pages/VerificationPage').then((m) => ({ default: m.VerificationPage })),
+  riwayat: () => import('./pages/HistoryPage').then((m) => ({ default: m.HistoryPage })),
+  laporan_pasien: () => import('./pages/PatientReportsPage').then((m) => ({ default: m.PatientReportsPage })),
+  laporan_pj_shift: () => import('./pages/PjShiftReportsPage').then((m) => ({ default: m.PjShiftReportsPage })),
+  laporan_bulanan: () => import('./pages/MonthlyReportsPage').then((m) => ({ default: m.MonthlyReportsPage })),
+  jadwal_dinas: () => import('./pages/SchedulesPage').then((m) => ({ default: m.SchedulesPage })),
+  data_pasien: () => import('./pages/PatientsPage').then((m) => ({ default: m.PatientsPage })),
+  data_dokter: () => import('./pages/DoctorsPage').then((m) => ({ default: m.DoctorsPage })),
+  data_mesin: () => import('./pages/MachinesPage').then((m) => ({ default: m.MachinesPage })),
+  data_akun: () => import('./pages/AccountsPage').then((m) => ({ default: m.AccountsPage })),
+  my_account: () => import('./pages/MyAccountPage').then((m) => ({ default: m.MyAccountPage })),
+};
+
+const LoginPage = lazy(loadLoginPage);
+const IdleTimeoutModal = lazy(loadIdleTimeoutModal);
+const DashboardPage = lazy(pageLoaders.dashboard);
+const LogbookPage = lazy(pageLoaders.logbook);
+const VerificationPage = lazy(pageLoaders.verifikasi);
+const HistoryPage = lazy(pageLoaders.riwayat);
+const PatientReportsPage = lazy(pageLoaders.laporan_pasien);
+const PjShiftReportsPage = lazy(pageLoaders.laporan_pj_shift);
+const MonthlyReportsPage = lazy(pageLoaders.laporan_bulanan);
+const SchedulesPage = lazy(pageLoaders.jadwal_dinas);
+const PatientsPage = lazy(pageLoaders.data_pasien);
+const DoctorsPage = lazy(pageLoaders.data_dokter);
+const MachinesPage = lazy(pageLoaders.data_mesin);
+const AccountsPage = lazy(pageLoaders.data_akun);
+const MyAccountPage = lazy(pageLoaders.my_account);
+
+function PageSkeleton() {
+  return (
+    <div className="space-y-4">
+      <div className="h-24 rounded-xl border border-slate-200 bg-white animate-pulse" />
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="h-28 rounded-xl border border-slate-200 bg-white animate-pulse" />
+        <div className="h-28 rounded-xl border border-slate-200 bg-white animate-pulse" />
+        <div className="h-28 rounded-xl border border-slate-200 bg-white animate-pulse" />
+      </div>
+      <div className="h-72 rounded-xl border border-slate-200 bg-white animate-pulse" />
+    </div>
+  );
+}
 
 class ErrorBoundary extends Component<
   { children: React.ReactNode },
@@ -114,6 +151,13 @@ function WorkspaceShell() {
     formTemplate,
   } = useUnitData();
 
+  const prefetchMenu = useCallback((menuId: MenuId) => {
+    const loader = pageLoaders[menuId];
+    if (loader) {
+      void loader().catch(() => undefined);
+    }
+  }, []);
+
   // Keep activeMenu valid when role changes
   useEffect(() => {
     if (!userProfile) return;
@@ -122,6 +166,32 @@ function WorkspaceShell() {
       setActiveMenu('dashboard');
     }
   }, [userProfile?.role, activeMenu]);
+
+  // Warm the most frequent role routes during browser idle so tab switches are instant
+  useEffect(() => {
+    if (!isAuthenticated || !userProfile) return;
+    const allowedIds = (ROLE_MENUS[userProfile.role] || []).map((m) => m.id);
+    const priorityMenus: MenuId[] = ['logbook', 'verifikasi', 'master_logbook', 'laporan_bulanan', 'riwayat'];
+    const targets = priorityMenus.filter((id) => allowedIds.includes(id));
+
+    const runPrefetch = () => {
+      targets.forEach((id) => {
+        void pageLoaders[id]?.().catch(() => undefined);
+      });
+    };
+
+    if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+      const idleId = window.requestIdleCallback(runPrefetch, { timeout: 1500 });
+      return () => {
+        if (typeof window.cancelIdleCallback === 'function') {
+          window.cancelIdleCallback(idleId);
+        }
+      };
+    }
+
+    const timer = globalThis.setTimeout(runPrefetch, 900);
+    return () => globalThis.clearTimeout(timer);
+  }, [isAuthenticated, userProfile?.role]);
 
   const pendingVerificationCount = useMemo(
     () =>
@@ -147,22 +217,25 @@ function WorkspaceShell() {
   }
 
   if (!firebaseUser || !userProfile) {
-    return <LoginPage />;
+    return (
+      <Suspense
+        fallback={
+          <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#0B5A8E] text-white">
+              <Activity className="h-6 w-6 animate-pulse" />
+            </div>
+            <p className="text-sm font-medium text-slate-600">Memuat halaman masuk...</p>
+          </div>
+        }
+      >
+        <LoginPage />
+      </Suspense>
+    );
   }
 
   const renderPage = () => {
     if (loading && allLogbooks.length === 0 && patients.length === 0) {
-      return (
-        <div className="space-y-4">
-          <div className="h-24 rounded-xl border border-slate-200 bg-white animate-pulse" />
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="h-28 rounded-xl border border-slate-200 bg-white animate-pulse" />
-            <div className="h-28 rounded-xl border border-slate-200 bg-white animate-pulse" />
-            <div className="h-28 rounded-xl border border-slate-200 bg-white animate-pulse" />
-          </div>
-          <div className="h-72 rounded-xl border border-slate-200 bg-white animate-pulse" />
-        </div>
-      );
+      return <PageSkeleton />;
     }
 
     switch (activeMenu) {
@@ -307,6 +380,7 @@ function WorkspaceShell() {
       <SidebarLayout
         activeMenu={activeMenu}
         onSelectMenu={setActiveMenu}
+        onPrefetchMenu={prefetchMenu}
         pendingVerificationCount={pendingVerificationCount}
         schedules={schedules}
       >
@@ -314,17 +388,21 @@ function WorkspaceShell() {
           menuId={activeMenu}
           onBackToDashboard={() => setActiveMenu('dashboard')}
         >
-          {renderPage()}
+          <Suspense fallback={<PageSkeleton />}>{renderPage()}</Suspense>
         </RoleGuard>
       </SidebarLayout>
-      <IdleTimeoutModal
-        isOpen={showWarning}
-        remainingSeconds={remainingSeconds}
-        onExtend={resetActivity}
-        onLogoutNow={() => {
-          void logout();
-        }}
-      />
+      {showWarning && (
+        <Suspense fallback={null}>
+          <IdleTimeoutModal
+            isOpen={showWarning}
+            remainingSeconds={remainingSeconds}
+            onExtend={resetActivity}
+            onLogoutNow={() => {
+              void logout();
+            }}
+          />
+        </Suspense>
+      )}
     </>
   );
 }

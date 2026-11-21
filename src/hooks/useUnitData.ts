@@ -41,7 +41,6 @@ export function useUnitData() {
   const [staffDirectory, setStaffDirectory] = useState<StaffDirectoryEntry[]>([]);
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
 
-  const [ownLogbooks, setOwnLogbooks] = useState<LogbookEntry[]>([]);
   const [approvedLogbooks, setApprovedLogbooks] = useState<LogbookEntry[]>([]);
   const [supervisorPendingLogbooks, setSupervisorPendingLogbooks] = useState<LogbookEntry[]>([]);
   const [logbookLocks, setLogbookLocks] = useState<LogbookLock[]>([]);
@@ -57,7 +56,6 @@ export function useUnitData() {
   const [loading, setLoading] = useState(true);
 
   const [approvedReady, setApprovedReady] = useState(false);
-  const [ownReady, setOwnReady] = useState(false);
   const [supervisorReady, setSupervisorReady] = useState(false);
   const [locksReady, setLocksReady] = useState(false);
   const [machineLocksReady, setMachineLocksReady] = useState(false);
@@ -90,7 +88,6 @@ export function useUnitData() {
     if (isInitialSessionLoad) {
       setLoading(true);
       setApprovedReady(false);
-      setOwnReady(false);
       setSupervisorReady(false);
       setLocksReady(false);
       setMachineLocksReady(false);
@@ -136,6 +133,7 @@ export function useUnitData() {
           const items = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Patient));
           items.sort((a, b) => a.fullName.localeCompare(b.fullName));
           setPatients(items);
+          setLoading(false);
         },
         (err) => handleSnapshotError(err, 'patients')
       )
@@ -223,26 +221,8 @@ export function useUnitData() {
       )
     );
 
-    // 8. Logbook: Own logbooks (for nurse's pending/revision/approved history)
-    unsubs.push(
-      onSnapshot(
-        query(collection(db, 'logbook'), where('nurseId', '==', firebaseUser.uid)),
-        (snap) => {
-          const items = snap.docs
-            .map((d) => ({ id: d.id, ...d.data() } as LogbookEntry))
-            .sort((a, b) => {
-              const dateCmp = b.date.localeCompare(a.date);
-              if (dateCmp !== 0) return dateCmp;
-              return b.startTime.localeCompare(a.startTime);
-            });
-          setOwnLogbooks(items);
-          setOwnReady(true);
-        },
-        (err) => handleSnapshotError(err, 'logbook')
-      )
-    );
-
-    // 9. Logbook: Draft, Pending & Revision unit logbooks so all active staff see all nurses' entries (Draft remains read-only for non-owners)
+    // 8. Logbook: Draft, Pending & Revision unit logbooks so all active staff see all nurses' entries (Draft remains read-only for non-owners).
+    // Note: Combined with Query #7 (Approved), this covers 100% of unit + personal logbook statuses without duplicate listener reads.
     const targetStatuses = ['Draft', 'Pending', 'Revision'];
     unsubs.push(
       onSnapshot(
@@ -252,6 +232,7 @@ export function useUnitData() {
             snap.docs.map((d) => ({ id: d.id, ...d.data() } as LogbookEntry))
           );
           setSupervisorReady(true);
+          setLoading(false);
         },
         (err) => handleSnapshotError(err, 'logbook')
       )
@@ -427,95 +408,106 @@ export function useUnitData() {
   const allLogbooks = useMemo(() => {
     const map = new Map<string, LogbookEntry>();
     for (const item of approvedLogbooks) map.set(item.id, item);
-    for (const item of ownLogbooks) map.set(item.id, item);
     for (const item of supervisorPendingLogbooks) map.set(item.id, item);
     return Array.from(map.values()).sort((a, b) => {
       const dateCmp = b.date.localeCompare(a.date);
       if (dateCmp !== 0) return dateCmp;
       return b.startTime.localeCompare(a.startTime);
     });
-  }, [approvedLogbooks, ownLogbooks, supervisorPendingLogbooks]);
+  }, [approvedLogbooks, supervisorPendingLogbooks]);
 
-  // Automatically prune orphaned logbook_locks whose referenced logbook was already deleted
+  const ownLogbooks = useMemo(() => {
+    const uid = firebaseUser?.uid;
+    if (!uid) return [];
+    return allLogbooks.filter((item) => item.nurseId === uid);
+  }, [allLogbooks, firebaseUser?.uid]);
+
+  // Automatically prune orphaned logbook_locks whose referenced logbook was already deleted (deferred to keep startup crisp)
   useEffect(() => {
     if (!firebaseUser || !userProfile?.isActive) return;
-    if (!locksReady || !ownReady || !approvedReady || !supervisorReady) return;
+    if (!locksReady || !approvedReady || !supervisorReady) return;
 
-    const existingLogbookIds = new Set(allLogbooks.map((lb) => lb.id));
-    for (const lk of logbookLocks) {
-      const pruneKey = `${lk.id}::${lk.logbookId}`;
-      if (prunedLockIdsRef.current.has(pruneKey) || existingLogbookIds.has(lk.logbookId)) {
-        continue;
-      }
-      prunedLockIdsRef.current.add(pruneKey);
+    const timer = window.setTimeout(() => {
+      const existingLogbookIds = new Set(allLogbooks.map((lb) => lb.id));
+      for (const lk of logbookLocks) {
+        const pruneKey = `${lk.id}::${lk.logbookId}`;
+        if (prunedLockIdsRef.current.has(pruneKey) || existingLogbookIds.has(lk.logbookId)) {
+          continue;
+        }
+        prunedLockIdsRef.current.add(pruneKey);
 
-      if (isAdmin || lk.nurseId === firebaseUser.uid) {
-        deleteDoc(doc(db, 'logbook_locks', lk.id)).catch(() => {
-          prunedLockIdsRef.current.delete(pruneKey);
-        });
-      } else {
-        getDoc(doc(db, 'logbook', lk.logbookId))
-          .then((snap) => {
-            if (!snap.exists()) {
-              return deleteDoc(doc(db, 'logbook_locks', lk.id));
-            }
-          })
-          .catch(() => {
-            // Permission denied on non-approved entry of another nurse means logbook still exists
+        if (isAdmin || lk.nurseId === firebaseUser.uid) {
+          deleteDoc(doc(db, 'logbook_locks', lk.id)).catch(() => {
+            prunedLockIdsRef.current.delete(pruneKey);
           });
+        } else {
+          getDoc(doc(db, 'logbook', lk.logbookId))
+            .then((snap) => {
+              if (!snap.exists()) {
+                return deleteDoc(doc(db, 'logbook_locks', lk.id));
+              }
+            })
+            .catch(() => {
+              // Permission denied on non-approved entry of another nurse means logbook still exists
+            });
+        }
       }
-    }
+    }, 2000);
+
+    return () => window.clearTimeout(timer);
   }, [
     firebaseUser,
     userProfile?.isActive,
     isAdmin,
     locksReady,
-    ownReady,
     approvedReady,
     supervisorReady,
     allLogbooks,
     logbookLocks,
   ]);
 
-  // Automatically prune orphaned machine_locks whose referenced non-empty logbook was deleted
+  // Automatically prune orphaned machine_locks whose referenced non-empty logbook was deleted (deferred to keep startup crisp)
   useEffect(() => {
     if (!firebaseUser || !userProfile?.isActive) return;
-    if (!machineLocksReady || !ownReady || !approvedReady || !supervisorReady) return;
+    if (!machineLocksReady || !approvedReady || !supervisorReady) return;
 
-    const existingLogbookIds = new Set(allLogbooks.map((lb) => lb.id));
-    for (const lk of machineLocks) {
-      const pruneKey = `${lk.id}::${lk.logbookId || ''}`;
-      if (
-        !lk.logbookId ||
-        prunedMachineLockIdsRef.current.has(pruneKey) ||
-        existingLogbookIds.has(lk.logbookId)
-      ) {
-        continue;
-      }
-      prunedMachineLockIdsRef.current.add(pruneKey);
+    const timer = window.setTimeout(() => {
+      const existingLogbookIds = new Set(allLogbooks.map((lb) => lb.id));
+      for (const lk of machineLocks) {
+        const pruneKey = `${lk.id}::${lk.logbookId || ''}`;
+        if (
+          !lk.logbookId ||
+          prunedMachineLockIdsRef.current.has(pruneKey) ||
+          existingLogbookIds.has(lk.logbookId)
+        ) {
+          continue;
+        }
+        prunedMachineLockIdsRef.current.add(pruneKey);
 
-      if (isAdmin || lk.nurseId === firebaseUser.uid) {
-        deleteDoc(doc(db, 'machine_locks', lk.id)).catch(() => {
-          prunedMachineLockIdsRef.current.delete(pruneKey);
-        });
-      } else {
-        getDoc(doc(db, 'logbook', lk.logbookId))
-          .then((snap) => {
-            if (!snap.exists()) {
-              return deleteDoc(doc(db, 'machine_locks', lk.id));
-            }
-          })
-          .catch(() => {
-            // Permission denied on non-approved entry of another nurse means logbook still exists
+        if (isAdmin || lk.nurseId === firebaseUser.uid) {
+          deleteDoc(doc(db, 'machine_locks', lk.id)).catch(() => {
+            prunedMachineLockIdsRef.current.delete(pruneKey);
           });
+        } else {
+          getDoc(doc(db, 'logbook', lk.logbookId))
+            .then((snap) => {
+              if (!snap.exists()) {
+                return deleteDoc(doc(db, 'machine_locks', lk.id));
+              }
+            })
+            .catch(() => {
+              // Permission denied on non-approved entry of another nurse means logbook still exists
+            });
+        }
       }
-    }
+    }, 2000);
+
+    return () => window.clearTimeout(timer);
   }, [
     firebaseUser,
     userProfile?.isActive,
     isAdmin,
     machineLocksReady,
-    ownReady,
     approvedReady,
     supervisorReady,
     allLogbooks,

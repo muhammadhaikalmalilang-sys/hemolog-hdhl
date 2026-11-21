@@ -18,7 +18,6 @@ import {
 } from 'firebase/auth';
 import {
   doc,
-  getDoc,
   setDoc,
   updateDoc,
   onSnapshot,
@@ -162,6 +161,56 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let retryTimer: number | null = null;
     let activeUser: User | null = null;
 
+    let bootstrappingUid: string | null = null;
+
+    const bootstrapMissingProfile = async (user: User, seq: number) => {
+      if (bootstrappingUid === user.uid) return;
+      bootstrappingUid = user.uid;
+      try {
+        const isBootstrap = user.emailVerified && isBootstrapAdminEmail(user.email);
+        const initialRole: UserRole = isBootstrap ? 'Administrator' : 'Perawat Pelaksana';
+        const fallbackName =
+          clampString(user.displayName || user.email?.split('@')[0] || 'Perawat HD', 120) ||
+          'Perawat HD';
+        const initialNip = isBootstrap ? 'ADM-001' : `HD-${user.uid.slice(0, 6).toUpperCase()}`;
+
+        const profilePayload = {
+          uid: user.uid,
+          email: clampString(user.email || 'staff@hemolog.local', 200),
+          fullName: fallbackName,
+          nip: initialNip,
+          role: initialRole,
+          isActive: true,
+          phone: '',
+          specialization: isBootstrap ? 'System Administrator' : 'Perawat Hemodialisa',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        };
+
+        await Promise.all([
+          setDoc(doc(db, 'users', user.uid), profilePayload),
+          setDoc(doc(db, 'staff_directory', user.uid), {
+            uid: user.uid,
+            fullName: fallbackName,
+            role: initialRole,
+            isActive: true,
+            updatedAt: serverTimestamp(),
+          }),
+        ]);
+      } catch (error) {
+        if (cancelled || seq !== authEventSeq) return;
+        bootstrappingUid = null;
+        if (isTransientFirestoreError(error)) {
+          console.warn('Inisialisasi profil tertunda sementara, mencoba sinkronisasi ulang:', error);
+          void reconnectFirestore({ force: true, resubscribe: true, reason: 'error' });
+        } else {
+          console.error('Error initializing user profile:', error);
+          setAuthReady(true);
+          setProfileLoading(false);
+        }
+      }
+    };
+
     const attachProfileListener = (user: User, seq: number) => {
       if (cancelled || seq !== authEventSeq) return;
       if (unsubscribeProfile) {
@@ -199,11 +248,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 fullName: fallbackName,
               });
             }
-          } else {
-            setUserProfile(null);
+            setAuthReady(true);
+            setProfileLoading(false);
+          } else if (!docSnap.metadata.fromCache) {
+            // Confirmed from server that this newly signed-in user has no profile document yet
+            void bootstrapMissingProfile(user, seq);
           }
-          setAuthReady(true);
-          setProfileLoading(false);
         },
         (error) => {
           if (cancelled || seq !== authEventSeq) return;
@@ -236,7 +286,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     });
 
-    const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
       const currentSeq = ++authEventSeq;
       if (unsubscribeProfile) {
         unsubscribeProfile();
@@ -251,6 +301,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       activeUser = user;
       needsResubscribe = false;
+      bootstrappingUid = null;
       setFirebaseUser(user);
       setFatalError(null);
 
@@ -264,52 +315,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setBlockedMessage(null);
       setIdleLogoutMessage(null);
       setProfileLoading(true);
-      const userRef = doc(db, 'users', user.uid);
 
-      try {
-        const snap = await getDoc(userRef);
-        if (cancelled || currentSeq !== authEventSeq) return;
-        if (!snap.exists()) {
-          const isBootstrap = user.emailVerified && isBootstrapAdminEmail(user.email);
-          const initialRole: UserRole = isBootstrap ? 'Administrator' : 'Perawat Pelaksana';
-          const fallbackName =
-            clampString(user.displayName || user.email?.split('@')[0] || 'Perawat HD', 120) ||
-            'Perawat HD';
-          const initialNip = isBootstrap ? 'ADM-001' : `HD-${user.uid.slice(0, 6).toUpperCase()}`;
-
-          const profilePayload = {
-            uid: user.uid,
-            email: clampString(user.email || 'staff@hemolog.local', 200),
-            fullName: fallbackName,
-            nip: initialNip,
-            role: initialRole,
-            isActive: true,
-            phone: '',
-            specialization: isBootstrap ? 'System Administrator' : 'Perawat Hemodialisa',
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          };
-
-          await setDoc(userRef, profilePayload);
-          if (cancelled || currentSeq !== authEventSeq) return;
-          await setDoc(doc(db, 'staff_directory', user.uid), {
-            uid: user.uid,
-            fullName: fallbackName,
-            role: initialRole,
-            isActive: true,
-            updatedAt: serverTimestamp(),
-          });
-        }
-      } catch (error) {
-        if (cancelled || currentSeq !== authEventSeq) return;
-        if (isTransientFirestoreError(error)) {
-          console.warn('Inisialisasi profil tertunda sementara, mencoba sinkronisasi ulang:', error);
-          void reconnectFirestore({ force: true, resubscribe: true, reason: 'error' });
-        } else {
-          console.error('Error initializing user profile:', error);
-        }
-      }
-
+      // Attach profile listener directly so persistentLocalCache unlocks the UI in milliseconds
       attachProfileListener(user, currentSeq);
     });
 
@@ -360,25 +367,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const cleanNip = clampString(params.nip, 40);
 
     try {
-      await setDoc(doc(db, 'users', user.uid), {
-        uid: user.uid,
-        email: clampString(params.email.trim(), 200),
-        fullName: cleanName,
-        nip: cleanNip,
-        role,
-        isActive: true,
-        phone: '',
-        specialization: 'Perawat Hemodialisa',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      await setDoc(doc(db, 'staff_directory', user.uid), {
-        uid: user.uid,
-        fullName: cleanName,
-        role,
-        isActive: true,
-        updatedAt: serverTimestamp(),
-      });
+      await Promise.all([
+        setDoc(doc(db, 'users', user.uid), {
+          uid: user.uid,
+          email: clampString(params.email.trim(), 200),
+          fullName: cleanName,
+          nip: cleanNip,
+          role,
+          isActive: true,
+          phone: '',
+          specialization: 'Perawat Hemodialisa',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        }),
+        setDoc(doc(db, 'staff_directory', user.uid), {
+          uid: user.uid,
+          fullName: cleanName,
+          role,
+          isActive: true,
+          updatedAt: serverTimestamp(),
+        }),
+      ]);
       await sendEmailVerification(user).catch(() => undefined);
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, `users/${user.uid}`);
@@ -425,17 +434,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const cleanSpec = clampString(data.specialization, 100);
 
     try {
-      await updateDoc(doc(db, 'users', firebaseUser.uid), {
-        fullName: cleanName,
-        nip: cleanNip,
-        phone: cleanPhone,
-        specialization: cleanSpec,
-        updatedAt: serverTimestamp(),
-      });
-      await updateDoc(doc(db, 'staff_directory', firebaseUser.uid), {
-        fullName: cleanName,
-        updatedAt: serverTimestamp(),
-      });
+      await Promise.all([
+        updateDoc(doc(db, 'users', firebaseUser.uid), {
+          fullName: cleanName,
+          nip: cleanNip,
+          phone: cleanPhone,
+          specialization: cleanSpec,
+          updatedAt: serverTimestamp(),
+        }),
+        updateDoc(doc(db, 'staff_directory', firebaseUser.uid), {
+          fullName: cleanName,
+          updatedAt: serverTimestamp(),
+        }),
+      ]);
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `users/${firebaseUser.uid}`);
     }
@@ -483,25 +494,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     try {
-      await setDoc(doc(db, 'users', newUid), {
-        uid: newUid,
-        email: cleanEmail,
-        fullName: cleanName,
-        nip: cleanNip,
-        role: params.role,
-        isActive: true,
-        phone: cleanPhone,
-        specialization: cleanSpec,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      await setDoc(doc(db, 'staff_directory', newUid), {
-        uid: newUid,
-        fullName: cleanName,
-        role: params.role,
-        isActive: true,
-        updatedAt: serverTimestamp(),
-      });
+      await Promise.all([
+        setDoc(doc(db, 'users', newUid), {
+          uid: newUid,
+          email: cleanEmail,
+          fullName: cleanName,
+          nip: cleanNip,
+          role: params.role,
+          isActive: true,
+          phone: cleanPhone,
+          specialization: cleanSpec,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        }),
+        setDoc(doc(db, 'staff_directory', newUid), {
+          uid: newUid,
+          fullName: cleanName,
+          role: params.role,
+          isActive: true,
+          updatedAt: serverTimestamp(),
+        }),
+      ]);
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, `users/${newUid}`);
     }

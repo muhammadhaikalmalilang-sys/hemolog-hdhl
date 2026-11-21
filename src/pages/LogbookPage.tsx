@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import {
   addDoc,
   collection,
@@ -37,11 +37,21 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { useLiveClock } from '../hooks/useLiveClock';
 import { ShiftBadge, VerificationBadge } from '../components/ui/StatusBadge';
-import { LogbookWizardModal } from '../components/logbook/LogbookWizardModal';
 import { LogbookDetailModal } from '../components/logbook/LogbookDetailModal';
 import { QuickAddPatientModal } from '../components/logbook/QuickAddPatientModal';
-import { LogbookTemplateEditorModal } from '../components/logbook/LogbookTemplateEditorModal';
 import { DEFAULT_LOGBOOK_TEMPLATE } from '../lib/logbookTemplate';
+
+const loadWizardModal = () =>
+  import('../components/logbook/LogbookWizardModal').then((m) => ({
+    default: m.LogbookWizardModal,
+  }));
+const LazyLogbookWizardModal = lazy(loadWizardModal);
+
+const LazyLogbookTemplateEditorModal = lazy(() =>
+  import('../components/logbook/LogbookTemplateEditorModal').then((m) => ({
+    default: m.LogbookTemplateEditorModal,
+  }))
+);
 import type {
   ActionCategory,
   Doctor,
@@ -208,6 +218,26 @@ export function LogbookPage({
       setListFeedback(null);
     }
   }, [liveTodayDate, todayDate]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+      const idleId = window.requestIdleCallback(
+        () => {
+          void loadWizardModal().catch(() => undefined);
+        },
+        { timeout: 1500 }
+      );
+      return () => {
+        if (typeof window.cancelIdleCallback === 'function') {
+          window.cancelIdleCallback(idleId);
+        }
+      };
+    }
+    const timer = globalThis.setTimeout(() => {
+      void loadWizardModal().catch(() => undefined);
+    }, 600);
+    return () => globalThis.clearTimeout(timer);
+  }, []);
 
   const inputDayName = useMemo(() => getDayNameId(inputDate), [inputDate]);
 
@@ -2334,32 +2364,42 @@ export function LogbookPage({
 
       {/* 7-Part Interactive Wizard Modal */}
       {showWizardModal && (
-        <LogbookWizardModal
-          editingEntry={editingEntry}
-          initialPatientId={wizardPatientId || editingEntry?.patientId || undefined}
-          initialMachineId={editingEntry?.machineId || wizardMachineId}
-          initialDate={editingEntry?.date || inputDate}
-          initialShift={editingEntry?.shift || activeShift}
-          initialDoctorId={editingEntry?.doctorId || resolvedDpjpId || undefined}
-          initialDutyDoctorId={editingEntry?.dutyDoctorId || resolvedDutyDoctorId || undefined}
-          initialDutyDoctorName={editingEntry?.dutyDoctorName || resolvedDutyDoctorName || undefined}
-          logbooks={logbooks}
-          logbookLocks={logbookLocks}
-          machineLocks={machineLocks}
-          patients={patients}
-          doctors={doctors}
-          machines={machines}
-          actionCategories={actionCategories}
-          staffDirectory={staffDirectory}
-          pjShiftAssignments={pjShiftAssignments}
-          formTemplate={formTemplate}
-          onClose={() => {
-            setShowWizardModal(false);
-            setEditingEntryId(null);
-            setWizardPatientId(null);
-            setWizardMachineId(undefined);
-          }}
-        />
+        <Suspense
+          fallback={
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4">
+              <div className="rounded-xl border border-slate-200 bg-white px-6 py-4 text-xs font-semibold text-slate-700 shadow-lg">
+                Memuat formulir asuhan keperawatan...
+              </div>
+            </div>
+          }
+        >
+          <LazyLogbookWizardModal
+            editingEntry={editingEntry}
+            initialPatientId={wizardPatientId || editingEntry?.patientId || undefined}
+            initialMachineId={editingEntry?.machineId || wizardMachineId}
+            initialDate={editingEntry?.date || inputDate}
+            initialShift={editingEntry?.shift || activeShift}
+            initialDoctorId={editingEntry?.doctorId || resolvedDpjpId || undefined}
+            initialDutyDoctorId={editingEntry?.dutyDoctorId || resolvedDutyDoctorId || undefined}
+            initialDutyDoctorName={editingEntry?.dutyDoctorName || resolvedDutyDoctorName || undefined}
+            logbooks={logbooks}
+            logbookLocks={logbookLocks}
+            machineLocks={machineLocks}
+            patients={patients}
+            doctors={doctors}
+            machines={machines}
+            actionCategories={actionCategories}
+            staffDirectory={staffDirectory}
+            pjShiftAssignments={pjShiftAssignments}
+            formTemplate={formTemplate}
+            onClose={() => {
+              setShowWizardModal(false);
+              setEditingEntryId(null);
+              setWizardPatientId(null);
+              setWizardMachineId(undefined);
+            }}
+          />
+        </Suspense>
       )}
 
       {/* Quick Add Patient Modal */}
@@ -2405,10 +2445,20 @@ export function LogbookPage({
 
       {/* Master Logbook Template Editor Modal */}
       {isAdminMaster && showTemplateEditor && (
-        <LogbookTemplateEditorModal
-          currentTemplate={formTemplate || DEFAULT_LOGBOOK_TEMPLATE}
-          onClose={() => setShowTemplateEditor(false)}
-        />
+        <Suspense
+          fallback={
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4">
+              <div className="rounded-xl border border-slate-200 bg-white px-6 py-4 text-xs font-semibold text-slate-700 shadow-lg">
+                Memuat editor template logbook...
+              </div>
+            </div>
+          }
+        >
+          <LazyLogbookTemplateEditorModal
+            currentTemplate={formTemplate || DEFAULT_LOGBOOK_TEMPLATE}
+            onClose={() => setShowTemplateEditor(false)}
+          />
+        </Suspense>
       )}
 
       {/* Confirm Delete Modal */}

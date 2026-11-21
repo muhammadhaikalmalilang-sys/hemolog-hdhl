@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import { doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { CheckCircle2, Search, Eye, Pencil, X } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
@@ -11,7 +11,12 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { useLiveClock } from '../hooks/useLiveClock';
 import { ShiftBadge, VerificationBadge } from '../components/ui/StatusBadge';
-import { LogbookWizardModal } from '../components/logbook/LogbookWizardModal';
+
+const LazyLogbookWizardModal = lazy(() =>
+  import('../components/logbook/LogbookWizardModal').then((m) => ({
+    default: m.LogbookWizardModal,
+  }))
+);
 import type {
   ActionCategory,
   Doctor,
@@ -386,91 +391,111 @@ export function VerificationPage({
 
       {/* Review & Verify Modal (Exact 7-Part Logbook Wizard Model) */}
       {selectedEntry && (
-        <LogbookWizardModal
-          editingEntry={selectedEntry}
-          readOnly={true}
-          initialPatientId={selectedEntry.patientId}
-          initialMachineId={selectedEntry.machineId}
-          initialDate={selectedEntry.date}
-          initialShift={selectedEntry.shift}
-          initialDoctorId={selectedEntry.doctorId}
-          initialDutyDoctorId={selectedEntry.dutyDoctorId}
-          initialDutyDoctorName={selectedEntry.dutyDoctorName}
-          logbooks={logbooks}
-          logbookLocks={logbookLocks}
-          machineLocks={machineLocks}
-          patients={patients}
-          doctors={doctors}
-          machines={machines}
-          actionCategories={actionCategories}
-          staffDirectory={staffDirectory}
-          formTemplate={formTemplate}
-          verifierReview={{
-            canEdit: Boolean(
-              canEditBeforeVerify &&
-                (selectedEntry.verificationStatus === 'Pending' ||
-                  selectedEntry.verificationStatus === 'Revision')
-            ),
-            note: verificationNote,
-            onNoteChange: setVerificationNote,
-            processing: processingId === selectedEntry.id,
-            editSuccessMsg,
-            onSwitchToEdit: () => handleOpenEditWizard(selectedEntry, true),
-            onRequestRevision: () =>
-              handleVerify(
-                selectedEntry,
-                'Revision',
-                verificationNote.trim() || 'Mohon lengkapi catatan tindakan.'
+        <Suspense
+          fallback={
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4">
+              <div className="rounded-xl border border-slate-200 bg-white px-6 py-4 text-xs font-semibold text-slate-700 shadow-lg">
+                Memuat formulir verifikasi...
+              </div>
+            </div>
+          }
+        >
+          <LazyLogbookWizardModal
+            editingEntry={selectedEntry}
+            readOnly={true}
+            initialPatientId={selectedEntry.patientId}
+            initialMachineId={selectedEntry.machineId}
+            initialDate={selectedEntry.date}
+            initialShift={selectedEntry.shift}
+            initialDoctorId={selectedEntry.doctorId}
+            initialDutyDoctorId={selectedEntry.dutyDoctorId}
+            initialDutyDoctorName={selectedEntry.dutyDoctorName}
+            logbooks={logbooks}
+            logbookLocks={logbookLocks}
+            machineLocks={machineLocks}
+            patients={patients}
+            doctors={doctors}
+            machines={machines}
+            actionCategories={actionCategories}
+            staffDirectory={staffDirectory}
+            formTemplate={formTemplate}
+            verifierReview={{
+              canEdit: Boolean(
+                canEditBeforeVerify &&
+                  (selectedEntry.verificationStatus === 'Pending' ||
+                    selectedEntry.verificationStatus === 'Revision')
               ),
-            onApprove: () =>
-              handleVerify(
-                selectedEntry,
-                'Approved',
-                verificationNote.trim() || 'Terverifikasi sesuai standar HD'
-              ),
-          }}
-          onClose={() => {
-            setSelectedEntryId(null);
-            setEditSuccessMsg(null);
-          }}
-        />
+              note: verificationNote,
+              onNoteChange: setVerificationNote,
+              processing: processingId === selectedEntry.id,
+              editSuccessMsg,
+              onSwitchToEdit: () => handleOpenEditWizard(selectedEntry, true),
+              onRequestRevision: () =>
+                handleVerify(
+                  selectedEntry,
+                  'Revision',
+                  verificationNote.trim() || 'Mohon lengkapi catatan tindakan.'
+                ),
+              onApprove: () =>
+                handleVerify(
+                  selectedEntry,
+                  'Approved',
+                  verificationNote.trim() || 'Terverifikasi sesuai standar HD'
+                ),
+            }}
+            onClose={() => {
+              setSelectedEntryId(null);
+              setEditSuccessMsg(null);
+            }}
+          />
+        </Suspense>
       )}
 
       {/* Verifier Logbook Edit Wizard Modal */}
       {editingWizardEntry && (
-        <LogbookWizardModal
-          editingEntry={editingWizardEntry}
-          verifierEditMode={true}
-          initialPatientId={editingWizardEntry.patientId}
-          initialMachineId={editingWizardEntry.machineId}
-          initialDate={editingWizardEntry.date}
-          initialShift={editingWizardEntry.shift}
-          initialDoctorId={editingWizardEntry.doctorId}
-          initialDutyDoctorId={editingWizardEntry.dutyDoctorId}
-          initialDutyDoctorName={editingWizardEntry.dutyDoctorName}
-          logbooks={logbooks}
-          logbookLocks={logbookLocks}
-          machineLocks={machineLocks}
-          patients={patients}
-          doctors={doctors}
-          machines={machines}
-          actionCategories={actionCategories}
-          staffDirectory={staffDirectory}
-          formTemplate={formTemplate}
-          onSaved={() => {
-            setEditSuccessMsg(
-              `Perubahan logbook pasien ${editingWizardEntry.patientName} berhasil disimpan. Silakan lanjutkan proses verifikasi.`
-            );
-          }}
-          onClose={() => {
-            const toReopen = reopenReviewEntryId;
-            setEditingWizardEntryId(null);
-            setReopenReviewEntryId(null);
-            if (toReopen) {
-              setSelectedEntryId(toReopen);
-            }
-          }}
-        />
+        <Suspense
+          fallback={
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4">
+              <div className="rounded-xl border border-slate-200 bg-white px-6 py-4 text-xs font-semibold text-slate-700 shadow-lg">
+                Memuat formulir edit verifikator...
+              </div>
+            </div>
+          }
+        >
+          <LazyLogbookWizardModal
+            editingEntry={editingWizardEntry}
+            verifierEditMode={true}
+            initialPatientId={editingWizardEntry.patientId}
+            initialMachineId={editingWizardEntry.machineId}
+            initialDate={editingWizardEntry.date}
+            initialShift={editingWizardEntry.shift}
+            initialDoctorId={editingWizardEntry.doctorId}
+            initialDutyDoctorId={editingWizardEntry.dutyDoctorId}
+            initialDutyDoctorName={editingWizardEntry.dutyDoctorName}
+            logbooks={logbooks}
+            logbookLocks={logbookLocks}
+            machineLocks={machineLocks}
+            patients={patients}
+            doctors={doctors}
+            machines={machines}
+            actionCategories={actionCategories}
+            staffDirectory={staffDirectory}
+            formTemplate={formTemplate}
+            onSaved={() => {
+              setEditSuccessMsg(
+                `Perubahan logbook pasien ${editingWizardEntry.patientName} berhasil disimpan. Silakan lanjutkan proses verifikasi.`
+              );
+            }}
+            onClose={() => {
+              const toReopen = reopenReviewEntryId;
+              setEditingWizardEntryId(null);
+              setReopenReviewEntryId(null);
+              if (toReopen) {
+                setSelectedEntryId(toReopen);
+              }
+            }}
+          />
+        </Suspense>
       )}
     </div>
   );

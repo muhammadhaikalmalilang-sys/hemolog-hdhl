@@ -208,8 +208,9 @@ export function onFirestoreReconnect(listener: (event: ReconnectEvent) => void):
   };
 }
 
-const RECONNECT_COOLDOWN_MS = 2000;
-const RESUBSCRIBE_COOLDOWN_MS = 4000;
+const RECONNECT_COOLDOWN_MS = 5000;
+const RESUBSCRIBE_COOLDOWN_MS = 15000;
+const STALE_BACKGROUND_MS = 120000;
 
 let lastReconnectAt = 0;
 let lastResubscribeAt = 0;
@@ -240,6 +241,12 @@ export async function reconnectFirestore(
     return;
   }
 
+  // On normal focus/short tab switches while already online, Firestore SDK's persistent channel stays live;
+  // avoid redundant server probes or listener tear-downs.
+  if (!force && !hardReset && !wasOffline && reason === 'focus') {
+    return Promise.resolve();
+  }
+
   const now = Date.now();
   if (reconnectPromise) {
     return reconnectPromise;
@@ -256,21 +263,28 @@ export async function reconnectFirestore(
         await disableNetwork(db).catch(() => undefined);
       }
       await enableNetwork(db).catch(() => undefined);
-      const reachable = await testConnection();
-      if (!reachable && !hardReset && (hadOfflineGap || reason === 'online' || reason === 'error')) {
-        await disableNetwork(db).catch(() => undefined);
-        await enableNetwork(db).catch(() => undefined);
-        await testConnection();
+      if (hardReset || hadOfflineGap || reason === 'online' || reason === 'error' || reason === 'manual') {
+        const reachable = await testConnection();
+        if (!reachable && !hardReset) {
+          await disableNetwork(db).catch(() => undefined);
+          await enableNetwork(db).catch(() => undefined);
+          await testConnection();
+        }
       }
       wasOffline = false;
     } finally {
       reconnectPromise = null;
       const doneAt = Date.now();
+      const needsResubscribeByReason =
+        force ||
+        hadOfflineGap ||
+        reason === 'online' ||
+        reason === 'manual' ||
+        reason === 'error';
       const shouldResubscribe =
         wantResubscribe &&
-        (force ||
-          hadOfflineGap ||
-          reason === 'online' ||
+        needsResubscribeByReason &&
+        (reason === 'online' ||
           reason === 'manual' ||
           reason === 'error' ||
           doneAt - lastResubscribeAt >= RESUBSCRIBE_COOLDOWN_MS);
@@ -304,8 +318,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     });
   });
   window.addEventListener('focus', () => {
+    if (!wasOffline) return;
     void reconnectFirestore({
-      force: wasOffline,
+      force: true,
+      hardReset: true,
       resubscribe: true,
       reason: 'focus',
     });
@@ -317,9 +333,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
     if (document.visibilityState === 'visible') {
       const hiddenDuration = lastHiddenAt > 0 ? Date.now() - lastHiddenAt : 0;
-      const staleBackground = hiddenDuration >= 15000;
+      const staleBackground = hiddenDuration >= STALE_BACKGROUND_MS;
+      if (!wasOffline && !staleBackground) return;
       void reconnectFirestore({
         force: wasOffline || staleBackground,
+        hardReset: wasOffline,
         resubscribe: true,
         reason: 'visibilitychange',
       });

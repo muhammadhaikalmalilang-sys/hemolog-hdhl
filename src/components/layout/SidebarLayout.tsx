@@ -46,6 +46,7 @@ const MENU_ICONS: Record<MenuId, React.ComponentType<{ className?: string }>> = 
 interface SidebarLayoutProps {
   activeMenu: MenuId;
   onSelectMenu: (menu: MenuId) => void;
+  onPrefetchMenu?: (menu: MenuId) => void;
   pendingVerificationCount?: number;
   schedules?: ScheduleEntry[];
   children: React.ReactNode;
@@ -54,6 +55,7 @@ interface SidebarLayoutProps {
 export function SidebarLayout({
   activeMenu,
   onSelectMenu,
+  onPrefetchMenu,
   pendingVerificationCount = 0,
   schedules = [],
   children,
@@ -97,6 +99,7 @@ export function SidebarLayout({
             <img
               src="/assets/aistudio/LOGO_WARNA_VID_LANDSCAPE_f7d527db.png"
               alt="Logo RSHL Rumah Sakit Happy Land"
+              decoding="async"
               referrerPolicy="no-referrer"
               onError={() => setLogoFailed(true)}
               className="h-full w-full object-contain scale-[2.2] mix-blend-multiply"
@@ -128,6 +131,8 @@ export function SidebarLayout({
               key={item.id}
               type="button"
               onClick={() => handleNavClick(item.id)}
+              onMouseEnter={() => onPrefetchMenu?.(item.id)}
+              onFocus={() => onPrefetchMenu?.(item.id)}
               className={`group flex w-full items-center justify-between rounded-xl px-3.5 py-2.5 text-left text-xs uppercase tracking-wide transition-all duration-150 whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0B5A8E]/40 ${
                 isActive
                   ? 'bg-white text-[#0B5A8E] font-bold shadow-[0_6px_18px_-4px_rgba(11,90,142,0.22)]'
@@ -199,6 +204,8 @@ export function SidebarLayout({
             <img
               src="/assets/aistudio/2021-10-18_7a7fa8a8.webp"
               alt=""
+              loading="lazy"
+              decoding="async"
               referrerPolicy="no-referrer"
               onError={() => setBgFailed(true)}
               className="h-full w-full object-cover object-center opacity-35"

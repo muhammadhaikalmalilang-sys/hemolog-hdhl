@@ -4,7 +4,8 @@ export const IDLE_TIMEOUT_MS = 15 * 60 * 1000; // 15 menit
 export const IDLE_WARNING_MS = 60 * 1000; // Peringatan 60 detik terakhir sebelum logout
 export const LAST_ACTIVITY_STORAGE_KEY = 'hemolog_last_activity_at';
 
-const ACTIVITY_THROTTLE_MS = 1000;
+const PASSIVE_ACTIVITY_THROTTLE_MS = 5000;
+const ACTIVE_ACTIVITY_THROTTLE_MS = 1000;
 
 export function stampLastActivity(timestamp = Date.now()): void {
   if (typeof window === 'undefined') return;
@@ -137,7 +138,7 @@ export function useIdleTimeout({
       if (showWarningRef.current) return;
 
       const current = Date.now();
-      if (current - lastThrottleRef.current < ACTIVITY_THROTTLE_MS) return;
+      if (current - lastThrottleRef.current < PASSIVE_ACTIVITY_THROTTLE_MS) return;
       lastThrottleRef.current = current;
       lastActivityRef.current = current;
       stampLastActivity(current);
@@ -153,7 +154,7 @@ export function useIdleTimeout({
         return;
       }
       const current = Date.now();
-      if (!showWarningRef.current && current - lastThrottleRef.current < ACTIVITY_THROTTLE_MS) {
+      if (!showWarningRef.current && current - lastThrottleRef.current < ACTIVE_ACTIVITY_THROTTLE_MS) {
         return;
       }
       resetActivity();
@@ -195,7 +196,7 @@ export function useIdleTimeout({
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
 
     evaluateIdleState();
-    const intervalId = window.setInterval(evaluateIdleState, 1000);
+    const intervalId = window.setInterval(evaluateIdleState, showWarning ? 1000 : 15000);
 
     return () => {
       window.clearInterval(intervalId);
@@ -205,7 +206,7 @@ export function useIdleTimeout({
       window.removeEventListener('storage', handleStorageSync);
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
     };
-  }, [enabled, timeoutMs, warningMs, resetActivity]);
+  }, [enabled, timeoutMs, warningMs, showWarning, resetActivity]);
 
   return {
     showWarning,
