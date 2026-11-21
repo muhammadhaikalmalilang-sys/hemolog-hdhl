@@ -78,7 +78,10 @@
         "verifiedByName": { "type": "string", "maxLength": 120 },
         "verificationNote": { "type": "string", "maxLength": 500 },
         "verifiedAt": { "type": "string", "format": "date-time" },
-        "wizardDetails": { "type": "object" },
+        "wizardDetails": {
+          "type": "object",
+          "description": "Detail formulir asuhan keperawatan HD bagian 1–7 (termasuk section7 Transfusi & EPO), spoChecklist, dan customResponses (TTV/kolom tambahan)."
+        },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -350,6 +353,23 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "date", "monthKey", "shift", "machineId", "machineNumber", "patientId", "patientName", "nurseId", "nurseName", "logbookId", "createdAt", "updatedAt"]
+    },
+    "LogbookFormTemplate": {
+      "title": "LogbookFormTemplate",
+      "description": "Konfigurasi dinamis Formulir Asuhan Keperawatan Hemodialisa (judul, teks bagian/poin, penambahan poin, penginputan TTV per poin, kolom tambahan) yang tersinkronisasi dengan Laporan Bulanan.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "formTitle": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "monthlyReportTitle": { "type": "string", "minLength": 2, "maxLength": 240 },
+        "sections": { "type": "array" },
+        "points": { "type": "array" },
+        "sectionCustomFields": { "type": "object" },
+        "updatedBy": { "type": "string", "maxLength": 128 },
+        "updatedByName": { "type": "string", "maxLength": 120 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "formTitle", "monthlyReportTitle", "sections", "points", "updatedAt"]
     }
   },
   "firestore": {
@@ -404,6 +424,10 @@
     "/machine_locks/{lockId}": {
       "schema": { "$ref": "#/entities/MachineLock" },
       "description": "Pengunci mesin/bed HD per tanggal dan shift agar mesin yang sudah dipilih tidak dapat dipilih kembali oleh staf lain."
+    },
+    "/form_templates/{templateId}": {
+      "schema": { "$ref": "#/entities/LogbookFormTemplate" },
+      "description": "Konfigurasi template Formulir Asuhan Keperawatan Hemodialisa yang dikelola Administrator dan memengaruhi Laporan Bulanan."
     }
   }
 }

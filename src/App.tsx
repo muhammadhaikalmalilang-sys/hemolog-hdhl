@@ -111,6 +111,7 @@ function WorkspaceShell() {
     pjShiftAssignments,
     doctorSchedules,
     allReports,
+    formTemplate,
   } = useUnitData();
 
   // Keep activeMenu valid when role changes
@@ -193,6 +194,7 @@ function WorkspaceShell() {
             schedules={schedules}
             doctorSchedules={doctorSchedules}
             pjShiftAssignments={pjShiftAssignments}
+            formTemplate={formTemplate}
           />
         );
       case 'master_logbook':
@@ -210,6 +212,7 @@ function WorkspaceShell() {
             schedules={schedules}
             doctorSchedules={doctorSchedules}
             pjShiftAssignments={pjShiftAssignments}
+            formTemplate={formTemplate}
           />
         );
       case 'verifikasi':
@@ -223,6 +226,7 @@ function WorkspaceShell() {
             machines={machines}
             actionCategories={actionCategories}
             staffDirectory={staffDirectory}
+            formTemplate={formTemplate}
           />
         );
       case 'riwayat':
@@ -236,6 +240,7 @@ function WorkspaceShell() {
             actionCategories={actionCategories}
             staffDirectory={staffDirectory}
             machineLocks={machineLocks}
+            formTemplate={formTemplate}
           />
         );
       case 'laporan_pasien':
@@ -247,6 +252,7 @@ function WorkspaceShell() {
             machines={machines}
             staffDirectory={staffDirectory}
             pjShiftAssignments={pjShiftAssignments}
+            formTemplate={formTemplate}
           />
         );
       case 'laporan_pj_shift':
@@ -268,6 +274,7 @@ function WorkspaceShell() {
             logbooks={allLogbooks}
             staffDirectory={staffDirectory}
             reports={allReports}
+            formTemplate={formTemplate}
           />
         );
       case 'jadwal_dinas':

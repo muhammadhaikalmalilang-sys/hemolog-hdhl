@@ -245,7 +245,23 @@ export interface LogbookWizardDetails {
     handoverSummary: string;
     ktv?: string;
   };
+  section7?: {
+    transfusionGiven: boolean;
+    transfusionComponent?: string;
+    transfusionBloodGroup?: string;
+    transfusionBagCount?: string;
+    transfusionVolumeMl?: string;
+    transfusionBagNumber?: string;
+    transfusionReaction?: string;
+    transfusionNote: string;
+    epoGiven: boolean;
+    epoPreparation?: string;
+    epoDose?: string;
+    epoRoute?: string;
+    epoNote: string;
+  };
   spoChecklist?: Record<string, 'DIKERJAKAN' | 'TIDAK DIKERJAKAN'>;
+  customResponses?: Record<string, WizardCustomPointResponse>;
 }
 
 export interface LogbookEntry {
@@ -490,5 +506,81 @@ export interface ActionCategory {
   description?: string;
   isActive: boolean;
   createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export type CustomFieldType = 'text' | 'textarea' | 'number' | 'select' | 'checkbox';
+
+export interface TtvSubFieldsConfig {
+  td?: boolean;
+  nadi?: boolean;
+  rr?: boolean;
+  suhu?: boolean;
+  spo2?: boolean;
+}
+
+export interface TtvValue {
+  td?: string;
+  nadi?: string;
+  rr?: string;
+  suhu?: string;
+  spo2?: string;
+}
+
+export interface WizardCustomPointResponse {
+  ttv?: TtvValue;
+  fields?: Record<string, string | number | boolean>;
+}
+
+export interface CustomLogbookField {
+  id: string;
+  label: string;
+  type: CustomFieldType;
+  unit?: string;
+  placeholder?: string;
+  options?: string[];
+  required?: boolean;
+  includeInMonthlyReport?: boolean;
+  monthlyAggregation?: 'count' | 'sum' | 'average' | 'latest';
+}
+
+export interface LogbookPointTemplate {
+  id: string;
+  step: number;
+  category: string;
+  statement: string;
+  description: string;
+  standard: string;
+  monthlyDescription?: string;
+  monthlyStandard?: string;
+  visible: boolean;
+  order: number;
+  isCustom?: boolean;
+  enableTtv?: boolean;
+  ttvConfig?: TtvSubFieldsConfig;
+  includeTtvInMonthly?: boolean;
+  customFields?: CustomLogbookField[];
+}
+
+export interface LogbookSectionTemplate {
+  num: number;
+  short: string;
+  title: string;
+  roman: string;
+  scope: string;
+  monthlyTitle: string;
+  monthlyMaxMode: 'daily_cap_1' | 'per_patient';
+  visible: boolean;
+}
+
+export interface LogbookFormTemplate {
+  id: string;
+  formTitle: string;
+  monthlyReportTitle: string;
+  sections: LogbookSectionTemplate[];
+  points: LogbookPointTemplate[];
+  sectionCustomFields?: Record<string, CustomLogbookField[]>;
+  updatedBy?: string;
+  updatedByName?: string;
   updatedAt?: unknown;
 }

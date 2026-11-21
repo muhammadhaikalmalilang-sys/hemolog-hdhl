@@ -153,23 +153,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [blockedMessage, setBlockedMessage] = useState<string | null>(null);
   const [idleLogoutMessage, setIdleLogoutMessage] = useState<string | null>(null);
   const [fatalError, setFatalError] = useState<string | null>(null);
-  const [listenerEpoch, setListenerEpoch] = useState(0);
 
   useEffect(() => {
+    let cancelled = false;
+    let authEventSeq = 0;
     let unsubscribeProfile: (() => void) | null = null;
     let needsResubscribe = false;
     let retryTimer: number | null = null;
-    let activeUid: string | null = null;
+    let activeUser: User | null = null;
 
-    const attachProfileListener = (user: User) => {
+    const attachProfileListener = (user: User, seq: number) => {
+      if (cancelled || seq !== authEventSeq) return;
       if (unsubscribeProfile) {
         unsubscribeProfile();
         unsubscribeProfile = null;
+      }
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+        retryTimer = null;
       }
       const userRef = doc(db, 'users', user.uid);
       unsubscribeProfile = onSnapshot(
         userRef,
         (docSnap) => {
+          if (cancelled || seq !== authEventSeq) return;
           needsResubscribe = false;
           if (docSnap.exists()) {
             const data = docSnap.data() as UserProfile;
@@ -199,14 +206,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setProfileLoading(false);
         },
         (error) => {
+          if (cancelled || seq !== authEventSeq) return;
           if (isTransientFirestoreError(error)) {
             needsResubscribe = true;
             console.warn('Koneksi profil terputus sementara, menyambungkan ulang...');
-            void reconnectFirestore();
+            void reconnectFirestore({ force: true, resubscribe: true, reason: 'error' });
             if (retryTimer !== null) window.clearTimeout(retryTimer);
             retryTimer = window.setTimeout(() => {
-              if (auth.currentUser?.uid === user.uid && (typeof navigator === 'undefined' || navigator.onLine)) {
-                setListenerEpoch((e) => e + 1);
+              if (!cancelled && seq === authEventSeq && auth.currentUser?.uid === user.uid && (typeof navigator === 'undefined' || navigator.onLine)) {
+                attachProfileListener(user, seq);
               }
             }, 3000);
             return;
@@ -216,14 +224,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       );
     };
 
-    const unsubReconnect = onFirestoreReconnect(() => {
-      if (needsResubscribe && activeUid && auth.currentUser?.uid === activeUid) {
+    const unsubReconnect = onFirestoreReconnect((event) => {
+      if (
+        !cancelled &&
+        activeUser &&
+        auth.currentUser?.uid === activeUser.uid &&
+        (needsResubscribe || event.shouldResubscribe)
+      ) {
         needsResubscribe = false;
-        setListenerEpoch((e) => e + 1);
+        attachProfileListener(activeUser, authEventSeq);
       }
     });
 
     const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
+      const currentSeq = ++authEventSeq;
       if (unsubscribeProfile) {
         unsubscribeProfile();
         unsubscribeProfile = null;
@@ -233,7 +247,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         retryTimer = null;
       }
 
-      activeUid = user?.uid ?? null;
+      if (cancelled) return;
+
+      activeUser = user;
+      needsResubscribe = false;
       setFirebaseUser(user);
       setFatalError(null);
 
@@ -251,6 +268,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       try {
         const snap = await getDoc(userRef);
+        if (cancelled || currentSeq !== authEventSeq) return;
         if (!snap.exists()) {
           const isBootstrap = user.emailVerified && isBootstrapAdminEmail(user.email);
           const initialRole: UserRole = isBootstrap ? 'Administrator' : 'Perawat Pelaksana';
@@ -273,6 +291,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           };
 
           await setDoc(userRef, profilePayload);
+          if (cancelled || currentSeq !== authEventSeq) return;
           await setDoc(doc(db, 'staff_directory', user.uid), {
             uid: user.uid,
             fullName: fallbackName,
@@ -282,19 +301,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           });
         }
       } catch (error) {
-        console.error('Error initializing user profile:', error);
+        if (cancelled || currentSeq !== authEventSeq) return;
+        if (isTransientFirestoreError(error)) {
+          console.warn('Inisialisasi profil tertunda sementara, mencoba sinkronisasi ulang:', error);
+          void reconnectFirestore({ force: true, resubscribe: true, reason: 'error' });
+        } else {
+          console.error('Error initializing user profile:', error);
+        }
       }
 
-      attachProfileListener(user);
+      attachProfileListener(user, currentSeq);
     });
 
     return () => {
+      cancelled = true;
       unsubscribeAuth();
       unsubReconnect();
       if (unsubscribeProfile) unsubscribeProfile();
       if (retryTimer !== null) window.clearTimeout(retryTimer);
     };
-  }, [listenerEpoch]);
+  }, []);
 
   if (fatalError) {
     throw new Error(fatalError);

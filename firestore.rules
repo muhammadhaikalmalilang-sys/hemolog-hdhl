@@ -100,14 +100,18 @@ service cloud.firestore {
         || (currentShift == 'Malam' && nextShift == 'Pagi' && nextDate is string && nextDate.matches('^\\d{4}-\\d{2}-\\d{2}$') && nextDate > currentDate);
     }
 
+    function isLogbookPendingForNurse(logData, lockNurseId) {
+      return 'verificationStatus' in logData
+        && 'nurseId' in logData
+        && logData.verificationStatus in ['Pending', 'Revision']
+        && logData.nurseId == lockNurseId;
+    }
+
     function isVerifierEditingPendingLogbook(logId, lockNurseId) {
       return isVerifier()
         && isValidId(logId)
         && exists(/databases/$(database)/documents/logbook/$(logId))
-        && 'verificationStatus' in get(/databases/$(database)/documents/logbook/$(logId)).data
-        && 'nurseId' in get(/databases/$(database)/documents/logbook/$(logId)).data
-        && get(/databases/$(database)/documents/logbook/$(logId)).data.verificationStatus in ['Pending', 'Revision']
-        && get(/databases/$(database)/documents/logbook/$(logId)).data.nurseId == lockNurseId;
+        && isLogbookPendingForNurse(get(/databases/$(database)/documents/logbook/$(logId)).data, lockNurseId);
     }
 
     function isValidRole(role) {
@@ -138,6 +142,14 @@ service cloud.firestore {
         && isValidRole(data.role)
         && data.isActive is bool
         && data.updatedAt is timestamp;
+    }
+
+    function isValidWizardDetails(wd) {
+      return wd is map
+        && wd.keys().hasOnly(['section1', 'section2', 'section3', 'section4', 'section5', 'section6', 'section7', 'spoChecklist', 'customResponses'])
+        && (!('section7' in wd) || wd.section7 is map)
+        && (!('spoChecklist' in wd) || (wd.spoChecklist is map && wd.spoChecklist.size() <= 120))
+        && (!('customResponses' in wd) || (wd.customResponses is map && wd.customResponses.size() <= 120));
     }
 
     function isValidLogbookEntryFields(data) {
@@ -185,11 +197,7 @@ service cloud.firestore {
         && (!('verifiedByName' in data) || data.verifiedByName == null || (data.verifiedByName is string && data.verifiedByName.size() <= 120))
         && (!('verificationNote' in data) || data.verificationNote == null || (data.verificationNote is string && data.verificationNote.size() <= 500))
         && (!('verifiedAt' in data) || data.verifiedAt == null || data.verifiedAt is timestamp)
-        && (!('wizardDetails' in data) || data.wizardDetails == null || (
-          data.wizardDetails is map
-          && data.wizardDetails.keys().hasOnly(['section1', 'section2', 'section3', 'section4', 'section5', 'section6', 'spoChecklist'])
-          && (!('spoChecklist' in data.wizardDetails) || (data.wizardDetails.spoChecklist is map && data.wizardDetails.spoChecklist.size() <= 40))
-        ))
+        && (!('wizardDetails' in data) || data.wizardDetails == null || isValidWizardDetails(data.wizardDetails))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -219,8 +227,12 @@ service cloud.firestore {
         && data.updatedAt == request.time
         && (!('nurseId' in prev) || data.nurseId == prev.nurseId)
         && (
-          ('createdAt' in prev && data.createdAt == prev.createdAt) ||
-          (!('createdAt' in prev) && data.createdAt == request.time)
+          ('nurseName' in prev && prev.nurseName is string && prev.nurseName.trim().size() > 0 && prev.nurseName.size() <= 120 && data.nurseName == prev.nurseName) ||
+          (!('nurseName' in prev) || !(prev.nurseName is string) || prev.nurseName.trim().size() == 0 || prev.nurseName.size() > 120)
+        )
+        && (
+          ('createdAt' in prev && prev.createdAt is timestamp && data.createdAt == prev.createdAt) ||
+          ((!('createdAt' in prev) || !(prev.createdAt is timestamp)) && data.createdAt == request.time)
         )
         && (
           // Action: PJ Shift / Kepala Ruang / Admin verifies entry
@@ -248,12 +260,12 @@ service cloud.firestore {
               (prev.verificationStatus == 'Revision' && data.verificationStatus in ['Revision', 'Pending'])
             )
             && data.diff(prev).affectedKeys().hasOnly([
-              'nurseNip', 'patientId', 'patientName', 'patientRm', 'machineId', 'machineNumber',
+              'nurseName', 'nurseNip', 'patientId', 'patientName', 'patientRm', 'machineId', 'machineNumber',
               'doctorId', 'doctorName', 'dutyDoctorId', 'dutyDoctorName', 'actionCategory', 'date', 'monthKey', 'shift',
               'startTime', 'endTime', 'preWeight', 'postWeight', 'preBp', 'postBp',
               'ufGoal', 'ufAchieved', 'vascularAccess', 'heparinType', 'complications',
               'nursingNotes', 'verificationStatus', 'targetVerifierRole', 'targetVerifierId', 'targetVerifierName',
-              'wizardDetails', 'updatedAt'
+              'wizardDetails', 'createdAt', 'updatedAt'
             ])
             && isValidLogbookEntryFields(data)
             && isActiveStaff()
@@ -264,12 +276,12 @@ service cloud.firestore {
             prev.verificationStatus in ['Pending', 'Revision']
             && data.verificationStatus in ['Pending', 'Revision']
             && data.diff(prev).affectedKeys().hasOnly([
-              'nurseNip', 'patientId', 'patientName', 'patientRm', 'machineId', 'machineNumber',
+              'nurseName', 'nurseNip', 'patientId', 'patientName', 'patientRm', 'machineId', 'machineNumber',
               'doctorId', 'doctorName', 'dutyDoctorId', 'dutyDoctorName', 'actionCategory', 'date', 'monthKey', 'shift',
               'startTime', 'endTime', 'preWeight', 'postWeight', 'preBp', 'postBp',
               'ufGoal', 'ufAchieved', 'vascularAccess', 'heparinType', 'complications',
               'nursingNotes', 'verificationStatus', 'targetVerifierRole', 'targetVerifierId', 'targetVerifierName',
-              'wizardDetails', 'updatedAt'
+              'wizardDetails', 'createdAt', 'updatedAt'
             ])
             && isValidLogbookEntryFields(data)
             && isVerifier()
@@ -558,6 +570,20 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidFormTemplate(data) {
+      return data.keys().hasAll(['id', 'formTitle', 'monthlyReportTitle', 'sections', 'points', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'formTitle', 'monthlyReportTitle', 'sections', 'points', 'sectionCustomFields', 'updatedBy', 'updatedByName', 'updatedAt'])
+        && data.id is string && data.id.size() > 0 && data.id.size() <= 64
+        && data.formTitle is string && data.formTitle.size() >= 2 && data.formTitle.size() <= 160
+        && data.monthlyReportTitle is string && data.monthlyReportTitle.size() >= 2 && data.monthlyReportTitle.size() <= 240
+        && data.sections is list && data.sections.size() >= 1 && data.sections.size() <= 12 && data.sections[0] is map
+        && data.points is list && data.points.size() >= 1 && data.points.size() <= 120 && data.points[0] is map
+        && (!('sectionCustomFields' in data) || (data.sectionCustomFields is map && data.sectionCustomFields.size() <= 12))
+        && (!('updatedBy' in data) || (data.updatedBy is string && data.updatedBy.size() <= 128))
+        && (!('updatedByName' in data) || (data.updatedByName is string && data.updatedByName.size() <= 120))
+        && data.updatedAt is timestamp;
+    }
+
     // 4. Collection Rules
 
     // Users (Private PII & RBAC source of truth)
@@ -643,15 +669,7 @@ service cloud.firestore {
         && incoming().verificationStatus in ['Draft', 'Pending']
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
-        && isActiveStaff()
-        && exists(/databases/$(database)/documents/patients/$(incoming().patientId))
-        && exists(/databases/$(database)/documents/machines/$(incoming().machineId))
-        && exists(/databases/$(database)/documents/doctors/$(incoming().doctorId))
-        && (
-          !exists(/databases/$(database)/documents/logbook_locks/$(incoming().date + '_' + incoming().patientId)) ||
-          !exists(/databases/$(database)/documents/logbook/$(get(/databases/$(database)/documents/logbook_locks/$(incoming().date + '_' + incoming().patientId)).data.logbookId))
-        )
-        && getAfter(/databases/$(database)/documents/logbook_locks/$(incoming().date + '_' + incoming().patientId)).data.logbookId == logbookId;
+        && isActiveStaff();
       allow update: if isSignedIn() && canUpdateLogbook(logbookId, request.resource.data, resource.data);
       allow delete: if isValidId(logbookId) && (
         isAdmin() ||
@@ -1102,32 +1120,14 @@ service cloud.firestore {
         )
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
-        && isActiveStaff()
-        && (
-          exists(/databases/$(database)/documents/logbook/$(incoming().logbookId)) ||
-          existsAfter(/databases/$(database)/documents/logbook/$(incoming().logbookId))
-        );
+        && isActiveStaff();
       allow update: if isSignedIn()
         && isValidLockId(lockId)
         && isValidLogbookLock(incoming())
         && incoming().id == lockId
         && lockId == incoming().date + '_' + incoming().patientId
         && incoming().updatedAt == request.time
-        && isActiveStaff()
         && (
-          exists(/databases/$(database)/documents/logbook/$(incoming().logbookId)) ||
-          existsAfter(/databases/$(database)/documents/logbook/$(incoming().logbookId))
-        )
-        && (
-          isAdmin() ||
-          (
-            incoming().nurseId == request.auth.uid
-            && 'logbookId' in existing()
-            && existing().logbookId is string
-            && isValidId(existing().logbookId)
-            && !exists(/databases/$(database)/documents/logbook/$(existing().logbookId))
-            && incoming().createdAt == request.time
-          ) ||
           (
             incoming().nurseId == request.auth.uid
             && 'nurseId' in existing()
@@ -1136,7 +1136,18 @@ service cloud.firestore {
             && existing().logbookId == incoming().logbookId
             && (!('createdAt' in existing()) || !(existing().createdAt is timestamp) || incoming().createdAt == existing().createdAt)
             && (('createdAt' in existing() && existing().createdAt is timestamp) || incoming().createdAt == request.time)
+            && isActiveStaff()
           ) ||
+          (
+            incoming().nurseId == request.auth.uid
+            && 'logbookId' in existing()
+            && existing().logbookId is string
+            && isValidId(existing().logbookId)
+            && !exists(/databases/$(database)/documents/logbook/$(existing().logbookId))
+            && incoming().createdAt == request.time
+            && isActiveStaff()
+          ) ||
+          isAdmin() ||
           (
             isVerifierEditingPendingLogbook(incoming().logbookId, incoming().nurseId)
             && (
@@ -1193,8 +1204,7 @@ service cloud.firestore {
         && exists(/databases/$(database)/documents/machines/$(incoming().machineId))
         && (
           incoming().logbookId == '' ||
-          exists(/databases/$(database)/documents/logbook/$(incoming().logbookId)) ||
-          existsAfter(/databases/$(database)/documents/logbook/$(incoming().logbookId))
+          isValidId(incoming().logbookId)
         );
       allow update: if isSignedIn()
         && isValidLockId(lockId)
@@ -1202,21 +1212,22 @@ service cloud.firestore {
         && incoming().id == lockId
         && lockId == incoming().date + '_' + incoming().shift + '_' + incoming().machineId
         && incoming().updatedAt == request.time
-        && isActiveStaff()
-        && exists(/databases/$(database)/documents/machines/$(incoming().machineId))
         && (
-          incoming().logbookId == '' ||
-          exists(/databases/$(database)/documents/logbook/$(incoming().logbookId)) ||
-          existsAfter(/databases/$(database)/documents/logbook/$(incoming().logbookId))
+          ('machineId' in existing() && incoming().machineId == existing().machineId) ||
+          exists(/databases/$(database)/documents/machines/$(incoming().machineId))
         )
         && (
-          isAdmin() ||
+          incoming().logbookId == '' ||
+          isValidId(incoming().logbookId)
+        )
+        && (
           (
             incoming().nurseId == request.auth.uid
             && 'nurseId' in existing()
             && existing().nurseId == request.auth.uid
             && (!('createdAt' in existing()) || !(existing().createdAt is timestamp) || incoming().createdAt == existing().createdAt)
             && (('createdAt' in existing() && existing().createdAt is timestamp) || incoming().createdAt == request.time)
+            && isActiveStaff()
           ) ||
           (
             incoming().nurseId == request.auth.uid
@@ -1225,7 +1236,9 @@ service cloud.firestore {
             && isValidId(existing().logbookId)
             && !exists(/databases/$(database)/documents/logbook/$(existing().logbookId))
             && incoming().createdAt == request.time
+            && isActiveStaff()
           ) ||
+          isAdmin() ||
           (
             isVerifierEditingPendingLogbook(incoming().logbookId, incoming().nurseId)
             && (
@@ -1261,6 +1274,28 @@ service cloud.firestore {
           )
         ))
       );
+    }
+
+    // Form Templates (Dynamic HD Nursing Care Form & Monthly Report Configuration managed by Admin)
+    match /form_templates/{templateId} {
+      allow get: if isSignedIn() && isValidId(templateId) && isActiveStaff();
+      allow list: if isSignedIn() && resource.data.id is string && isActiveStaff();
+      allow create: if isAdmin()
+        && isValidId(templateId)
+        && isValidFormTemplate(incoming())
+        && incoming().id == templateId
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(templateId)
+        && isValidFormTemplate(incoming())
+        && incoming().id == existing().id
+        && incoming().updatedAt == request.time;
+      allow delete: if isAdmin() && isValidId(templateId);
+    }
+
+    // Connection Probe (Verifies active deployed ruleset for authenticated active staff)
+    match /test/connection {
+      allow get: if isSignedIn() && isActiveStaff();
     }
   }
 }

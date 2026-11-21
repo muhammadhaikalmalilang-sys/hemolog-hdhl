@@ -40,11 +40,14 @@ import { ShiftBadge, VerificationBadge } from '../components/ui/StatusBadge';
 import { LogbookWizardModal } from '../components/logbook/LogbookWizardModal';
 import { LogbookDetailModal } from '../components/logbook/LogbookDetailModal';
 import { QuickAddPatientModal } from '../components/logbook/QuickAddPatientModal';
+import { LogbookTemplateEditorModal } from '../components/logbook/LogbookTemplateEditorModal';
+import { DEFAULT_LOGBOOK_TEMPLATE } from '../lib/logbookTemplate';
 import type {
   ActionCategory,
   Doctor,
   DoctorScheduleEntry,
   LogbookEntry,
+  LogbookFormTemplate,
   LogbookLock,
   Machine,
   MachineLock,
@@ -69,6 +72,7 @@ interface LogbookPageProps {
   schedules: ScheduleEntry[];
   doctorSchedules: DoctorScheduleEntry[];
   pjShiftAssignments?: PjShiftAssignmentEntry[];
+  formTemplate?: LogbookFormTemplate;
 }
 
 interface QueuedPatientSlot {
@@ -110,6 +114,7 @@ export function LogbookPage({
   schedules,
   doctorSchedules,
   pjShiftAssignments = [],
+  formTemplate,
 }: LogbookPageProps) {
   const { userProfile } = useAuth();
   const isAdminMaster = mode === 'master' && userProfile?.role === 'Administrator';
@@ -121,15 +126,24 @@ export function LogbookPage({
 
   // Admin Master states
   const [activeTab, setActiveTab] = useState<'all' | 'verified' | 'categories'>('all');
+  const [showTemplateEditor, setShowTemplateEditor] = useState(false);
   const [catName, setCatName] = useState('');
   const [catCode, setCatCode] = useState('');
   const [catDesc, setCatDesc] = useState('');
   const [editingCat, setEditingCat] = useState<ActionCategory | null>(null);
   const [catSaving, setCatSaving] = useState(false);
 
-  // Table history filters
+  // Active Date & Shift (automatically follows calendar day rollover + Administrator schedule matrix)
+  const { todayDate: liveTodayDate, currentShift: systemShiftFallback } = useLiveClock();
+  const [todayDate, setTodayDate] = useState(liveTodayDate);
+  const [inputDate, setInputDate] = useState(liveTodayDate);
+  const [manualShiftOverride, setManualShiftOverride] = useState<ShiftType | null>(null);
+  const [showScheduleEditor, setShowScheduleEditor] = useState(false);
+
+  // Table history filters (Master Logbook defaults to active date)
   const [searchTerm, setSearchTerm] = useState('');
-  const [monthFilter, setMonthFilter] = useState(getCurrentMonthKey());
+  const [dateFilter, setDateFilter] = useState(liveTodayDate);
+  const [monthFilter, setMonthFilter] = useState(liveTodayDate.slice(0, 7));
   const [shiftFilter, setShiftFilter] = useState<string>('ALL');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
 
@@ -155,13 +169,6 @@ export function LogbookPage({
     [logbooks, deleteTargetId]
   );
 
-  // Active Date & Shift (automatically follows calendar day rollover + Administrator schedule matrix)
-  const { todayDate: liveTodayDate, currentShift: systemShiftFallback } = useLiveClock();
-  const [todayDate, setTodayDate] = useState(liveTodayDate);
-  const [inputDate, setInputDate] = useState(liveTodayDate);
-  const [manualShiftOverride, setManualShiftOverride] = useState<ShiftType | null>(null);
-  const [showScheduleEditor, setShowScheduleEditor] = useState(false);
-
   // Doctor overrides (automatically seeded from Administrator doctor_schedules per date+shift)
   const [dpjpOverride, setDpjpOverride] = useState<string>('');
   const [dutyDoctorOverride, setDutyDoctorOverride] = useState<string>('');
@@ -184,6 +191,7 @@ export function LogbookPage({
     if (liveTodayDate !== todayDate) {
       setTodayDate(liveTodayDate);
       setInputDate(liveTodayDate);
+      setDateFilter((prev) => (prev === todayDate ? liveTodayDate : prev));
       setMonthFilter(liveTodayDate.slice(0, 7));
       setManualShiftOverride(null);
       setQueuedSlots([]);
@@ -631,7 +639,11 @@ export function LogbookPage({
       if (isAdminMaster && activeTab === 'verified' && item.verificationStatus !== 'Approved') {
         return false;
       }
-      if (monthFilter && item.monthKey !== monthFilter) return false;
+      if (dateFilter) {
+        if (item.date !== dateFilter) return false;
+      } else if (monthFilter && item.monthKey !== monthFilter) {
+        return false;
+      }
       if (shiftFilter !== 'ALL' && item.shift !== shiftFilter) return false;
       if (statusFilter !== 'ALL' && item.verificationStatus !== statusFilter) return false;
       if (searchTerm.trim()) {
@@ -646,7 +658,7 @@ export function LogbookPage({
       }
       return true;
     });
-  }, [logbooks, isAdminMaster, activeTab, monthFilter, shiftFilter, statusFilter, searchTerm]);
+  }, [logbooks, isAdminMaster, activeTab, dateFilter, monthFilter, shiftFilter, statusFilter, searchTerm]);
 
   // Handlers
   const handleSelectPatientDropdown = (patId: string) => {
@@ -985,7 +997,7 @@ export function LogbookPage({
 
         txOp = existingML ? OperationType.UPDATE : OperationType.CREATE;
         txPath = newLockRef.path;
-        tx.set(newLockRef, {
+        const nextLockFields = {
           id: newLockId,
           date: targetDate,
           monthKey: targetDate.slice(0, 7),
@@ -997,8 +1009,12 @@ export function LogbookPage({
           nurseId: userProfile.uid,
           nurseName: safeNurseName,
           logbookId: own ? own.id : '',
-          createdAt: keepCreatedAt ? existingML!.createdAt : serverTimestamp(),
           updatedAt: serverTimestamp(),
+        };
+        tx.set(newLockRef, {
+          ...nextLockFields,
+          createdAt:
+            keepCreatedAt && existingML ? existingML.createdAt : serverTimestamp(),
         });
       });
 
@@ -1199,7 +1215,18 @@ export function LogbookPage({
           )}
         </div>
 
-        {!isAdminMaster && (
+        {isAdminMaster ? (
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowTemplateEditor(true)}
+              className="inline-flex items-center gap-2 rounded-lg bg-[#0B5A8E] px-4 py-2 text-xs font-bold tracking-wide uppercase text-white shadow-xs hover:bg-[#094a75] transition-colors whitespace-nowrap shrink-0"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+              EDIT LOGBOOK
+            </button>
+          </div>
+        ) : (
           <div className="flex flex-wrap items-center gap-2 shrink-0">
             {inputDate !== todayDate && (
               <button
@@ -1786,7 +1813,7 @@ export function LogbookPage({
                       Daftar Pasien Tanggal {formatDateId(inputDate)} · Shift {activeShift}
                     </h3>
                     <p className="text-xs text-slate-500">
-                      Klik nama pasien di bawah ini untuk membuka halaman pengisian Logbook Bagian I sampai Bagian VII khusus untuk pasien tersebut.
+                      Klik nama pasien di bawah ini untuk membuka halaman pengisian Logbook Bagian I sampai Bagian VIII khusus untuk pasien tersebut.
                     </p>
                   </div>
                   <span className="text-xs font-medium text-slate-600 tabular-nums shrink-0">
@@ -1820,7 +1847,7 @@ export function LogbookPage({
                       Halaman Logbook Masih Kosong ({formatDateId(inputDate)})
                     </h4>
                     <p className="mx-auto mt-1 max-w-xl text-xs text-slate-500 leading-relaxed">
-                      Belum ada pasien yang diinput pada tanggal {formatDateId(inputDate)} Shift {activeShift}. Silakan input pasien terlebih dahulu pada formulir di atas, lalu klik nama pasien yang muncul di daftar ini untuk mengisi formulir Bagian I – Bagian VII.
+                      Belum ada pasien yang diinput pada tanggal {formatDateId(inputDate)} Shift {activeShift}. Silakan input pasien terlebih dahulu pada formulir di atas, lalu klik nama pasien yang muncul di daftar ini untuk mengisi formulir Bagian I – Bagian VIII.
                     </p>
                   </div>
                 ) : (
@@ -1900,7 +1927,7 @@ export function LogbookPage({
                                   <VerificationBadge status={own.verificationStatus} />
                                 ) : (
                                   <span className="rounded border border-slate-200 bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">
-                                    Siap Diinput (Bagian I–VII)
+                                    Siap Diinput (Bagian I–VIII)
                                   </span>
                                 )}
                               </div>
@@ -1972,7 +1999,34 @@ export function LogbookPage({
                                   </span>
                                 )}
                                 <span className="mx-1.5" aria-hidden="true">·</span>
-                                <span>{pat.vascularAccess}</span>
+                                <span>
+                                  {(() => {
+                                    if (!own) return pat.vascularAccess;
+                                    const spo36 = own.wizardDetails?.spoChecklist?.['3.6'];
+                                    if (spo36 === 'TIDAK DIKERJAKAN') {
+                                      return 'Akses Poin 3.6 belum diceklis';
+                                    }
+                                    const sec3 = own.wizardDetails?.section3;
+                                    const accessLabel =
+                                      own.vascularAccess === 'CDL' || own.vascularAccess === 'CVC'
+                                        ? 'CDL'
+                                        : own.vascularAccess === 'Femoral'
+                                        ? 'FEMORAL'
+                                        : own.vascularAccess === 'AV Fistula' ||
+                                          own.vascularAccess === 'AV Shunt'
+                                        ? 'CIMINO'
+                                        : own.vascularAccess || pat.vascularAccess;
+                                    const accessNote =
+                                      accessLabel === 'CDL'
+                                        ? sec3?.cdlNote?.trim() || sec3?.accessDetailNote?.trim() || ''
+                                        : accessLabel === 'FEMORAL'
+                                        ? sec3?.femoralNote?.trim() || sec3?.accessDetailNote?.trim() || ''
+                                        : accessLabel === 'CIMINO'
+                                        ? sec3?.ciminoNote?.trim() || sec3?.accessDetailNote?.trim() || ''
+                                        : sec3?.accessDetailNote?.trim() || '';
+                                    return accessNote ? `${accessLabel} (${accessNote})` : accessLabel;
+                                  })()}
+                                </span>
                                 <span className="mx-1.5" aria-hidden="true">·</span>
                                 <span>{pat.routineSchedule}</span>
                                 <span className="mx-1.5" aria-hidden="true">·</span>
@@ -1991,7 +2045,7 @@ export function LogbookPage({
                                   onClick={() => openWizardForPatient(pat, item.machineId)}
                                   className="inline-flex items-center gap-1.5 rounded-lg bg-[#0B5A8E] px-3.5 py-2 text-xs font-bold text-white hover:bg-[#094a75] whitespace-nowrap"
                                 >
-                                  Isi Logbook (Bagian I–VII)
+                                  Isi Logbook (Bagian I–VIII)
                                 </button>
                                 <button
                                   type="button"
@@ -2038,15 +2092,24 @@ export function LogbookPage({
             <>
               {/* Filter Bar for Logbook Records Table */}
               <div className="rounded-xl border border-slate-200 bg-white/95 p-4 shadow-sm space-y-3">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-600">
-                    Arsip &amp; Daftar Logbook Tersimpan
-                  </h3>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-600">
+                      Arsip &amp; Daftar Logbook Tersimpan
+                    </h3>
+                    {dateFilter && (
+                      <span className="rounded-md bg-sky-50 px-2 py-0.5 font-mono text-[11px] font-semibold text-[#0B5A8E]">
+                        {dateFilter === todayDate
+                          ? `Tanggal Aktif: ${formatDateId(dateFilter)}`
+                          : `Tanggal: ${formatDateId(dateFilter)}`}
+                      </span>
+                    )}
+                  </div>
                   <span className="text-xs text-slate-500 tabular-nums">
                     {filteredLogbooks.length} Entri
                   </span>
                 </div>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
                   <div className="relative">
                     <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                     <input
@@ -2057,11 +2120,50 @@ export function LogbookPage({
                       className="w-full rounded-lg border border-slate-300 pl-9 pr-3 py-2 text-xs text-slate-900 focus:border-[#0B5A8E] focus:outline-none"
                     />
                   </div>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="date"
+                      aria-label="Filter Tanggal Logbook"
+                      value={dateFilter}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setDateFilter(val);
+                        if (val) setMonthFilter(val.slice(0, 7));
+                      }}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-700 focus:border-[#0B5A8E] focus:outline-none"
+                    />
+                    {dateFilter ? (
+                      <button
+                        type="button"
+                        onClick={() => setDateFilter('')}
+                        className="rounded-lg border border-slate-300 px-2.5 py-2 text-[11px] font-semibold text-slate-600 hover:bg-slate-50 shrink-0"
+                        title="Tampilkan seluruh bulan"
+                      >
+                        Sebulan
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDateFilter(todayDate);
+                          setMonthFilter(todayDate.slice(0, 7));
+                        }}
+                        className="rounded-lg border border-slate-300 px-2.5 py-2 text-[11px] font-semibold text-[#0B5A8E] hover:bg-sky-50 shrink-0"
+                        title="Kembali ke tanggal aktif"
+                      >
+                        Hari Ini
+                      </button>
+                    )}
+                  </div>
                   <input
                     type="month"
+                    aria-label="Filter Bulan Logbook"
                     value={monthFilter}
-                    onChange={(e) => setMonthFilter(e.target.value)}
-                    className="rounded-lg border border-slate-300 px-3 py-2 font-mono text-xs text-slate-700 focus:border-[#0B5A8E] focus:outline-none"
+                    onChange={(e) => {
+                      setMonthFilter(e.target.value);
+                      setDateFilter('');
+                    }}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-700 focus:border-[#0B5A8E] focus:outline-none"
                   />
                   <select
                     value={shiftFilter}
@@ -2091,7 +2193,9 @@ export function LogbookPage({
               <div className="rounded-xl border border-slate-200 bg-white/95 shadow-sm overflow-hidden">
                 {filteredLogbooks.length === 0 ? (
                   <div className="p-8 text-center text-xs text-slate-500">
-                    Belum ada catatan logbook tersimpan pada periode / filter ini.
+                    {dateFilter
+                      ? `Belum ada logbook yang diinputkan pada tanggal ${formatDateId(dateFilter)}.`
+                      : 'Belum ada catatan logbook tersimpan pada periode / filter ini.'}
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
@@ -2177,7 +2281,7 @@ export function LogbookPage({
                                     type="button"
                                     onClick={() => setDetailEntryId(item.id)}
                                     className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900"
-                                    title="Detail Lengkap 7 Bagian"
+                                    title="Detail Lengkap 8 Bagian"
                                   >
                                     <Eye className="h-4 w-4" />
                                   </button>
@@ -2248,6 +2352,7 @@ export function LogbookPage({
           actionCategories={actionCategories}
           staffDirectory={staffDirectory}
           pjShiftAssignments={pjShiftAssignments}
+          formTemplate={formTemplate}
           onClose={() => {
             setShowWizardModal(false);
             setEditingEntryId(null);
@@ -2293,7 +2398,16 @@ export function LogbookPage({
           machines={machines}
           actionCategories={actionCategories}
           staffDirectory={staffDirectory}
+          formTemplate={formTemplate}
           onClose={() => setDetailEntryId(null)}
+        />
+      )}
+
+      {/* Master Logbook Template Editor Modal */}
+      {isAdminMaster && showTemplateEditor && (
+        <LogbookTemplateEditorModal
+          currentTemplate={formTemplate || DEFAULT_LOGBOOK_TEMPLATE}
+          onClose={() => setShowTemplateEditor(false)}
         />
       )}
 

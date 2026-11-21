@@ -15,12 +15,39 @@ import {
 } from '../lib/formatters';
 import { LogbookDetailModal } from '../components/logbook/LogbookDetailModal';
 import { ShiftBadge, VerificationBadge } from '../components/ui/StatusBadge';
-import type { LogbookEntry, ReportEntry, StaffDirectoryEntry, UserRole } from '../types';
+import {
+  DEFAULT_LOGBOOK_TEMPLATE,
+  formatTtvSummary,
+  hasAnyTtvValue,
+  mergeWithDefaultTemplate,
+} from '../lib/logbookTemplate';
+import type {
+  CustomLogbookField,
+  LogbookEntry,
+  LogbookFormTemplate,
+  ReportEntry,
+  StaffDirectoryEntry,
+  UserRole,
+} from '../types';
 
 interface MonthlyReportsPageProps {
   logbooks: LogbookEntry[];
   staffDirectory: StaffDirectoryEntry[];
   reports?: ReportEntry[];
+  formTemplate?: LogbookFormTemplate;
+}
+
+interface MonthlyCustomMetricRow {
+  key: string;
+  no: string;
+  category: string;
+  description: string;
+  standard: string;
+  dailyDisplay: string[];
+  dailyTitles: string[];
+  totalDisplay: string;
+  pctDisplay: string;
+  keterangan: string;
 }
 
 interface MonthlySpoRow {
@@ -36,250 +63,7 @@ interface MonthlySpoSection {
   items: MonthlySpoRow[];
 }
 
-const MONTHLY_SPO_SECTIONS: MonthlySpoSection[] = [
-  {
-    title:
-      'BAGIAN I: KESIAPAN FASILITAS RUANGAN HEMODIALISIS & SISTEM WATER TREATMENT (RO) — [NILAI MAKS. 1 / HARI]',
-    maxMode: 'daily_cap_1',
-    items: [
-      {
-        id: '1.1',
-        category: 'Water Treatment & Mutu Air RO',
-        description:
-          'Memastikan kesiapan sistem Water Treatment (Reverse Osmosis / RO), uji konduktivitas, tekanan sirkulasi, serta kualitas air dialisis sesuai baku mutu AAMI/PERNEFRI.',
-        standard: 'SPO-HD-01: Mutu Air RO & Pre-Treatment Harian',
-      },
-      {
-        id: '1.2',
-        category: 'Kesiapan Ruangan & Zonasi Infeksi',
-        description:
-          'Memastikan kesiapan ruangan hemodialisis, suhu dan kelembaban lingkungan, sanitasi permukaan tempat tidur, serta kepatuhan pemisahan area infeksius (Hepatitis B/C).',
-        standard: 'SPO-HD-02: Kesiapan Lingkungan & PPI Unit Dialisis',
-      },
-      {
-        id: '1.3',
-        category: 'Emergency Room & Troli Emergensi',
-        description:
-          'Memastikan kesiapan fasilitas kegawatdaruratan (Emergency Trolley, obat-obatan emergensi, defibrilator, oksigen sentral, dan suction) sebelum pelayanan dimulai.',
-        standard: 'SPO-HD-03: Pemeriksaan Troli & Peralatan Emergensi HD',
-      },
-    ],
-  },
-  {
-    title:
-      'BAGIAN II: PERSIAPAN PERAWAT, PERALATAN, MESIN HD & ALAT KESEHATAN (PRE-HD) — [NILAI SESUAI PASIEN KELOLAAN]',
-    maxMode: 'per_patient',
-    items: [
-      {
-        id: '2.1',
-        category: 'PPI & Keselamatan Petugas',
-        description:
-          'Melaksanakan kepatuhan kebersihan tangan (5 Moments for Hand Hygiene) dan pemakaian Alat Pelindung Diri (APD) standar dialisis sebelum kontak pasien/mesin.',
-        standard: 'SPO-PPI-01: Hand Hygiene & Penggunaan APD Dialisis',
-      },
-      {
-        id: '2.2',
-        category: 'Kalibrasi & Uji Fungsi Mesin',
-        description:
-          'Menjalankan pengujian fungsi otomatis (Automated Self-Test / T1 Test) pada mesin hemodialisis hingga seluruh modul hidrolik dan elektrikal dinyatakan layak pakai.',
-        standard: 'SPO-HD-04: Pengoperasian & Self-Test Mesin HD',
-      },
-      {
-        id: '2.3',
-        category: 'Keamanan Sirkuit Ekstrakorporeal',
-        description:
-          'Memverifikasi kepekaan sensor keamanan utama mesin meliputi Blood Leak Detector (BLD), Air Bubble Detector, dan klem pengaman vena otomatis.',
-        standard: 'SPO-HD-05: Verifikasi Sistem Alarm Keamanan Mesin',
-      },
-      {
-        id: '2.4',
-        category: 'Komposisi & Suhu Dialisat',
-        description:
-          'Memeriksa ketepatan komposisi cairan konsentrat (Acid & Bicarbonate), kestabilan konduktivitas (13.5–14.5 mS/cm), serta suhu cairan dialisat (36.0–37.0°C).',
-        standard: 'SPO-HD-06: Persiapan Konsentrat & Parameter Dialisat',
-      },
-      {
-        id: '2.5',
-        category: 'Pemasangan Sirkuit & Priming',
-        description:
-          'Memasang dialyzer dan blood tubing set secara aseptik serta melakukan priming menggunakan NaCl 0,9% hingga seluruh udara dan partikel residu terbilas bersih.',
-        standard: 'SPO-HD-07: Pemasangan Sirkuit & Priming Dialyzer',
-      },
-      {
-        id: '2.6',
-        category: 'Antikoagulasi & Kit Kanulasi',
-        description:
-          'Menyiapkan spuit antikoagulan (Heparin/LMWH atau program Free Heparin) pada syringe pump serta kelengkapan set steril kanulasi AVF atau perawatan kateter CDL.',
-        standard: 'SPO-HD-08: Persiapan Antikoagulasi & Alat Akses Vaskular',
-      },
-    ],
-  },
-  {
-    title:
-      'BAGIAN III: IDENTIFIKASI PASIEN, PENGKAJIAN PRE-HD & KESELAMATAN PASIEN (PATIENT SAFETY) — [NILAI SESUAI PASIEN KELOLAAN]',
-    maxMode: 'per_patient',
-    items: [
-      {
-        id: '3.1',
-        category: 'Sasaran Keselamatan Pasien (SKP 1)',
-        description:
-          'Melakukan identifikasi aktif pasien menggunakan minimal 2 penanda resmi (Nama Lengkap, Tanggal Lahir, Nomor RM) serta memvalidasi status rawat dan ruang zonasi infeksi.',
-        standard: 'SPO-SKP-01: Ketepatan Identifikasi Pasien Pre-Tindakan',
-      },
-      {
-        id: '3.2',
-        category: 'Evaluasi Cairan & Berat Badan',
-        description:
-          'Menimbang Berat Badan Pre-HD, membandingkannya dengan Berat Badan Kering (Dry Weight), menghitung Interdialytic Weight Gain (IDWG), dan mengkaji status hidrasi/edema.',
-        standard: 'SPO-HD-09: Pengkajian Status Cairan & Penetapan UF',
-      },
-      {
-        id: '3.3',
-        category: 'Pengkajian Hemodinamik Awal',
-        description:
-          'Melakukan pengukuran lengkap Tanda-Tanda Vital (Tekanan Darah, Nadi, Pernapasan, Suhu, dan SpO₂) serta keluhan subjektif pasien sebelum inisiasi hemodialisis.',
-        standard: 'SPO-HD-10: Pengkajian Keperawatan & Hemodinamik Pre-HD',
-      },
-      {
-        id: '3.4',
-        category: 'Skrining Risiko Jatuh & Persetujuan Tindakan',
-        description:
-          'Melaksanakan pengkajian risiko jatuh (SKP 6: penguncian roda bed, pemasangan pengaman sisi tempat tidur) dan memverifikasi kelengkapan Informed Consent tindakan HD.',
-        standard: 'SPO-SKP-06: Pencegahan Risiko Jatuh & Informed Consent HD',
-      },
-      {
-        id: '3.5',
-        category: 'Verifikasi Preskripsi Dialisis',
-        description:
-          'Memverifikasi dan memprogram parameter resep hemodialisis dari DPJP ke mesin meliputi durasi tindakan (Time), Target UFG, QB, QD, serta dosis antikoagulan.',
-        standard: 'SPO-HD-11: Verifikasi Preskripsi Medis Hemodialisis',
-      },
-      {
-        id: '3.6',
-        category: 'Manajemen Akses Vaskular & Inisiasi',
-        description:
-          'Mengkaji patensi akses vaskular (bruit/thrill AVF atau kepatenan dan exit-site CDL/Femoral) serta melakukan kanulasi atau penyambungan sirkuit dengan teknik aseptik.',
-        standard: 'SPO-HD-12: Kanulasi AV Fistula & Perawatan Kateter CDL',
-      },
-    ],
-  },
-  {
-    title:
-      'BAGIAN IV: MONITORING INTRA-HD & PENCEGAHAN INSIDEN KESELAMATAN PASIEN (IKP) — [NILAI SESUAI PASIEN KELOLAAN]',
-    maxMode: 'per_patient',
-    items: [
-      {
-        id: '4.1',
-        category: 'Observasi Berkala Hemodinamik',
-        description:
-          'Melakukan pemantauan berkala dan pencatatan pada lembar observasi Intra-HD setiap jam meliputi Tekanan Darah, Nadi, kesadaran, QB, UF Rate, dan volume UF tercapai.',
-        standard: 'SPO-HD-13: Monitoring Intra-Hemodialisis Terpadu',
-      },
-      {
-        id: '4.2',
-        category: 'Keamanan Sirkuit & Tekanan Ekstrakorporeal',
-        description:
-          'Memantau indikator tekanan ekstrakorporeal (Arterial Pressure, Venous Pressure, TMP), keamanan fiksasi jarum/kateter dari risiko venous needle dislodgement, dan tanda clotting.',
-        standard: 'SPO-HD-14: Pemantauan Sirkuit Ekstrakorporeal & Pencegahan IKP',
-      },
-      {
-        id: '4.3',
-        category: 'Deteksi & Tata Laksana Komplikasi Akut',
-        description:
-          'Mendeteksi secara dini dan melaksanakan intervensi keperawatan cepat terhadap komplikasi akut Intra-HD (hipotensi, kram otot, mual/muntah, menggigil, clotting, perdarahan akses).',
-        standard: 'SPO-HD-15: Penanganan Komplikasi Akut Intra-Hemodialisis',
-      },
-      {
-        id: '4.4',
-        category: 'Komunikasi Efektif SBAR / TBAK Medis',
-        description:
-          'Melaksanakan kolaborasi medis serta pelaporan perubahan kondisi klinis pasien kepada Dokter Jaga Ruangan atau DPJP menggunakan komunikasi efektif SBAR dan verifikasi TBAK.',
-        standard: 'SPO-SKP-02: Komunikasi Efektif SBAR & TBAK di Unit HD',
-      },
-    ],
-  },
-  {
-    title:
-      'BAGIAN V: EDUKASI TERSTRUKTUR KEPADA PASIEN & KELUARGA (DIET, CAIRAN, KEBERSIHAN DIRI) — [NILAI SESUAI PASIEN KELOLAAN]',
-    maxMode: 'per_patient',
-    items: [
-      {
-        id: '5.1',
-        category: 'Manajemen Cairan & Pembatasan IDWG',
-        description:
-          'Memberikan edukasi terstruktur kepada pasien dan keluarga mengenai perhitungan batas asupan cairan harian dan pengendalian kenaikan berat badan interdialitik (IDWG).',
-        standard: 'SPO-KIE-01: Edukasi Manajemen Cairan Pasien Hemodialisis',
-      },
-      {
-        id: '5.2',
-        category: 'Nutrisi & Diet Ginjal Kronik',
-        description:
-          'Memberikan penyuluhan gizi dialisis terkait pembatasan kalium, natrium, dan fosfat serta pemenuhan protein bernilai biologis tinggi guna mencegah hiperkalemia dan malnutrisi.',
-        standard: 'SPO-KIE-02: Edukasi Nutrisi & Diet Pasien Dialisis',
-      },
-      {
-        id: '5.3',
-        category: 'Perawatan Mandiri Akses Vaskular',
-        description:
-          'Mengedukasi pasien dan keluarga tentang cara menjaga kebersihan dan patensi akses vaskular (AVF/CDL) di rumah serta penanganan darurat bila terjadi perdarahan atau tanda infeksi.',
-        standard: 'SPO-KIE-03: Edukasi Perawatan Mandiri Akses Vaskular',
-      },
-      {
-        id: '5.4',
-        category: 'Kepatuhan Obat & Jadwal HD',
-        description:
-          'Mengedukasi ketepatan waktu konsumsi obat-obatan rutin pasien dialisis (antihipertensi, pengikat fosfat, suplementasi zat besi/EPO) dan pentingnya kepatuhan jadwal HD.',
-        standard: 'SPO-KIE-04: Edukasi Rekonsiliasi Obat & Kepatuhan Terapi HD',
-      },
-      {
-        id: '5.5',
-        category: 'Verifikasi Pemahaman (Teach-Back)',
-        description:
-          'Memvalidasi tingkat pemahaman pasien dan keluarga terhadap materi edukasi melalui metode Teach-Back serta mendokumentasikannya pada rekam edukasi terintegrasi.',
-        standard: 'SPO-KIE-05: Evaluasi Edukasi Pasien Metode Teach-Back',
-      },
-    ],
-  },
-  {
-    title:
-      'BAGIAN VI: TERMINASI AMAN, EVALUASI POST-HD, DISINFEKSI MESIN & PENDOKUMENTASIAN — [NILAI SESUAI PASIEN KELOLAAN]',
-    maxMode: 'per_patient',
-    items: [
-      {
-        id: '6.1',
-        category: 'Prosedur Terminasi & Re-infusi',
-        description: 'Terminasi HD Aman (Washback)',
-        standard: 'SPO-HD-16: Prosedur Terminasi & Re-infusi Aman',
-      },
-      {
-        id: '6.2',
-        category: 'Hemostasis & Penutupan Akses Vaskular',
-        description: 'Hemostasis & Balut Tekan Akses',
-        standard: 'SPO-HD-17: Hemostasis Pasca-Kanulasi & Locking CDL',
-      },
-      {
-        id: '6.3',
-        category: 'Evaluasi Klinis Pasca-Dialisis',
-        description: 'Evaluasi TTV & Berat Badan Post-HD',
-        standard: 'SPO-HD-18: Evaluasi Keperawatan Pasca-Hemodialisis & Pemulangan',
-      },
-      {
-        id: '6.4',
-        category: 'Dekontaminasi Limbah & Disinfeksi Mesin',
-        description: 'Disinfeksi Mesin HD (Heat / Chemical)',
-        standard: 'SPO-HD-19: Manajemen Limbah B3 & Disinfeksi Mesin HD',
-      },
-      {
-        id: '6.5',
-        category: 'Dokumentasi Rekam Medis & Timbang Terima',
-        description: 'Dokumentasi Asuhan & Rekam Medis (CPPT)',
-        standard: 'SPO-HD-20: Dokumentasi Keperawatan Dialisis & Handover',
-      },
-    ],
-  },
-];
-
-const ALL_SPO_ITEM_IDS = MONTHLY_SPO_SECTIONS.flatMap((s) => s.items.map((i) => i.id));
+// Static default sections/items now superseded dynamically inside MonthlyReportsPage via mergeWithDefaultTemplate(formTemplate)
 
 function isSpoPointDone(entry: LogbookEntry, pointId: string): boolean {
   const checklist = entry.wizardDetails?.spoChecklist;
@@ -458,8 +242,40 @@ export function MonthlyReportsPage({
   logbooks,
   staffDirectory,
   reports = [],
+  formTemplate,
 }: MonthlyReportsPageProps) {
   const { userProfile } = useAuth();
+  const resolvedTemplate = useMemo(
+    () => mergeWithDefaultTemplate(formTemplate || DEFAULT_LOGBOOK_TEMPLATE),
+    [formTemplate]
+  );
+
+  const monthlySpoSections = useMemo<MonthlySpoSection[]>(() => {
+    return resolvedTemplate.sections
+      .filter((sec) => sec.num >= 1 && sec.num <= 6 && sec.visible !== false)
+      .map((sec) => {
+        const pts = resolvedTemplate.points
+          .filter((p) => p.step === sec.num && p.visible !== false)
+          .sort((a, b) => a.order - b.order);
+        return {
+          title: sec.monthlyTitle || sec.title,
+          maxMode: sec.monthlyMaxMode || (sec.num === 1 ? 'daily_cap_1' : 'per_patient'),
+          items: pts.map((p) => ({
+            id: p.id,
+            category: p.category,
+            description: p.monthlyDescription || p.statement,
+            standard: p.monthlyStandard ?? p.standard ?? '',
+          })),
+        };
+      })
+      .filter((sec) => sec.items.length > 0);
+  }, [resolvedTemplate]);
+
+  const allSpoItemIds = useMemo(
+    () => monthlySpoSections.flatMap((s) => s.items.map((i) => i.id)),
+    [monthlySpoSections]
+  );
+
   const sheetRef = useRef<HTMLDivElement>(null);
   const { handlePrint } = useF4OnePagePrint({
     orientation: 'landscape',
@@ -704,7 +520,7 @@ export function MonthlyReportsPage({
     return { pagi, siang, malam };
   }, [verifiedLogs]);
 
-  // Compute full 29-row x N-day matrix
+  // Compute dynamic N-row x N-day matrix from template
   const matrixData = useMemo(() => {
     const rowResults = new Map<
       string,
@@ -719,12 +535,11 @@ export function MonthlyReportsPage({
     const dailyGrandTotals = new Array<number>(daysInMonth.length).fill(0);
     let vascularTotalCount = 0;
 
-    for (const section of MONTHLY_SPO_SECTIONS) {
+    for (const section of monthlySpoSections) {
       for (const item of section.items) {
         const dailyValues = daysInMonth.map((dateStr, dayIdx) => {
           let val = 0;
           if (item.id === '3.6') {
-            // Poin 3.6 counts unique patients per day whose vascular access was performed by selected nurse (Approved)
             const vascDayLogs = vascularLogsByDate.get(dateStr) || [];
             val = new Set(vascDayLogs.map((entry) => entry.patientId || entry.id)).size;
           } else {
@@ -772,9 +587,20 @@ export function MonthlyReportsPage({
       }
     }
 
+    let maxGrandTotal = 0;
+    for (const section of monthlySpoSections) {
+      for (const item of section.items) {
+        if (item.id === '3.6') {
+          maxGrandTotal += Math.max(verifiedLogs.length, vascularTotalCount);
+        } else if (section.maxMode === 'daily_cap_1') {
+          maxGrandTotal += activeWorkDays;
+        } else {
+          maxGrandTotal += verifiedLogs.length;
+        }
+      }
+    }
+
     const grandTotal = dailyGrandTotals.reduce((acc, v) => acc + v, 0);
-    const maxGrandTotal =
-      activeWorkDays * 3 + verifiedLogs.length * 25 + Math.max(verifiedLogs.length, vascularTotalCount);
     const grandPct =
       maxGrandTotal > 0 ? Math.min(100, Math.round((grandTotal / maxGrandTotal) * 100)) : 0;
 
@@ -785,7 +611,198 @@ export function MonthlyReportsPage({
       maxGrandTotal,
       grandPct,
     };
-  }, [daysInMonth, logsByDate, vascularLogsByDate, activeWorkDays, verifiedLogs.length]);
+  }, [
+    monthlySpoSections,
+    daysInMonth,
+    logsByDate,
+    vascularLogsByDate,
+    activeWorkDays,
+    verifiedLogs.length,
+  ]);
+
+  // Compute TTV & custom fields monthly rows
+  const customMonthlyRows = useMemo<MonthlyCustomMetricRow[]>(() => {
+    const rows: MonthlyCustomMetricRow[] = [];
+    const visibleSectionSet = new Set(
+      resolvedTemplate.sections.filter((s) => s.visible !== false).map((s) => s.num)
+    );
+
+    const buildFieldRow = (
+      responseKey: string,
+      no: string,
+      category: string,
+      fld: CustomLogbookField
+    ): MonthlyCustomMetricRow => {
+      const allNums: number[] = [];
+      let filledCount = 0;
+      let latestStr = '';
+      const dailyDisplay: string[] = [];
+      const dailyTitles: string[] = [];
+
+      for (const dateStr of daysInMonth) {
+        const dayLogs = logsByDate.get(dateStr) || [];
+        const dayNums: number[] = [];
+        const dayRawStrings: string[] = [];
+
+        for (const lb of dayLogs) {
+          const val = lb.wizardDetails?.customResponses?.[responseKey]?.fields?.[fld.id];
+          if (val === undefined || val === null || val === false) continue;
+          if (typeof val === 'string' && !val.trim()) continue;
+
+          filledCount += 1;
+          const displayVal = val === true ? 'Ya' : String(val).trim();
+          dayRawStrings.push(`${lb.patientName}: ${displayVal}`);
+          latestStr = displayVal;
+
+          if (fld.type === 'number') {
+            const parsed =
+              typeof val === 'number' ? val : Number(String(val).replace(',', '.'));
+            if (!Number.isNaN(parsed)) {
+              dayNums.push(parsed);
+              allNums.push(parsed);
+            }
+          }
+        }
+
+        if (dayRawStrings.length === 0) {
+          dailyDisplay.push('');
+          dailyTitles.push('');
+        } else if (
+          fld.type === 'number' &&
+          fld.monthlyAggregation === 'sum' &&
+          dayNums.length > 0
+        ) {
+          const sum = dayNums.reduce((a, b) => a + b, 0);
+          dailyDisplay.push(Number.isInteger(sum) ? String(sum) : sum.toFixed(1));
+          dailyTitles.push(dayRawStrings.join(' | '));
+        } else if (
+          fld.type === 'number' &&
+          fld.monthlyAggregation === 'average' &&
+          dayNums.length > 0
+        ) {
+          const avg = dayNums.reduce((a, b) => a + b, 0) / dayNums.length;
+          dailyDisplay.push(Number.isInteger(avg) ? String(avg) : avg.toFixed(1));
+          dailyTitles.push(dayRawStrings.join(' | '));
+        } else {
+          dailyDisplay.push(String(dayRawStrings.length));
+          dailyTitles.push(dayRawStrings.join(' | '));
+        }
+      }
+
+      const pct =
+        verifiedLogs.length > 0
+          ? Math.min(100, Math.round((filledCount / verifiedLogs.length) * 100))
+          : 0;
+      let totalDisplay = String(filledCount);
+      let keterangan = filledCount > 0 ? `${filledCount}/${verifiedLogs.length}` : '-';
+
+      if (fld.type === 'number' && fld.monthlyAggregation === 'sum') {
+        const sum = allNums.reduce((a, b) => a + b, 0);
+        totalDisplay =
+          allNums.length > 0
+            ? Number.isInteger(sum)
+              ? String(sum)
+              : sum.toFixed(1)
+            : '0';
+        keterangan =
+          allNums.length > 0
+            ? `Total${fld.unit ? ` (${fld.unit})` : ''} · ${filledCount}x`
+            : '-';
+      } else if (fld.type === 'number' && fld.monthlyAggregation === 'average') {
+        const avg =
+          allNums.length > 0 ? allNums.reduce((a, b) => a + b, 0) / allNums.length : 0;
+        totalDisplay =
+          allNums.length > 0
+            ? Number.isInteger(avg)
+              ? String(avg)
+              : avg.toFixed(1)
+            : '-';
+        keterangan =
+          allNums.length > 0
+            ? `Rata-rata${fld.unit ? ` (${fld.unit})` : ''} · ${filledCount}x`
+            : '-';
+      } else if (fld.monthlyAggregation === 'latest') {
+        totalDisplay = String(filledCount);
+        keterangan = latestStr
+          ? `${latestStr.slice(0, 32)}${fld.unit ? ` ${fld.unit}` : ''}`
+          : '-';
+      }
+
+      return {
+        key: `${responseKey}__${fld.id}`,
+        no,
+        category,
+        description: `${fld.label}${fld.unit ? ` (${fld.unit})` : ''}`,
+        standard: `Kolom Tambahan · ${fld.type.toUpperCase()}`,
+        dailyDisplay,
+        dailyTitles,
+        totalDisplay,
+        pctDisplay: `${pct}%`,
+        keterangan,
+      };
+    };
+
+    for (const pt of resolvedTemplate.points) {
+      if (pt.visible === false || !visibleSectionSet.has(pt.step)) continue;
+
+      if (pt.enableTtv && pt.includeTtvInMonthly !== false) {
+        let filledCount = 0;
+        let latestSummary = '';
+        const dailyDisplay: string[] = [];
+        const dailyTitles: string[] = [];
+
+        for (const dateStr of daysInMonth) {
+          const dayLogs = logsByDate.get(dateStr) || [];
+          const summaries: string[] = [];
+          for (const lb of dayLogs) {
+            const ttv = lb.wizardDetails?.customResponses?.[pt.id]?.ttv;
+            if (hasAnyTtvValue(ttv, pt.ttvConfig)) {
+              const s = formatTtvSummary(ttv, pt.ttvConfig);
+              filledCount += 1;
+              latestSummary = s;
+              summaries.push(`${lb.patientName}: ${s}`);
+            }
+          }
+          dailyDisplay.push(summaries.length > 0 ? String(summaries.length) : '');
+          dailyTitles.push(summaries.join(' | '));
+        }
+
+        const pct =
+          verifiedLogs.length > 0
+            ? Math.min(100, Math.round((filledCount / verifiedLogs.length) * 100))
+            : 0;
+        rows.push({
+          key: `${pt.id}__ttv`,
+          no: `${pt.id}`,
+          category: `${pt.category} (TTV)`,
+          description: `Penginputan TTV Poin ${pt.id}`,
+          standard: 'TD · Nadi · RR · Suhu · SpO₂',
+          dailyDisplay,
+          dailyTitles,
+          totalDisplay: String(filledCount),
+          pctDisplay: `${pct}%`,
+          keterangan:
+            latestSummary ||
+            (filledCount > 0 ? `${filledCount}/${verifiedLogs.length}` : '-'),
+        });
+      }
+
+      for (const fld of pt.customFields || []) {
+        if (fld.includeInMonthlyReport === false) continue;
+        rows.push(buildFieldRow(pt.id, pt.id, pt.category, fld));
+      }
+    }
+
+    if (visibleSectionSet.has(7)) {
+      const sec7Fields = resolvedTemplate.sectionCustomFields?.['7'] || [];
+      for (const fld of sec7Fields) {
+        if (fld.includeInMonthlyReport === false) continue;
+        rows.push(buildFieldRow('__sec7', '7.K', 'Bagian VII Tambahan', fld));
+      }
+    }
+
+    return rows;
+  }, [resolvedTemplate, daysInMonth, logsByDate, verifiedLogs.length]);
 
   const activeMonthlyReport = useMemo(() => {
     if (!effectiveNurseId) return null;
@@ -976,7 +993,7 @@ export function MonthlyReportsPage({
       'Pasien Disahkan',
     ]);
 
-    for (const section of MONTHLY_SPO_SECTIONS) {
+    for (const section of monthlySpoSections) {
       rows.push([section.title, ...new Array(headers.length - 1).fill('')]);
       for (const item of section.items) {
         const res = matrixData.rowResults.get(item.id);
@@ -989,6 +1006,25 @@ export function MonthlyReportsPage({
           res?.total ?? 0,
           `${res?.pct ?? 0}%`,
           res?.keterangan ?? '-',
+        ]);
+      }
+    }
+
+    if (customMonthlyRows.length > 0) {
+      rows.push([
+        'REKAPITULASI PENGINPUTAN TTV & KOLOM TAMBAHAN (SESUAI TEMPLATE LOGBOOK)',
+        ...new Array(headers.length - 1).fill(''),
+      ]);
+      for (const crow of customMonthlyRows) {
+        rows.push([
+          crow.no,
+          crow.category,
+          crow.description,
+          crow.standard,
+          ...crow.dailyDisplay.map((d) => d || '0'),
+          crow.totalDisplay,
+          crow.pctDisplay,
+          crow.keterangan,
         ]);
       }
     }
@@ -1144,7 +1180,7 @@ export function MonthlyReportsPage({
         {/* Document Header */}
         <div className="monthly-doc-header text-center border-b-2 border-[#1e3a5f] pb-3 mb-3">
           <h1 className="font-display text-sm sm:text-base font-extrabold tracking-wide text-slate-900 uppercase">
-            LAPORAN BULANAN REKAPITULASI LOGBOOK ASUHAN KEPERAWATAN HEMODIALISIS
+            {resolvedTemplate.monthlyReportTitle}
           </h1>
           <p className="mt-0.5 text-[11px] sm:text-xs font-bold tracking-wide text-slate-700 uppercase">
             UNIT PELAYANAN HEMODIALISIS (DIALYSIS CENTER) - RS HAPPY LAND MEDICAL CENTRE
@@ -1302,7 +1338,7 @@ export function MonthlyReportsPage({
             </thead>
 
             <tbody>
-              {MONTHLY_SPO_SECTIONS.map((section) => (
+              {monthlySpoSections.map((section) => (
                 <FragmentSection
                   key={section.title}
                   section={section}
@@ -1311,6 +1347,59 @@ export function MonthlyReportsPage({
                   rowResults={matrixData.rowResults}
                 />
               ))}
+
+              {customMonthlyRows.length > 0 && (
+                <>
+                  <tr className="bg-[#e3edf7] text-[#153152]">
+                    <td
+                      colSpan={totalColumns}
+                      className="monthly-section-title border border-slate-400 px-2 py-1.5 font-bold tracking-wide uppercase"
+                    >
+                      REKAPITULASI PENGINPUTAN TTV &amp; KOLOM TAMBAHAN (SESUAI TEMPLATE LOGBOOK)
+                    </td>
+                  </tr>
+                  {customMonthlyRows.map((crow) => (
+                    <tr key={crow.key} className="hover:bg-slate-50/70">
+                      <td className="border border-slate-300 px-1.5 py-1.5 text-center font-mono font-bold text-slate-800 align-top">
+                        {crow.no}
+                      </td>
+                      <td className="border border-slate-300 px-2 py-1.5 font-semibold text-slate-900 align-top">
+                        {crow.category}
+                      </td>
+                      <td className="border border-slate-300 px-2 py-1.5 text-slate-700 align-top">
+                        {crow.description}
+                      </td>
+                      <td className="border border-slate-300 px-2 py-1.5 italic text-slate-500 align-top">
+                        {crow.standard}
+                      </td>
+                      {daysInMonth.map((dateStr, idx) => {
+                        const val = crow.dailyDisplay[idx] || '';
+                        const title = crow.dailyTitles[idx] || '';
+                        return (
+                          <td
+                            key={`${crow.key}-${dateStr}`}
+                            title={title || undefined}
+                            className={`monthly-day-col border border-slate-300 px-0.5 py-1.5 text-center font-mono tabular-nums align-middle ${
+                              val ? 'bg-sky-50/80 font-bold text-[#0e4e78]' : 'text-slate-300'
+                            }`}
+                          >
+                            {val}
+                          </td>
+                        );
+                      })}
+                      <td className="border border-slate-300 px-1 py-1.5 text-center font-mono font-bold tabular-nums text-slate-900 align-middle">
+                        {crow.totalDisplay}
+                      </td>
+                      <td className="border border-slate-300 px-1 py-1.5 text-center font-mono font-semibold tabular-nums text-slate-800 align-middle">
+                        {crow.pctDisplay}
+                      </td>
+                      <td className="border border-slate-300 px-1.5 py-1.5 text-center text-slate-700 align-middle">
+                        {crow.keterangan}
+                      </td>
+                    </tr>
+                  ))}
+                </>
+              )}
             </tbody>
 
             <tfoot>
@@ -1552,7 +1641,7 @@ export function MonthlyReportsPage({
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {verifiedLogs.map((entry) => {
-                  const doneCount = ALL_SPO_ITEM_IDS.filter((id) =>
+                  const doneCount = allSpoItemIds.filter((id) =>
                     isSpoPointDone(entry, id)
                   ).length;
                   const vascPerformerId = getVascularPerformerId(entry, staffByNameMap);
@@ -1586,7 +1675,7 @@ export function MonthlyReportsPage({
                         </div>
                       </td>
                       <td className="px-4 py-2.5 text-center font-mono font-semibold text-[#0B5A8E] tabular-nums">
-                        {doneCount} / {ALL_SPO_ITEM_IDS.length}
+                        {doneCount} / {allSpoItemIds.length}
                       </td>
                       <td className="px-4 py-2.5">
                         <div className="font-medium text-slate-900">
@@ -1651,6 +1740,7 @@ export function MonthlyReportsPage({
           entry={detailEntry}
           logbooks={logbooks}
           staffDirectory={staffDirectory}
+          formTemplate={formTemplate}
           onClose={() => setDetailEntryId(null)}
         />
       )}

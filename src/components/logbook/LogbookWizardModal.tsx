@@ -1,5 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { collection, doc, runTransaction, serverTimestamp } from 'firebase/firestore';
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocFromServer,
+  runTransaction,
+  serverTimestamp,
+  setDoc,
+} from 'firebase/firestore';
 import {
   Activity,
   AlertCircle,
@@ -25,10 +34,17 @@ import {
   Square,
   Sun,
   Sunset,
+  Syringe,
   Trash2,
   X,
 } from 'lucide-react';
-import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
+import {
+  auth,
+  db,
+  handleFirestoreError,
+  isTransientFirestoreError,
+  OperationType,
+} from '../../lib/firebase';
 import {
   clampString,
   extractShiftFromSchedule,
@@ -38,13 +54,21 @@ import {
   isPatientScheduledOnDay,
 } from '../../lib/formatters';
 import { useAuth } from '../../context/AuthContext';
+import {
+  DEFAULT_TTV_CONFIG,
+  mergeWithDefaultTemplate,
+  sanitizeCustomResponses,
+} from '../../lib/logbookTemplate';
 import type {
   ActionCategory,
+  CustomLogbookField,
   Doctor,
   IntraObservationRow,
   IntraTtvObservationItem,
   LogbookEntry,
+  LogbookFormTemplate,
   LogbookLock,
+  LogbookPointTemplate,
   LogbookWizardDetails,
   Machine,
   MachineLock,
@@ -52,7 +76,10 @@ import type {
   PjShiftAssignmentEntry,
   ShiftType,
   StaffDirectoryEntry,
+  TtvSubFieldsConfig,
+  TtvValue,
   VascularAccessType,
+  WizardCustomPointResponse,
 } from '../../types';
 
 import { VerificationBadge } from '../ui/StatusBadge';
@@ -77,6 +104,7 @@ interface LogbookWizardModalProps {
   actionCategories: ActionCategory[];
   staffDirectory: StaffDirectoryEntry[];
   pjShiftAssignments?: PjShiftAssignmentEntry[];
+  formTemplate?: LogbookFormTemplate;
   verifierReview?: {
     canEdit: boolean;
     note: string;
@@ -109,7 +137,8 @@ const STEPS = [
   { num: 4, short: 'Intra HD', title: 'Bagian 4: Intra HD (Monitoring Selama Tindakan)' },
   { num: 5, short: 'Edukasi', title: 'Bagian 5: Edukasi Pasien & Keluarga' },
   { num: 6, short: 'Post HD', title: 'Bagian 6: Post HD (Pengakhiran & Evaluasi)' },
-  { num: 7, short: 'Verifikasi', title: 'Bagian 7: Pengajuan Verifikasi' },
+  { num: 7, short: 'Transfusi & EPO', title: 'Bagian 7: Transfusi Darah & Pemberian EPO' },
+  { num: 8, short: 'Verifikasi', title: 'Bagian 8: Pengajuan Verifikasi' },
 ];
 
 const SPO_POINTS: SpoPointMeta[] = [
@@ -577,11 +606,19 @@ const DEFAULT_OBSERVATIONS: IntraObservationRow[] = [
 ];
 
 function buildInitialSpoChecklist(
-  saved?: Record<string, SpoCheckStatus>
+  saved?: Record<string, SpoCheckStatus>,
+  points: Pick<LogbookPointTemplate, 'id'>[] = SPO_POINTS
 ): Record<string, SpoCheckStatus> {
   const result: Record<string, SpoCheckStatus> = {};
-  for (const pt of SPO_POINTS) {
+  for (const pt of points) {
     result[pt.id] = saved?.[pt.id] === 'DIKERJAKAN' ? 'DIKERJAKAN' : 'TIDAK DIKERJAKAN';
+  }
+  if (saved) {
+    for (const [k, v] of Object.entries(saved)) {
+      if (!(k in result)) {
+        result[k] = v === 'DIKERJAKAN' ? 'DIKERJAKAN' : 'TIDAK DIKERJAKAN';
+      }
+    }
   }
   return result;
 }
@@ -606,12 +643,37 @@ export function LogbookWizardModal({
   actionCategories,
   staffDirectory,
   pjShiftAssignments = [],
+  formTemplate,
   verifierReview,
   onClose,
   onSaved,
 }: LogbookWizardModalProps) {
   const { userProfile } = useAuth();
   const isVerifierEdit = Boolean(verifierEditMode && editingEntry && !readOnly);
+  const resolvedTemplate = useMemo(
+    () => mergeWithDefaultTemplate(formTemplate),
+    [formTemplate]
+  );
+  const activeSections = resolvedTemplate.sections;
+  const activeSpoPoints = useMemo(
+    () =>
+      resolvedTemplate.points
+        .filter((p) => p.step >= 1 && p.step <= 6 && p.visible !== false)
+        .sort((a, b) => (a.step !== b.step ? a.step - b.step : a.order - b.order)),
+    [resolvedTemplate.points]
+  );
+  const extraStep7Points = useMemo(
+    () =>
+      resolvedTemplate.points
+        .filter((p) => p.step === 7 && p.visible !== false && p.id !== '7.1' && p.id !== '7.2')
+        .sort((a, b) => a.order - b.order),
+    [resolvedTemplate.points]
+  );
+  const pointTemplateMap = useMemo(
+    () => new Map<string, LogbookPointTemplate>(resolvedTemplate.points.map((p) => [p.id, p])),
+    [resolvedTemplate.points]
+  );
+  const section7CustomFields = resolvedTemplate.sectionCustomFields?.['7'] || [];
   const activePatients = useMemo(() => patients.filter((p) => p.status === 'Aktif'), [patients]);
   const activeDoctors = useMemo(() => doctors.filter((d) => d.status === 'Aktif'), [doctors]);
   const activeCategories = useMemo(
@@ -677,10 +739,13 @@ export function LogbookWizardModal({
     docStatus?: 'Draft' | 'Revision';
   }>({ status: 'idle' });
 
-  // SPO Checklist state ("TIDAK DIKERJAKAN" / "DIKERJAKAN") for every point 1.1 - 7.2
+  // SPO Checklist state ("TIDAK DIKERJAKAN" / "DIKERJAKAN") for every point
   const [spoChecklist, setSpoChecklist] = useState<Record<string, SpoCheckStatus>>(() =>
-    buildInitialSpoChecklist(initialDetails?.spoChecklist)
+    buildInitialSpoChecklist(initialDetails?.spoChecklist, resolvedTemplate.points)
   );
+  const [customResponses, setCustomResponses] = useState<
+    Record<string, WizardCustomPointResponse>
+  >(() => sanitizeCustomResponses(initialDetails?.customResponses));
 
   // Core metadata
   const [patientId, setPatientId] = useState(
@@ -1017,7 +1082,48 @@ export function LogbookWizardModal({
     initialDetails?.section6.handoverSummary || 'Kondisi stabil pasca dialisis, siap pulang / timbang terima.'
   );
 
-  // Section 7: Submission Target
+  // Section 7: Transfusi & EPO
+  const [transfusionGiven, setTransfusionGiven] = useState<boolean>(
+    initialDetails?.section7?.transfusionGiven ?? false
+  );
+  const [transfusionComponent, setTransfusionComponent] = useState<string>(
+    initialDetails?.section7?.transfusionComponent || 'PRC (Packed Red Cell)'
+  );
+  const [transfusionBloodGroup, setTransfusionBloodGroup] = useState<string>(
+    initialDetails?.section7?.transfusionBloodGroup || ''
+  );
+  const [transfusionBagCount, setTransfusionBagCount] = useState<string>(
+    initialDetails?.section7?.transfusionBagCount || '1'
+  );
+  const [transfusionVolumeMl, setTransfusionVolumeMl] = useState<string>(
+    initialDetails?.section7?.transfusionVolumeMl || ''
+  );
+  const [transfusionBagNumber, setTransfusionBagNumber] = useState<string>(
+    initialDetails?.section7?.transfusionBagNumber || ''
+  );
+  const [transfusionReaction, setTransfusionReaction] = useState<string>(
+    initialDetails?.section7?.transfusionReaction || 'Tidak Ada Reaksi'
+  );
+  const [transfusionNote, setTransfusionNote] = useState<string>(
+    initialDetails?.section7?.transfusionNote || ''
+  );
+  const [epoGiven, setEpoGiven] = useState<boolean>(
+    initialDetails?.section7?.epoGiven ?? false
+  );
+  const [epoPreparation, setEpoPreparation] = useState<string>(
+    initialDetails?.section7?.epoPreparation || 'Epoetin Alfa'
+  );
+  const [epoDose, setEpoDose] = useState<string>(
+    initialDetails?.section7?.epoDose || ''
+  );
+  const [epoRoute, setEpoRoute] = useState<string>(
+    initialDetails?.section7?.epoRoute || 'Subkutan (SC)'
+  );
+  const [epoNote, setEpoNote] = useState<string>(
+    initialDetails?.section7?.epoNote || ''
+  );
+
+  // Section 8: Submission Target
   const [targetVerifierRole, setTargetVerifierRole] = useState<'PJ Shift' | 'Kepala Ruang'>(
     editingEntry?.targetVerifierRole || 'Kepala Ruang'
   );
@@ -1035,7 +1141,8 @@ export function LogbookWizardModal({
   useEffect(() => {
     if (!readOnly || !editingEntry) return;
     const d = editingEntry.wizardDetails;
-    setSpoChecklist(buildInitialSpoChecklist(d?.spoChecklist));
+    setSpoChecklist(buildInitialSpoChecklist(d?.spoChecklist, resolvedTemplate.points));
+    setCustomResponses(sanitizeCustomResponses(d?.customResponses));
     setPatientId(editingEntry.patientId || '');
     setRmSearch(editingEntry.patientRm || '');
     setMachineId(editingEntry.machineId || '');
@@ -1220,6 +1327,20 @@ export function LogbookWizardModal({
       d?.section6.handoverSummary || 'Kondisi stabil pasca dialisis, siap pulang / timbang terima.'
     );
 
+    setTransfusionGiven(d?.section7?.transfusionGiven ?? false);
+    setTransfusionComponent(d?.section7?.transfusionComponent || 'PRC (Packed Red Cell)');
+    setTransfusionBloodGroup(d?.section7?.transfusionBloodGroup || '');
+    setTransfusionBagCount(d?.section7?.transfusionBagCount || '1');
+    setTransfusionVolumeMl(d?.section7?.transfusionVolumeMl || '');
+    setTransfusionBagNumber(d?.section7?.transfusionBagNumber || '');
+    setTransfusionReaction(d?.section7?.transfusionReaction || 'Tidak Ada Reaksi');
+    setTransfusionNote(d?.section7?.transfusionNote || '');
+    setEpoGiven(d?.section7?.epoGiven ?? false);
+    setEpoPreparation(d?.section7?.epoPreparation || 'Epoetin Alfa');
+    setEpoDose(d?.section7?.epoDose || '');
+    setEpoRoute(d?.section7?.epoRoute || 'Subkutan (SC)');
+    setEpoNote(d?.section7?.epoNote || '');
+
     setTargetVerifierRole(editingEntry.targetVerifierRole || 'Kepala Ruang');
     setTargetVerifierId(editingEntry.targetVerifierId || '');
     setSubmissionNote(d?.section6.handoverSummary || '');
@@ -1237,22 +1358,80 @@ export function LogbookWizardModal({
     }
   }, [readOnly, editingEntry?.machineId, machineId]);
 
-  // Computed SPO counts
-  const totalSpoCount = SPO_POINTS.length;
+  // Keep spoChecklist synced when new custom points are added via formTemplate
+  useEffect(() => {
+    setSpoChecklist((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const pt of resolvedTemplate.points) {
+        if (pt.step >= 1 && pt.step <= 6 && !(pt.id in next)) {
+          next[pt.id] =
+            initialDetails?.spoChecklist?.[pt.id] === 'DIKERJAKAN'
+              ? 'DIKERJAKAN'
+              : 'TIDAK DIKERJAKAN';
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [resolvedTemplate.points, initialDetails?.spoChecklist]);
+
+  // Computed SPO counts (dynamic from template)
+  const totalSpoCount = activeSpoPoints.length;
   const doneSpoCount = useMemo(
-    () => SPO_POINTS.filter((p) => spoChecklist[p.id] === 'DIKERJAKAN').length,
-    [spoChecklist]
+    () => activeSpoPoints.filter((p) => spoChecklist[p.id] === 'DIKERJAKAN').length,
+    [activeSpoPoints, spoChecklist]
   );
 
   const stepPoints = useMemo(
-    () => SPO_POINTS.filter((p) => p.step === step),
-    [step]
+    () => activeSpoPoints.filter((p) => p.step === step),
+    [activeSpoPoints, step]
   );
 
   const stepDoneCount = useMemo(
     () => stepPoints.filter((p) => spoChecklist[p.id] === 'DIKERJAKAN').length,
     [stepPoints, spoChecklist]
   );
+
+  const updatePointTtv = (pointId: string, key: keyof TtvValue, val: string) => {
+    if (readOnly) return;
+    setCustomResponses((prev) => {
+      const current = prev[pointId] || {};
+      return {
+        ...prev,
+        [pointId]: {
+          ...current,
+          ttv: {
+            ...(current.ttv || {}),
+            [key]: val,
+          },
+        },
+      };
+    });
+    setErrorMsg(null);
+  };
+
+  const updatePointCustomField = (
+    responseKey: string,
+    fieldId: string,
+    value: string | number | boolean
+  ) => {
+    if (readOnly) return;
+    setCustomResponses((prev) => {
+      const current = prev[responseKey] || {};
+      return {
+        ...prev,
+        [responseKey]: {
+          ...current,
+          fields: {
+            ...(current.fields || {}),
+            [fieldId]: value,
+          },
+        },
+      };
+    });
+    setErrorMsg(null);
+  };
 
   const syncBooleanSubChecks = (pointId: string, done: boolean) => {
     switch (pointId) {
@@ -1574,6 +1753,12 @@ export function LogbookWizardModal({
     if (complete) setErrorMsg(null);
   };
 
+  const isFieldValueMissing = (v: unknown) =>
+    v === undefined ||
+    v === null ||
+    (typeof v === 'string' && !v.trim()) ||
+    (typeof v === 'boolean' && !v);
+
   const getPointRequirementError = (pointId: string): string | null => {
     if (pointId === '3.1' && !isPoint31Complete(serviceStatus, patientCategory)) {
       if (serviceStatus === 'Rawat Inap' && !inpatientWard) {
@@ -1599,6 +1784,15 @@ export function LogbookWizardModal({
     if (pointId === '6.3' && (!postBp.trim() || !ufAchieved.trim() || !ktv.trim())) {
       return 'Wajib mengisi semua kolom (Tekanan Darah Post HD, Nilai UFG Tercapai, dan KT/V) terlebih dahulu pada Poin 6.3.';
     }
+    const meta = pointTemplateMap.get(pointId);
+    if (meta?.customFields && meta.customFields.length > 0) {
+      const respFields = customResponses[pointId]?.fields || {};
+      for (const fld of meta.customFields) {
+        if (fld.required && isFieldValueMissing(respFields[fld.id])) {
+          return `Wajib mengisi kolom "${fld.label}" terlebih dahulu pada Poin ${pointId}.`;
+        }
+      }
+    }
     return null;
   };
 
@@ -1620,7 +1814,7 @@ export function LogbookWizardModal({
   };
 
   const markStepAllDone = (targetStep: number) => {
-    const pts = SPO_POINTS.filter((p) => p.step === targetStep);
+    const pts = activeSpoPoints.filter((p) => p.step === targetStep);
     const allowedIds: string[] = [];
     const blockedIds: string[] = [];
     for (const pt of pts) {
@@ -1651,7 +1845,7 @@ export function LogbookWizardModal({
   };
 
   const resetStepChecklist = (targetStep: number) => {
-    const pts = SPO_POINTS.filter((p) => p.step === targetStep);
+    const pts = activeSpoPoints.filter((p) => p.step === targetStep);
     setSpoChecklist((prev) => {
       const next = { ...prev };
       for (const pt of pts) {
@@ -1662,13 +1856,22 @@ export function LogbookWizardModal({
     for (const pt of pts) {
       syncBooleanSubChecks(pt.id, false);
     }
+    setCustomResponses((prev) => {
+      const next = { ...prev };
+      for (const pt of resolvedTemplate.points.filter((p) => p.step === targetStep)) {
+        delete next[pt.id];
+      }
+      if (targetStep === 7) delete next['__sec7'];
+      return next;
+    });
   };
 
   const resetAllChecklist = () => {
-    setSpoChecklist(buildInitialSpoChecklist());
-    for (const pt of SPO_POINTS) {
+    setSpoChecklist(buildInitialSpoChecklist(undefined, resolvedTemplate.points));
+    for (const pt of activeSpoPoints) {
       syncBooleanSubChecks(pt.id, false);
     }
+    setCustomResponses({});
     setSubmissionConfirmed(false);
   };
 
@@ -2196,7 +2399,9 @@ export function LogbookWizardModal({
   };
 
   const validateStep = (targetStep: number): string | null => {
-    if (targetStep === 1) {
+    const isPointVisible = (id: string) => pointTemplateMap.get(id)?.visible !== false;
+
+    if (targetStep === 1 && isPointVisible('1.1')) {
       if (!roTds.trim() || !roConductivity.trim()) {
         return 'Lengkapi catatan TDS dan Conductivity Air RO pada Bagian 1.';
       }
@@ -2207,7 +2412,7 @@ export function LogbookWizardModal({
       if (machineConflict) {
         return `Mesin / Bed HD ${selectedMachine?.machineNumber || ''} pada Shift ${shift} tanggal ${date} sudah dipilih oleh ${machineConflict.nurseName}.`;
       }
-      if (!dialysateTemp.trim()) return 'Isi suhu dialisat pada Bagian 2.';
+      if (isPointVisible('2.4') && !dialysateTemp.trim()) return 'Isi suhu dialisat pada Bagian 2.';
     }
     if (targetStep === 3) {
       if (!patientId) return 'Pilih pasien yang belum terinput pada daftar pasien.';
@@ -2220,25 +2425,70 @@ export function LogbookWizardModal({
       }
       if (!doctorId) return 'Pilih Dokter DPJP terlebih dahulu.';
       if (!resolvedDutyDoctorName) return 'Pilih atau ketik nama Dokter Jaga Ruang HD terlebih dahulu.';
-      if (serviceStatus === 'Rawat Inap' && !inpatientWard) {
+      if (isPointVisible('3.1') && serviceStatus === 'Rawat Inap' && !inpatientWard) {
         return 'Wajib memilih Nama Bangsal / Ruang Rawat Inap (CAMELIA, DAHLIA, atau ICU) pada Poin 3.1 (Bagian 3).';
       }
-      if (!preWeight.trim()) {
+      if (isPointVisible('3.2') && !preWeight.trim()) {
         return 'Lengkapi Berat Badan Datang (Pre-HD) pada Poin 3.2 (Bagian 3).';
       }
-      if (!systolicBp.trim() || !diastolicBp.trim()) {
+      if (isPointVisible('3.3') && (!systolicBp.trim() || !diastolicBp.trim())) {
         return 'Wajib mengisi kedua kolom Sistolik dan Diastolik pada Poin 3.3 (Bagian 3).';
       }
-      if (!informedConsent) return 'Persetujuan tindakan (Informed Consent) harus terverifikasi.';
+      if (isPointVisible('3.4') && !informedConsent) {
+        return 'Persetujuan tindakan (Informed Consent) harus terverifikasi.';
+      }
     }
     if (targetStep === 6) {
-      if (!postBp.trim() || !ufAchieved.trim() || !ktv.trim()) {
+      if (isPointVisible('6.3') && (!postBp.trim() || !ufAchieved.trim() || !ktv.trim())) {
         return 'Wajib mengisi semua kolom (Tekanan Darah Post HD, Nilai UFG Tercapai, dan KT/V) pada Poin 6.3 (Bagian 6).';
       }
-      if (!postWeight.trim()) {
+      if (isPointVisible('3.2') && !postWeight.trim()) {
         return 'Lengkapi Berat Badan Pulang (Post-HD) pada Poin 3.2 (Bagian 3).';
       }
     }
+    if (targetStep === 7) {
+      if (isPointVisible('7.1') && transfusionGiven) {
+        if (!transfusionComponent.trim()) {
+          return 'Pilih Komponen Darah pada Poin 7.1 (Bagian 7).';
+        }
+        const bagNum = Number(transfusionBagCount);
+        if (!transfusionBagCount.trim() || Number.isNaN(bagNum) || bagNum < 1) {
+          return 'Isi Jumlah Kantong transfusi minimal 1 pada Poin 7.1 (Bagian 7).';
+        }
+      }
+      if (isPointVisible('7.2') && epoGiven) {
+        if (!epoPreparation.trim()) {
+          return 'Isi Jenis / Nama Preparat EPO pada Poin 7.2 (Bagian 7).';
+        }
+        if (!epoDose.trim()) {
+          return 'Isi Dosis Pemberian EPO pada Poin 7.2 (Bagian 7).';
+        }
+      }
+      if (section7CustomFields.length > 0) {
+        const sec7Resp = customResponses['__sec7']?.fields || {};
+        for (const fld of section7CustomFields) {
+          if (fld.required && isFieldValueMissing(sec7Resp[fld.id])) {
+            return `Wajib mengisi kolom "${fld.label}" pada Bagian 7.`;
+          }
+        }
+      }
+    }
+
+    // Validate required custom fields on any visible points in targetStep
+    const visiblePtsInStep = resolvedTemplate.points.filter(
+      (p) => p.step === targetStep && p.visible !== false
+    );
+    for (const pt of visiblePtsInStep) {
+      if (pt.customFields && pt.customFields.length > 0) {
+        const respFields = customResponses[pt.id]?.fields || {};
+        for (const fld of pt.customFields) {
+          if (fld.required && isFieldValueMissing(respFields[fld.id])) {
+            return `Wajib mengisi kolom "${fld.label}" pada Poin ${pt.id}.`;
+          }
+        }
+      }
+    }
+
     return null;
   };
 
@@ -2249,7 +2499,7 @@ export function LogbookWizardModal({
       setErrorMsg(err);
       return;
     }
-    setStep((s) => Math.min(7, s + 1));
+    setStep((s) => Math.min(8, s + 1));
   };
 
   const getAutoDraftStatus = (): 'Draft' | 'Revision' => {
@@ -2310,7 +2560,7 @@ export function LogbookWizardModal({
     }
 
     if (submitStatus === 'Pending' || isVerifierEdit) {
-      for (const s of [1, 2, 3, 6]) {
+      for (const s of [1, 2, 3, 6, 7]) {
         const err = validateStep(s);
         if (err) {
           setStep(s);
@@ -2319,9 +2569,9 @@ export function LogbookWizardModal({
         }
       }
       if (submitStatus === 'Pending' && !isVerifierEdit && !submissionConfirmed) {
-        setStep(7);
+        setStep(8);
         setErrorMsg(
-          'Centang pernyataan konfirmasi bahwa seluruh indikator SPO Bagian I–VI telah diperiksa sebelum mengajukan verifikasi.'
+          'Centang pernyataan konfirmasi bahwa seluruh indikator SPO dan data asuhan Bagian I–VII telah diperiksa sebelum mengajukan verifikasi.'
         );
         return 'error';
       }
@@ -2455,7 +2705,29 @@ export function LogbookWizardModal({
         handoverSummary: clampString(submissionNote.trim() || handoverSummary, 300),
         ktv: clampString(ktv, 20),
       },
+      section7: {
+        transfusionGiven,
+        transfusionComponent: transfusionGiven
+          ? clampString(transfusionComponent || 'PRC (Packed Red Cell)', 60)
+          : '',
+        transfusionBloodGroup: transfusionGiven ? clampString(transfusionBloodGroup, 10) : '',
+        transfusionBagCount: transfusionGiven ? clampString(transfusionBagCount || '1', 10) : '',
+        transfusionVolumeMl: transfusionGiven ? clampString(transfusionVolumeMl, 20) : '',
+        transfusionBagNumber: transfusionGiven ? clampString(transfusionBagNumber, 60) : '',
+        transfusionReaction: transfusionGiven
+          ? clampString(transfusionReaction || 'Tidak Ada Reaksi', 60)
+          : '',
+        transfusionNote: transfusionGiven ? clampString(transfusionNote, 300) : '',
+        epoGiven,
+        epoPreparation: epoGiven ? clampString(epoPreparation || 'Epoetin Alfa', 80) : '',
+        epoDose: epoGiven ? clampString(epoDose, 40) : '',
+        epoRoute: epoGiven ? clampString(epoRoute || 'Subkutan (SC)', 40) : '',
+        epoNote: epoGiven ? clampString(epoNote, 300) : '',
+      },
       spoChecklist,
+      ...(Object.keys(sanitizeCustomResponses(customResponses)).length > 0
+        ? { customResponses: sanitizeCustomResponses(customResponses) }
+        : {}),
     };
 
     const derivedCategory =
@@ -2470,9 +2742,14 @@ export function LogbookWizardModal({
     const safePostBp = clampString(postBp.trim(), 20);
 
     const normalizedSpoChecklist: Record<string, SpoCheckStatus> = {};
-    for (const pt of SPO_POINTS) {
+    for (const pt of activeSpoPoints) {
       normalizedSpoChecklist[pt.id] =
         spoChecklist[pt.id] === 'DIKERJAKAN' ? 'DIKERJAKAN' : 'TIDAK DIKERJAKAN';
+    }
+    for (const [k, v] of Object.entries(spoChecklist)) {
+      if (!(k in normalizedSpoChecklist) && Object.keys(normalizedSpoChecklist).length < 120) {
+        normalizedSpoChecklist[k] = v === 'DIKERJAKAN' ? 'DIKERJAKAN' : 'TIDAK DIKERJAKAN';
+      }
     }
     wizardDetails.spoChecklist = normalizedSpoChecklist;
 
@@ -2542,6 +2819,12 @@ export function LogbookWizardModal({
     }
     let txOp: OperationType = currentEntry ? OperationType.UPDATE : OperationType.CREATE;
     let txPath = currentEntry ? `logbook/${currentEntry.id}` : 'logbook';
+    const queuedTxOps: string[] = [];
+    let txDiag: Record<string, unknown> = {};
+    let lastCreatePayload: Record<string, unknown> | null = null;
+    let createdDraftLogRef: ReturnType<typeof doc> | null = null;
+    let createdPatientLockRef: ReturnType<typeof doc> | null = null;
+    let createdMachineLockRef: ReturnType<typeof doc> | null = null;
     try {
       const monthKey = safeDate.slice(0, 7);
       const newMachineLockId = `${safeDate}_${safeShift}_${mach.id}`;
@@ -2556,70 +2839,95 @@ export function LogbookWizardModal({
       const safeLockPatientName = clampString(pat.fullName, 120) || 'Pasien HD';
       const safeLockNurseName = clampString(userProfile.fullName, 120) || 'Perawat HD';
       const existingLogbookIds = new Set(logbooks.map((lb) => lb.id));
-      let savedDocId = currentEntry?.id || '';
-      let savedOwnerId = userProfile.uid;
-      let savedOwnerName = safeLockNurseName;
+      const targetLogRef = currentEntry
+        ? doc(db, 'logbook', currentEntry.id)
+        : doc(collection(db, 'logbook'));
+      const savedDocId = targetLogRef.id;
+      const newMachineLockRef = doc(db, 'machine_locks', newMachineLockId);
+      const oldMachineLockRef =
+        oldMachineLockId && oldMachineLockId !== newMachineLockId
+          ? doc(db, 'machine_locks', oldMachineLockId)
+          : null;
 
-      await runTransaction(db, async (tx) => {
-        const targetLogRef = currentEntry
-          ? doc(db, 'logbook', currentEntry.id)
-          : doc(collection(db, 'logbook'));
-        savedDocId = targetLogRef.id;
+      let newPatientLockRef: ReturnType<typeof doc> | null = null;
+      let oldPatientLockRef: ReturnType<typeof doc> | null = null;
+      if (currentEntry) {
+        const oldLockId = `${currentEntry.date}_${currentEntry.patientId}`;
+        const newLockId = `${safeDate}_${pat.id}`;
+        if (oldLockId !== newLockId) {
+          newPatientLockRef = doc(db, 'logbook_locks', newLockId);
+          oldPatientLockRef = doc(db, 'logbook_locks', oldLockId);
+        }
+      } else {
+        newPatientLockRef = doc(db, 'logbook_locks', `${safeDate}_${pat.id}`);
+      }
 
-        let existingLogSnap: Awaited<ReturnType<typeof tx.get>> | null = null;
-        if (currentEntry) {
+      const isFirestoreTimestamp = (val: unknown): boolean =>
+        Boolean(val && typeof (val as { toMillis?: unknown }).toMillis === 'function');
+
+      // Preflight conflict check before mutating logbook
+      if (newPatientLockRef) {
+        txOp = OperationType.GET;
+        txPath = newPatientLockRef.path;
+        const prePatientLockSnap = await getDoc(newPatientLockRef);
+        if (prePatientLockSnap.exists()) {
+          const plData = prePatientLockSnap.data() as Partial<LogbookLock>;
+          const sameEntry = Boolean(currentEntry && plData.logbookId === currentEntry.id);
+          const canCheckOrphan = Boolean(
+            isAdminRole || plData.nurseId === userProfile.uid || (currentEntry && isVerifierRole)
+          );
+          const knownOrphan = Boolean(
+            canCheckOrphan && plData.logbookId && !existingLogbookIds.has(plData.logbookId)
+          );
+          if (!sameEntry && !knownOrphan) {
+            throw new Error(`PATIENT_LOCKED:${plData.nurseName || 'staf lain'}`);
+          }
+          if (!sameEntry && knownOrphan) {
+            await deleteDoc(newPatientLockRef).catch(() => undefined);
+          }
+        }
+      }
+
+      txOp = OperationType.GET;
+      txPath = newMachineLockRef.path;
+      const preMachineLockSnap = await getDoc(newMachineLockRef);
+      if (preMachineLockSnap.exists()) {
+        const lockData = preMachineLockSnap.data() as MachineLock;
+        const ownedByCurrent = lockData.nurseId === userProfile.uid;
+        const matchesThisSlot =
+          (currentEntry && lockData.logbookId === currentEntry.id) ||
+          (!lockData.logbookId && lockData.patientId === pat.id);
+        const canCheckOrphan = Boolean(
+          isAdminRole || ownedByCurrent || (currentEntry && isVerifierRole)
+        );
+        const knownOrphan = Boolean(
+          canCheckOrphan && lockData.logbookId && !existingLogbookIds.has(lockData.logbookId)
+        );
+        if (
+          !(ownedByCurrent && matchesThisSlot) &&
+          !(
+            (isAdminRole || (currentEntry && isVerifierRole)) &&
+            currentEntry &&
+            lockData.logbookId === currentEntry.id
+          ) &&
+          !knownOrphan
+        ) {
+          throw new Error(`MACHINE_LOCKED:${lockData.nurseName || 'staf lain'}`);
+        }
+      }
+
+      let entryOwnerId = userProfile.uid;
+      let entryOwnerName = safeLockNurseName;
+      let canVerifierEditCurrent = false;
+
+      // Phase 1: Write logbook entry (new entries start as Draft so rollback delete is always permitted)
+      const initialCreateStatus = currentEntry ? submitStatus : 'Draft';
+      if (currentEntry) {
+        await runTransaction(db, async (tx) => {
           txOp = OperationType.GET;
           txPath = targetLogRef.path;
-          existingLogSnap = await tx.get(targetLogRef);
-        }
-
-        const newMachineLockRef = doc(db, 'machine_locks', newMachineLockId);
-        txOp = OperationType.GET;
-        txPath = newMachineLockRef.path;
-        const newMachineLockSnap = await tx.get(newMachineLockRef);
-
-        const oldMachineLockRef =
-          oldMachineLockId && oldMachineLockId !== newMachineLockId
-            ? doc(db, 'machine_locks', oldMachineLockId)
-            : null;
-        let oldMachineLockSnap: Awaited<ReturnType<typeof tx.get>> | null = null;
-        if (oldMachineLockRef) {
-          txOp = OperationType.GET;
-          txPath = oldMachineLockRef.path;
-          oldMachineLockSnap = await tx.get(oldMachineLockRef);
-        }
-
-        let newPatientLockRef: ReturnType<typeof doc> | null = null;
-        let newPatientLockSnap: Awaited<ReturnType<typeof tx.get>> | null = null;
-        let oldPatientLockRef: ReturnType<typeof doc> | null = null;
-        let oldPatientLockSnap: Awaited<ReturnType<typeof tx.get>> | null = null;
-
-        if (currentEntry) {
-          const oldLockId = `${currentEntry.date}_${currentEntry.patientId}`;
-          const newLockId = `${safeDate}_${pat.id}`;
-          if (oldLockId !== newLockId) {
-            newPatientLockRef = doc(db, 'logbook_locks', newLockId);
-            txOp = OperationType.GET;
-            txPath = newPatientLockRef.path;
-            newPatientLockSnap = await tx.get(newPatientLockRef);
-            oldPatientLockRef = doc(db, 'logbook_locks', oldLockId);
-            txOp = OperationType.GET;
-            txPath = oldPatientLockRef.path;
-            oldPatientLockSnap = await tx.get(oldPatientLockRef);
-          }
-        } else {
-          newPatientLockRef = doc(db, 'logbook_locks', `${safeDate}_${pat.id}`);
-          txOp = OperationType.GET;
-          txPath = newPatientLockRef.path;
-          newPatientLockSnap = await tx.get(newPatientLockRef);
-        }
-
-        let entryOwnerId = userProfile.uid;
-        let entryOwnerName = safeLockNurseName;
-        let canVerifierEditCurrent = false;
-
-        if (currentEntry) {
-          if (!existingLogSnap || !existingLogSnap.exists()) {
+          const existingLogSnap = await tx.get(targetLogRef);
+          if (!existingLogSnap.exists()) {
             throw new Error('LOGBOOK_MISSING');
           }
           const currentLogData = existingLogSnap.data() as Partial<LogbookEntry>;
@@ -2650,52 +2958,9 @@ export function LogbookWizardModal({
           if (typeof currentLogData.nurseName === 'string' && currentLogData.nurseName.trim()) {
             entryOwnerName = clampString(currentLogData.nurseName, 120) || safeLockNurseName;
           }
-        }
-        savedOwnerId = entryOwnerId;
-        savedOwnerName = entryOwnerName;
 
-        if (newPatientLockSnap && newPatientLockSnap.exists()) {
-          const plData = newPatientLockSnap.data() as Partial<LogbookLock>;
-          const sameEntry = Boolean(currentEntry && plData.logbookId === currentEntry.id);
-          const knownOrphan = Boolean(
-            (isAdminRole || plData.nurseId === userProfile.uid || canVerifierEditCurrent) &&
-              plData.logbookId &&
-              !existingLogbookIds.has(plData.logbookId)
-          );
-          if (!sameEntry && !knownOrphan) {
-            throw new Error(`PATIENT_LOCKED:${plData.nurseName || 'staf lain'}`);
-          }
-        }
-
-        if (newMachineLockSnap.exists()) {
-          const lockData = newMachineLockSnap.data() as MachineLock;
-          const ownedByCurrent = lockData.nurseId === userProfile.uid;
-          const matchesThisSlot =
-            (currentEntry && lockData.logbookId === currentEntry.id) ||
-            (!lockData.logbookId && lockData.patientId === pat.id);
-          const knownOrphan = Boolean(
-            (isAdminRole || ownedByCurrent || canVerifierEditCurrent) &&
-              lockData.logbookId &&
-              !existingLogbookIds.has(lockData.logbookId)
-          );
-          if (
-            !(ownedByCurrent && matchesThisSlot) &&
-            !((isAdminRole || canVerifierEditCurrent) && currentEntry && lockData.logbookId === currentEntry.id) &&
-            !knownOrphan
-          ) {
-            throw new Error(
-              `MACHINE_LOCKED:${lockData.nurseName || 'staf lain'}`
-            );
-          }
-        }
-
-        const isFirestoreTimestamp = (val: unknown): boolean =>
-          Boolean(val && typeof (val as { toMillis?: unknown }).toMillis === 'function');
-
-        txOp = currentEntry ? OperationType.UPDATE : OperationType.CREATE;
-        txPath = `logbook/${targetLogRef.id}`;
-        if (currentEntry && existingLogSnap?.exists()) {
-          const currentLogData = existingLogSnap.data() as Partial<LogbookEntry>;
+          txOp = OperationType.UPDATE;
+          txPath = targetLogRef.path;
           const updatePayload: Record<string, unknown> = { ...payload };
           if (!isFirestoreTimestamp(currentLogData.createdAt)) {
             updatePayload.createdAt = serverTimestamp();
@@ -2705,7 +2970,7 @@ export function LogbookWizardModal({
               typeof currentLogData.nurseNip === 'string'
                 ? currentLogData.nurseNip
                 : currentLogData.nurseId === userProfile.uid
-                ? userProfile.nip
+                ? userProfile.nip || ''
                 : '',
               40
             );
@@ -2718,37 +2983,63 @@ export function LogbookWizardModal({
             updatePayload.nurseName = entryOwnerName;
           }
           tx.update(targetLogRef, updatePayload);
-        } else {
-          tx.set(targetLogRef, {
-            ...payload,
-            nurseId: userProfile.uid,
-            nurseName: safeLockNurseName,
-            nurseNip: clampString(userProfile.nip, 40),
-            createdAt: serverTimestamp(),
-          });
-        }
+        });
+      } else {
+        txOp = OperationType.CREATE;
+        txPath = targetLogRef.path;
+        const createDocData: Record<string, unknown> = {
+          ...payload,
+          verificationStatus: initialCreateStatus,
+          nurseId: userProfile.uid,
+          nurseName: safeLockNurseName,
+          nurseNip: clampString(userProfile.nip || '', 40),
+          createdAt: serverTimestamp(),
+        };
+        lastCreatePayload = createDocData;
+        await setDoc(targetLogRef, createDocData);
+      }
+      queuedTxOps.push(`${currentEntry ? 'update' : 'create'}:${targetLogRef.path}`);
+      if (!currentEntry) {
+        createdDraftLogRef = targetLogRef;
+      }
 
-        if (oldPatientLockRef && oldPatientLockSnap?.exists()) {
-          const oldPL = oldPatientLockSnap.data() as Partial<LogbookLock>;
-          if (isAdminRole || canVerifierEditCurrent || oldPL.nurseId === userProfile.uid) {
-            txOp = OperationType.DELETE;
-            txPath = oldPatientLockRef.path;
-            tx.delete(oldPatientLockRef);
+      // Phase 2: Claim / update patient daily lock
+      if (newPatientLockRef) {
+        let didCreatePatientLock = false;
+        let patientLockOpMode: 'create' | 'update' = 'create';
+        await runTransaction(db, async (tx) => {
+          txOp = OperationType.GET;
+          txPath = newPatientLockRef!.path;
+          const newPatientLockSnap = await tx.get(newPatientLockRef!);
+          if (newPatientLockSnap.exists()) {
+            const plData = newPatientLockSnap.data() as Partial<LogbookLock>;
+            const sameEntry = Boolean(
+              (currentEntry && plData.logbookId === currentEntry.id) ||
+                plData.logbookId === targetLogRef.id
+            );
+            const knownOrphan = Boolean(
+              (isAdminRole || plData.nurseId === userProfile.uid || canVerifierEditCurrent) &&
+                plData.logbookId &&
+                !existingLogbookIds.has(plData.logbookId)
+            );
+            if (!sameEntry && !knownOrphan) {
+              throw new Error(`PATIENT_LOCKED:${plData.nurseName || 'staf lain'}`);
+            }
           }
-        }
-        if (newPatientLockRef) {
-          const existingPL = newPatientLockSnap?.exists()
+
+          const existingPL = newPatientLockSnap.exists()
             ? (newPatientLockSnap.data() as Partial<LogbookLock>)
             : null;
+          patientLockOpMode = existingPL ? 'update' : 'create';
           txOp = existingPL ? OperationType.UPDATE : OperationType.CREATE;
-          txPath = newPatientLockRef.path;
+          txPath = newPatientLockRef!.path;
           const keepExistingCreatedAt = Boolean(
             existingPL &&
               existingPL.logbookId === targetLogRef.id &&
               existingPL.nurseId === entryOwnerId &&
               isFirestoreTimestamp(existingPL.createdAt)
           );
-          tx.set(newPatientLockRef, {
+          const patientLockFields = {
             id: `${safeDate}_${pat.id}`,
             date: safeDate,
             monthKey,
@@ -2757,23 +3048,88 @@ export function LogbookWizardModal({
             nurseId: entryOwnerId,
             nurseName: entryOwnerName,
             logbookId: targetLogRef.id,
-            createdAt: keepExistingCreatedAt ? existingPL!.createdAt : serverTimestamp(),
             updatedAt: serverTimestamp(),
-          });
+          };
+          const allowedPatientLockKeys = new Set([
+            'id',
+            'date',
+            'monthKey',
+            'patientId',
+            'patientName',
+            'nurseId',
+            'nurseName',
+            'logbookId',
+            'createdAt',
+            'updatedAt',
+          ]);
+          const hasCleanPatientLockKeys = Boolean(
+            existingPL && Object.keys(existingPL).every((k) => allowedPatientLockKeys.has(k))
+          );
+          didCreatePatientLock = !existingPL;
+          if (keepExistingCreatedAt && hasCleanPatientLockKeys) {
+            tx.update(newPatientLockRef!, patientLockFields);
+          } else {
+            tx.set(newPatientLockRef!, {
+              ...patientLockFields,
+              createdAt:
+                keepExistingCreatedAt && existingPL
+                  ? existingPL.createdAt
+                  : serverTimestamp(),
+            });
+          }
+        });
+        queuedTxOps.push(`${patientLockOpMode}:${newPatientLockRef.path}`);
+        if (didCreatePatientLock) {
+          createdPatientLockRef = newPatientLockRef;
         }
+      }
 
-        if (oldMachineLockRef && oldMachineLockSnap?.exists()) {
-          const oldML = oldMachineLockSnap.data() as MachineLock;
-          if (isAdminRole || canVerifierEditCurrent || oldML.nurseId === userProfile.uid) {
+      if (oldPatientLockRef) {
+        const oldPatientLockSnap = await getDoc(oldPatientLockRef).catch(() => null);
+        if (oldPatientLockSnap?.exists()) {
+          const oldPL = oldPatientLockSnap.data() as Partial<LogbookLock>;
+          if (isAdminRole || canVerifierEditCurrent || oldPL.nurseId === userProfile.uid) {
             txOp = OperationType.DELETE;
-            txPath = oldMachineLockRef.path;
-            tx.delete(oldMachineLockRef);
+            txPath = oldPatientLockRef.path;
+            queuedTxOps.push(`delete:${txPath}`);
+            await deleteDoc(oldPatientLockRef);
           }
         }
+      }
 
-        const safeMachineNumber = clampString(mach.machineNumber, 40) || 'HD';
+      // Phase 3: Claim / update machine slot lock
+      const safeMachineNumber = clampString(mach.machineNumber, 40) || 'HD';
+      let didCreateMachineLock = false;
+      let machineLockOpMode: 'create' | 'update' | 'skip' = 'skip';
+      await runTransaction(db, async (tx) => {
+        txOp = OperationType.GET;
+        txPath = newMachineLockRef.path;
+        const newMachineLockSnap = await tx.get(newMachineLockRef);
+
         if (newMachineLockSnap.exists()) {
           const existingML = newMachineLockSnap.data() as Partial<MachineLock>;
+          const ownedByCurrent = existingML.nurseId === userProfile.uid;
+          const matchesThisSlot =
+            (currentEntry && existingML.logbookId === currentEntry.id) ||
+            existingML.logbookId === targetLogRef.id ||
+            (!existingML.logbookId && existingML.patientId === pat.id);
+          const knownOrphan = Boolean(
+            (isAdminRole || ownedByCurrent || canVerifierEditCurrent) &&
+              existingML.logbookId &&
+              !existingLogbookIds.has(existingML.logbookId)
+          );
+          if (
+            !(ownedByCurrent && matchesThisSlot) &&
+            !(
+              (isAdminRole || canVerifierEditCurrent) &&
+              currentEntry &&
+              existingML.logbookId === currentEntry.id
+            ) &&
+            !knownOrphan
+          ) {
+            throw new Error(`MACHINE_LOCKED:${existingML.nurseName || 'staf lain'}`);
+          }
+
           const sameOwner = existingML.nurseId === entryOwnerId;
           const isOrphanReclaim =
             Boolean(existingML.logbookId) &&
@@ -2805,9 +3161,10 @@ export function LogbookWizardModal({
             existingML.logbookId === targetLogRef.id;
 
           if (!lockAlreadyMatches) {
+            machineLockOpMode = 'update';
             txOp = OperationType.UPDATE;
             txPath = newMachineLockRef.path;
-            tx.set(newMachineLockRef, {
+            const machineLockFields = {
               id: newMachineLockId,
               date: safeDate,
               monthKey,
@@ -2819,16 +3176,56 @@ export function LogbookWizardModal({
               nurseId: targetLockNurseId,
               nurseName: targetLockNurseName,
               logbookId: targetLogRef.id,
-              createdAt:
-                (sameOwner || preserveOtherOwner) && isFirestoreTimestamp(existingML.createdAt)
-                  ? existingML.createdAt
-                  : serverTimestamp(),
               updatedAt: serverTimestamp(),
-            });
+            };
+            const keepMachineCreatedAt =
+              (sameOwner || preserveOtherOwner) &&
+              isFirestoreTimestamp(existingML.createdAt);
+            const allowedMachineLockKeys = new Set([
+              'id',
+              'date',
+              'monthKey',
+              'shift',
+              'machineId',
+              'machineNumber',
+              'patientId',
+              'patientName',
+              'nurseId',
+              'nurseName',
+              'logbookId',
+              'createdAt',
+              'updatedAt',
+            ]);
+            const hasCleanMachineLockKeys = Object.keys(existingML).every((k) =>
+              allowedMachineLockKeys.has(k)
+            );
+            const useUpdateOnML = keepMachineCreatedAt && hasCleanMachineLockKeys;
+            txDiag = {
+              mlExists: true,
+              mlSameNurse: sameOwner,
+              mlHasLogbookId: Boolean(existingML.logbookId),
+              mlHasValidCreatedAt: isFirestoreTimestamp(existingML.createdAt),
+              mlHasCleanKeys: hasCleanMachineLockKeys,
+              mlTxMode: useUpdateOnML ? 'update' : 'set',
+              entryKeysCount: Object.keys(payload).length + 4,
+            };
+            didCreateMachineLock = false;
+            if (useUpdateOnML) {
+              tx.update(newMachineLockRef, machineLockFields);
+            } else {
+              tx.set(newMachineLockRef, {
+                ...machineLockFields,
+                createdAt: keepMachineCreatedAt ? existingML.createdAt : serverTimestamp(),
+              });
+            }
+          } else {
+            machineLockOpMode = 'skip';
           }
         } else {
+          machineLockOpMode = 'create';
           txOp = OperationType.CREATE;
           txPath = newMachineLockRef.path;
+          didCreateMachineLock = true;
           tx.set(newMachineLockRef, {
             id: newMachineLockId,
             date: safeDate,
@@ -2846,6 +3243,46 @@ export function LogbookWizardModal({
           });
         }
       });
+      if (machineLockOpMode !== 'skip') {
+        queuedTxOps.push(`${machineLockOpMode}:${newMachineLockRef.path}`);
+      }
+      if (didCreateMachineLock) {
+        createdMachineLockRef = newMachineLockRef;
+      }
+
+      if (oldMachineLockRef) {
+        const oldMachineLockSnap = await getDoc(oldMachineLockRef).catch(() => null);
+        if (oldMachineLockSnap?.exists()) {
+          const oldML = oldMachineLockSnap.data() as MachineLock;
+          if (isAdminRole || canVerifierEditCurrent || oldML.nurseId === userProfile.uid) {
+            txOp = OperationType.DELETE;
+            txPath = oldMachineLockRef.path;
+            queuedTxOps.push(`delete:${txPath}`);
+            await deleteDoc(oldMachineLockRef);
+          }
+        }
+      }
+
+      // Phase 4: If newly created entry should be submitted immediately, promote Draft -> Pending
+      if (!currentEntry && submitStatus === 'Pending') {
+        txOp = OperationType.UPDATE;
+        txPath = targetLogRef.path;
+        await runTransaction(db, async (tx) => {
+          tx.update(targetLogRef, {
+            verificationStatus: 'Pending',
+            updatedAt: serverTimestamp(),
+          });
+        });
+        queuedTxOps.push(`promote:${targetLogRef.path}`);
+      }
+
+      // All phases committed cleanly; disarm rollback
+      createdDraftLogRef = null;
+      createdPatientLockRef = null;
+      createdMachineLockRef = null;
+
+      const savedOwnerId = entryOwnerId;
+      const savedOwnerName = entryOwnerName;
       const tracked: TrackedWizardEntry = {
         id: savedDocId,
         date: safeDate,
@@ -2880,6 +3317,15 @@ export function LogbookWizardModal({
       onClose();
       return 'saved';
     } catch (err) {
+      if (createdMachineLockRef) {
+        await deleteDoc(createdMachineLockRef).catch(() => undefined);
+      }
+      if (createdPatientLockRef) {
+        await deleteDoc(createdPatientLockRef).catch(() => undefined);
+      }
+      if (createdDraftLogRef) {
+        await deleteDoc(createdDraftLogRef).catch(() => undefined);
+      }
       const msg = err instanceof Error ? err.message : '';
       if (msg.startsWith('MACHINE_LOCKED:')) {
         const lockerName = msg.replace('MACHINE_LOCKED:', '').trim() || 'staf lain';
@@ -2900,7 +3346,217 @@ export function LogbookWizardModal({
         setErrorMsg(
           `Entri logbook ini sudah berstatus ${statusLabel} sehingga terkunci dan tidak dapat diubah lagi.`
         );
+      } else if (isTransientFirestoreError(err)) {
+        setErrorMsg(
+          'Koneksi ke server sedang terputus atau sibuk sementara. Data Anda tetap aman — silakan klik Simpan & Lanjut kembali.'
+        );
       } else {
+        const extraDiag: Record<string, unknown> = {};
+        try {
+          const [uSnap, pSnap, mSnap, dSnap, plSnap, mlSnap, testSnap] = await Promise.all([
+            getDocFromServer(doc(db, 'users', userProfile.uid)).catch((e) => ({ err: String(e) })),
+            getDocFromServer(doc(db, 'patients', pat.id)).catch((e) => ({ err: String(e) })),
+            getDocFromServer(doc(db, 'machines', mach.id)).catch((e) => ({ err: String(e) })),
+            getDocFromServer(doc(db, 'doctors', docObj.id)).catch((e) => ({ err: String(e) })),
+            getDocFromServer(doc(db, 'logbook_locks', `${safeDate}_${pat.id}`)).catch((e) => ({ err: String(e) })),
+            getDocFromServer(doc(db, 'machine_locks', `${safeDate}_${safeShift}_${mach.id}`)).catch((e) => ({ err: String(e) })),
+            getDocFromServer(doc(db, 'test', 'connection')).catch((e) => ({ err: String(e) })),
+          ]);
+          const existsFlag = (s: unknown) =>
+            s && typeof s === 'object' && 'exists' in s && typeof (s as { exists: unknown }).exists === 'function'
+              ? (s as { exists: () => boolean }).exists()
+              : (s as { err?: string })?.err || 'unknown';
+          const uData =
+            uSnap && typeof uSnap === 'object' && 'exists' in uSnap && uSnap.exists()
+              ? (uSnap.data() as Record<string, unknown>)
+              : null;
+          const plData =
+            plSnap && typeof plSnap === 'object' && 'exists' in plSnap && plSnap.exists()
+              ? (plSnap.data() as Record<string, unknown>)
+              : null;
+          const plLogId = typeof plData?.logbookId === 'string' ? plData.logbookId : null;
+          let plRefLogExists: boolean | string | null = null;
+          if (plLogId) {
+            try {
+              const refLog = await getDocFromServer(doc(db, 'logbook', plLogId));
+              plRefLogExists = refLog.exists();
+            } catch (e) {
+              plRefLogExists = String(e);
+            }
+          }
+          const p = lastCreatePayload as Record<string, unknown> | null;
+          const failedChecks: string[] = [];
+          let keysCount = 0;
+          const pShape: Record<string, unknown> = {};
+          if (p) {
+            keysCount = Object.keys(p).length;
+            const reqKeys = [
+              'nurseId', 'nurseName', 'nurseNip', 'patientId', 'patientName', 'patientRm',
+              'machineId', 'machineNumber', 'doctorId', 'doctorName', 'actionCategory',
+              'date', 'monthKey', 'shift', 'startTime', 'endTime',
+              'preWeight', 'postWeight', 'preBp', 'postBp', 'ufGoal', 'ufAchieved',
+              'vascularAccess', 'heparinType', 'complications', 'nursingNotes',
+              'verificationStatus', 'createdAt', 'updatedAt',
+            ];
+            const allowedKeys = new Set([
+              ...reqKeys,
+              'targetVerifierRole', 'targetVerifierId', 'targetVerifierName',
+              'verifiedBy', 'verifiedByName', 'verificationNote', 'verifiedAt',
+              'dutyDoctorId', 'dutyDoctorName', 'wizardDetails',
+            ]);
+            for (const rk of reqKeys) {
+              if (!(rk in p) || p[rk] === undefined) failedChecks.push(`missing:${rk}`);
+            }
+            for (const k of Object.keys(p)) {
+              if (!allowedKeys.has(k)) failedChecks.push(`extraKey:${k}`);
+              if (p[k] === undefined) failedChecks.push(`undef:${k}`);
+              const v = p[k];
+              if (typeof v === 'string') {
+                pShape[k] = `str(${v.length})`;
+              } else if (typeof v === 'number') {
+                pShape[k] = Number.isNaN(v) ? 'NaN' : v;
+              } else if (v === null) {
+                pShape[k] = 'null';
+              } else if (k === 'wizardDetails' && v && typeof v === 'object') {
+                const wdObj = v as Record<string, unknown>;
+                const spoObj = wdObj.spoChecklist as Record<string, unknown> | undefined;
+                pShape[k] = {
+                  keys: Object.keys(wdObj),
+                  s7: wdObj.section7 ?? null,
+                  spoLen: spoObj ? Object.keys(spoObj).length : null,
+                };
+              } else if (v && typeof v === 'object') {
+                pShape[k] = `obj(${Object.keys(v as Record<string, unknown>).join(',')})`;
+              } else {
+                pShape[k] = typeof v;
+              }
+            }
+            const isValidRuleId = (v: unknown) =>
+              typeof v === 'string' && v.length > 0 && v.length <= 128 && /^[a-zA-Z0-9_-]+$/.test(v);
+            if (!isValidRuleId(p.nurseId)) failedChecks.push('nurseId');
+            if (typeof p.nurseName !== 'string' || p.nurseName.length < 1 || p.nurseName.length > 120) failedChecks.push('nurseName');
+            if (typeof p.nurseNip !== 'string' || p.nurseNip.length > 40) failedChecks.push('nurseNip');
+            if (!isValidRuleId(p.patientId)) failedChecks.push('patientId');
+            if (typeof p.patientName !== 'string' || p.patientName.length < 1 || p.patientName.length > 120) failedChecks.push('patientName');
+            if (typeof p.patientRm !== 'string' || p.patientRm.length > 40) failedChecks.push('patientRm');
+            if (!isValidRuleId(p.machineId)) failedChecks.push('machineId');
+            if (typeof p.machineNumber !== 'string' || p.machineNumber.length < 1 || p.machineNumber.length > 40) failedChecks.push('machineNumber');
+            if (!isValidRuleId(p.doctorId)) failedChecks.push('doctorId');
+            if (typeof p.doctorName !== 'string' || p.doctorName.length < 1 || p.doctorName.length > 120) failedChecks.push('doctorName');
+            if (p.dutyDoctorId != null && (typeof p.dutyDoctorId !== 'string' || p.dutyDoctorId.length > 128)) failedChecks.push('dutyDoctorId');
+            if (p.dutyDoctorName != null && (typeof p.dutyDoctorName !== 'string' || p.dutyDoctorName.length > 120)) failedChecks.push('dutyDoctorName');
+            if (typeof p.actionCategory !== 'string' || p.actionCategory.length < 1 || p.actionCategory.length > 80) failedChecks.push('actionCategory');
+            if (typeof p.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(p.date)) failedChecks.push('date');
+            if (typeof p.monthKey !== 'string' || !/^\d{4}-\d{2}$/.test(p.monthKey)) failedChecks.push('monthKey');
+            if (!['Pagi', 'Siang', 'Malam'].includes(String(p.shift))) failedChecks.push('shift');
+            if (typeof p.startTime !== 'string' || p.startTime.length > 10) failedChecks.push('startTime');
+            if (typeof p.endTime !== 'string' || p.endTime.length > 10) failedChecks.push('endTime');
+            if (typeof p.preWeight !== 'number' || Number.isNaN(p.preWeight) || p.preWeight < 0 || p.preWeight > 300) failedChecks.push('preWeight');
+            if (typeof p.postWeight !== 'number' || Number.isNaN(p.postWeight) || p.postWeight < 0 || p.postWeight > 300) failedChecks.push('postWeight');
+            if (typeof p.preBp !== 'string' || p.preBp.length > 20) failedChecks.push('preBp');
+            if (typeof p.postBp !== 'string' || p.postBp.length > 20) failedChecks.push('postBp');
+            if (typeof p.ufGoal !== 'number' || Number.isNaN(p.ufGoal) || p.ufGoal < 0 || p.ufGoal > 10000) failedChecks.push('ufGoal');
+            if (typeof p.ufAchieved !== 'number' || Number.isNaN(p.ufAchieved) || p.ufAchieved < 0 || p.ufAchieved > 10000) failedChecks.push('ufAchieved');
+            if (!['AV Shunt', 'AV Fistula', 'CDL', 'Femoral', 'AVG', 'CVC'].includes(String(p.vascularAccess))) failedChecks.push('vascularAccess');
+            if (!['Standar', 'Minimal', 'Bebas Heparin', 'Heparin', 'LMWH'].includes(String(p.heparinType))) failedChecks.push('heparinType');
+            if (typeof p.complications !== 'string' || p.complications.length > 300) failedChecks.push('complications');
+            if (typeof p.nursingNotes !== 'string' || p.nursingNotes.length > 1000) failedChecks.push('nursingNotes');
+            if (!['Draft', 'Pending'].includes(String(p.verificationStatus))) failedChecks.push('verificationStatus');
+            if (p.targetVerifierRole != null && !['PJ Shift', 'Kepala Ruang'].includes(String(p.targetVerifierRole))) failedChecks.push('targetVerifierRole');
+            if (p.targetVerifierId != null && (typeof p.targetVerifierId !== 'string' || p.targetVerifierId.length > 128)) failedChecks.push('targetVerifierId');
+            if (p.targetVerifierName != null && (typeof p.targetVerifierName !== 'string' || p.targetVerifierName.length > 120)) failedChecks.push('targetVerifierName');
+            const wd = p.wizardDetails as Record<string, unknown> | undefined;
+            if (wd) {
+              const allowedWdKeys = new Set([
+                'section1',
+                'section2',
+                'section3',
+                'section4',
+                'section5',
+                'section6',
+                'section7',
+                'spoChecklist',
+                'customResponses',
+              ]);
+              for (const wk of Object.keys(wd)) {
+                if (!allowedWdKeys.has(wk)) failedChecks.push(`wdKey:${wk}`);
+              }
+              const s7 = wd.section7 as Record<string, unknown> | undefined;
+              if (s7) {
+                if (typeof s7.transfusionGiven !== 'boolean' || typeof s7.epoGiven !== 'boolean') {
+                  failedChecks.push('section7.bool');
+                }
+                if (typeof s7.transfusionNote !== 'string' || s7.transfusionNote.length > 300) failedChecks.push('section7.tNote');
+                if (typeof s7.epoNote !== 'string' || s7.epoNote.length > 300) failedChecks.push('section7.eNote');
+              }
+              const spo = wd.spoChecklist as Record<string, unknown> | undefined;
+              if (spo && Object.keys(spo).length > 120) {
+                failedChecks.push(`spoChecklist.size:${Object.keys(spo).length}`);
+              }
+            }
+          }
+          extraDiag.failedChecks = failedChecks;
+          extraDiag.keysCount = keysCount;
+          extraDiag.pShape = pShape;
+          extraDiag.refs = {
+            authUid: auth.currentUser?.uid ?? null,
+            uidMatch: auth.currentUser?.uid === userProfile.uid,
+            uOk: Boolean(uData && uData.isActive === true && uData.role),
+            uRole: uData?.role ?? null,
+            uKeys: uData ? Object.keys(uData) : null,
+            pat: existsFlag(pSnap),
+            mach: existsFlag(mSnap),
+            doc: existsFlag(dSnap),
+            pl: existsFlag(plSnap),
+            ml: existsFlag(mlSnap),
+            testConn: existsFlag(testSnap),
+            plLogId,
+            plRefLogExists,
+            patId: pat.id,
+            machId: mach.id,
+            docId: docObj.id,
+          };
+        } catch (diagErr) {
+          extraDiag.diagError = String(diagErr);
+        }
+        console.error('Logbook save transaction failed:', {
+          ...extraDiag,
+          queuedTxOps,
+          lastOp: txOp,
+          lastPath: txPath,
+          diag: {
+            role: userProfile.role,
+            hasNip: Boolean(userProfile.nip),
+            date: safeDate,
+            shift: safeShift,
+            vascularAccess: safeVascularAccess,
+            heparinType: safeHeparinType,
+            verificationStatus: submitStatus,
+            targetVerifierRole: safeTargetVerifierRole,
+            hasDutyDoctor: Boolean(dutyDoctorId),
+            isEdit: Boolean(currentEntry),
+            ...txDiag,
+          },
+          err,
+        });
+        const refsDiag = (extraDiag.refs || {}) as Record<string, unknown>;
+        const checksDiag = Array.isArray(extraDiag.failedChecks)
+          ? (extraDiag.failedChecks as string[])
+          : [];
+        const errCode =
+          err && typeof err === 'object' && 'code' in err
+            ? String((err as { code?: unknown }).code)
+            : 'unknown';
+        setErrorMsg(
+          `Gagal menyimpan logbook (${txOp} pada ${txPath}, kode: ${errCode}, probe: ${String(
+            refsDiag.testConn ?? 'unknown'
+          )}, uidMatch: ${String(refsDiag.uidMatch ?? 'unknown')}, uOk: ${String(
+            refsDiag.uOk ?? 'unknown'
+          )}, checks: ${checksDiag.length ? checksDiag.join('|') : 'ok'}). Silakan muat ulang halaman dan coba lagi.`
+        );
+        if (keepOpen) {
+          setAutoSaveInfo((prev) => ({ ...prev, status: prev.timeLabel ? 'saved' : 'idle' }));
+        }
         handleFirestoreError(err, txOp, txPath);
       }
       if (keepOpen) {
@@ -2940,15 +3596,1450 @@ export function LogbookWizardModal({
     setStep(targetStep);
   };
 
+  const renderTtvAndCustomFields = (
+    responseKey: string,
+    config?: {
+      enableTtv?: boolean;
+      ttvConfig?: TtvSubFieldsConfig;
+      customFields?: CustomLogbookField[];
+    }
+  ): React.ReactNode => {
+    const showTtv = Boolean(config?.enableTtv);
+    const customFields = config?.customFields || [];
+    if (!showTtv && customFields.length === 0) return null;
+
+    const currentTtv = customResponses[responseKey]?.ttv || {};
+    const currentFields = customResponses[responseKey]?.fields || {};
+    const ttvCfg = { ...DEFAULT_TTV_CONFIG, ...(config?.ttvConfig || {}) };
+
+    return (
+      <div className="space-y-3">
+        {showTtv && (
+          <div className="rounded-lg border border-sky-200/80 bg-sky-50/40 p-3 space-y-2">
+            <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-[#0e4e78]">
+              <Activity className="h-3.5 w-3.5" />
+              <span>Penginputan Tanda-Tanda Vital (TTV)</span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+              {ttvCfg.td && (
+                <div>
+                  <label className="block text-[10px] font-semibold text-slate-600 mb-1">
+                    Tekanan Darah (mmHg)
+                  </label>
+                  <input
+                    type="text"
+                    value={currentTtv.td || ''}
+                    disabled={readOnly}
+                    onChange={(e) => updatePointTtv(responseKey, 'td', e.target.value)}
+                    placeholder="cth: 120/80"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                  />
+                </div>
+              )}
+              {ttvCfg.nadi && (
+                <div>
+                  <label className="block text-[10px] font-semibold text-slate-600 mb-1">
+                    Nadi (x/mnt)
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={currentTtv.nadi || ''}
+                    disabled={readOnly}
+                    onChange={(e) => updatePointTtv(responseKey, 'nadi', e.target.value)}
+                    placeholder="cth: 82"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                  />
+                </div>
+              )}
+              {ttvCfg.rr && (
+                <div>
+                  <label className="block text-[10px] font-semibold text-slate-600 mb-1">
+                    Napas / RR (x/mnt)
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={currentTtv.rr || ''}
+                    disabled={readOnly}
+                    onChange={(e) => updatePointTtv(responseKey, 'rr', e.target.value)}
+                    placeholder="cth: 20"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                  />
+                </div>
+              )}
+              {ttvCfg.suhu && (
+                <div>
+                  <label className="block text-[10px] font-semibold text-slate-600 mb-1">
+                    Suhu (°C)
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={currentTtv.suhu || ''}
+                    disabled={readOnly}
+                    onChange={(e) => updatePointTtv(responseKey, 'suhu', e.target.value)}
+                    placeholder="cth: 36.6"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                  />
+                </div>
+              )}
+              {ttvCfg.spo2 && (
+                <div>
+                  <label className="block text-[10px] font-semibold text-slate-600 mb-1">
+                    SpO₂ (%)
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={currentTtv.spo2 || ''}
+                    disabled={readOnly}
+                    onChange={(e) => updatePointTtv(responseKey, 'spo2', e.target.value)}
+                    placeholder="cth: 98"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {customFields.length > 0 && (
+          <div className="rounded-lg border border-slate-200 bg-slate-50/50 p-3 space-y-2.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {customFields.map((fld) => {
+                const rawVal = currentFields[fld.id];
+                if (fld.type === 'checkbox') {
+                  const checked = Boolean(rawVal);
+                  return (
+                    <label
+                      key={fld.id}
+                      className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${
+                        readOnly ? 'cursor-default' : 'cursor-pointer'
+                      } ${
+                        checked
+                          ? 'border-emerald-400 bg-emerald-50/70 text-emerald-800'
+                          : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={readOnly}
+                        onChange={(e) =>
+                          updatePointCustomField(responseKey, fld.id, e.target.checked)
+                        }
+                        className="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                      />
+                      <span>
+                        {fld.label}
+                        {fld.required && <span className="text-rose-600"> *</span>}
+                      </span>
+                    </label>
+                  );
+                }
+
+                if (fld.type === 'textarea') {
+                  return (
+                    <div key={fld.id} className="sm:col-span-2 lg:col-span-3">
+                      <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                        {fld.label}
+                        {fld.unit && <span className="text-slate-400 font-normal"> ({fld.unit})</span>}
+                        {fld.required && <span className="text-rose-600"> *</span>}
+                      </label>
+                      <textarea
+                        rows={2}
+                        disabled={readOnly}
+                        value={typeof rawVal === 'string' || typeof rawVal === 'number' ? String(rawVal) : ''}
+                        onChange={(e) => updatePointCustomField(responseKey, fld.id, e.target.value)}
+                        placeholder={fld.placeholder || ''}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                      />
+                    </div>
+                  );
+                }
+
+                if (fld.type === 'select') {
+                  return (
+                    <div key={fld.id}>
+                      <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                        {fld.label}
+                        {fld.required && <span className="text-rose-600"> *</span>}
+                      </label>
+                      <select
+                        disabled={readOnly}
+                        value={typeof rawVal === 'string' || typeof rawVal === 'number' ? String(rawVal) : ''}
+                        onChange={(e) => updatePointCustomField(responseKey, fld.id, e.target.value)}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 focus:border-[#0e4e78] focus:outline-none"
+                      >
+                        <option value="">-- Pilih --</option>
+                        {(fld.options || []).map((opt) => (
+                          <option key={opt} value={opt}>
+                            {opt}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div key={fld.id}>
+                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                      {fld.label}
+                      {fld.required && <span className="text-rose-600"> *</span>}
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={fld.type === 'number' ? 'number' : 'text'}
+                        step={fld.type === 'number' ? 'any' : undefined}
+                        disabled={readOnly}
+                        value={typeof rawVal === 'string' || typeof rawVal === 'number' ? String(rawVal) : ''}
+                        onChange={(e) => {
+                          if (fld.type === 'number') {
+                            const raw = e.target.value;
+                            if (raw === '') {
+                              updatePointCustomField(responseKey, fld.id, '');
+                            } else {
+                              const parsed = Number(raw);
+                              updatePointCustomField(
+                                responseKey,
+                                fld.id,
+                                Number.isNaN(parsed) ? raw : parsed
+                              );
+                            }
+                          } else {
+                            updatePointCustomField(responseKey, fld.id, e.target.value);
+                          }
+                        }}
+                        placeholder={fld.placeholder || ''}
+                        className={`w-full rounded-lg border border-slate-300 bg-white py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none ${
+                          fld.unit ? 'pl-3 pr-14' : 'px-3'
+                        }`}
+                      />
+                      {fld.unit && (
+                        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
+                          {fld.unit}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderBuiltInPointFooter = (pointId: string): React.ReactNode => {
+    switch (pointId) {
+      case '2.1':
+        return (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label
+              className={`flex items-center gap-2.5 rounded-lg border px-3.5 py-2.5 text-xs font-bold tracking-wide uppercase cursor-pointer transition-colors ${
+                handHygieneChecked
+                  ? 'border-emerald-400 bg-emerald-50/70 text-emerald-800'
+                  : 'border-slate-200 bg-slate-50/50 text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={handHygieneChecked}
+                onChange={(e) => toggleHandHygieneSubCheck(e.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              <Hand
+                className={`h-4 w-4 shrink-0 ${
+                  handHygieneChecked ? 'text-emerald-600' : 'text-[#0e4e78]'
+                }`}
+              />
+              <span>HAND HYGIENE</span>
+            </label>
+
+            <label
+              className={`flex items-center gap-2.5 rounded-lg border px-3.5 py-2.5 text-xs font-bold tracking-wide uppercase cursor-pointer transition-colors ${
+                apdUsedChecked
+                  ? 'border-emerald-400 bg-emerald-50/70 text-emerald-800'
+                  : 'border-slate-200 bg-slate-50/50 text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={apdUsedChecked}
+                onChange={(e) => toggleApdSubCheck(e.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              <ShieldCheck
+                className={`h-4 w-4 shrink-0 ${
+                  apdUsedChecked ? 'text-emerald-600' : 'text-[#0e4e78]'
+                }`}
+              />
+              <span>PENGGUNAAN APD</span>
+            </label>
+          </div>
+        );
+
+      case '3.1':
+        return (
+          <div className="space-y-2.5">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              {/* Status Pelayanan */}
+              <div className="rounded-lg border border-slate-200 bg-slate-50/40 p-3 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-700">
+                    <span className="h-1.5 w-1.5 rounded-full bg-[#0e4e78]" />
+                    STATUS PELAYANAN
+                  </span>
+                  <span
+                    className={`text-[10px] font-bold uppercase tracking-wider ${
+                      serviceStatus ? 'text-emerald-700' : 'text-slate-400'
+                    }`}
+                  >
+                    {serviceStatus ? 'TERPILIH' : 'BELUM DIPILIH'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2.5">
+                  {(['Rawat Jalan', 'Rawat Inap'] as const).map((statusOption) => {
+                    const checked = serviceStatus === statusOption;
+                    return (
+                      <label
+                        key={statusOption}
+                        className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-bold uppercase tracking-wide transition-colors ${
+                          readOnly ? 'cursor-default' : 'cursor-pointer'
+                        } ${
+                          checked
+                            ? 'border-[#0B4A75] bg-[#0B4A75] text-white shadow-sm'
+                            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={readOnly}
+                          onChange={() =>
+                            updatePoint31Selection(
+                              checked ? '' : statusOption,
+                              patientCategory
+                            )
+                          }
+                          className="h-3.5 w-3.5 rounded border-slate-300 text-[#0e4e78] accent-white focus:ring-[#0e4e78]"
+                        />
+                        <span>{statusOption.toUpperCase()}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+
+                {serviceStatus === 'Rawat Inap' && (
+                  <div className="space-y-3 border-t border-slate-200/80 pt-3">
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-1.5">
+                        <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-700">
+                          <Building2 className="h-3.5 w-3.5 text-slate-500" />
+                          Nama Bangsal / Ruang Rawat Inap:
+                        </span>
+                        <span
+                          className={`text-[10px] font-bold ${
+                            inpatientWard ? 'text-emerald-700' : 'text-amber-600'
+                          }`}
+                        >
+                          {inpatientWard ? inpatientWard : 'Wajib Dipilih'}
+                        </span>
+                      </div>
+                      <select
+                        value={inpatientWard}
+                        disabled={readOnly}
+                        onChange={(e) =>
+                          updatePoint31Selection(
+                            'Rawat Inap',
+                            patientCategory,
+                            e.target.value as 'CAMELIA' | 'DAHLIA' | 'ICU' | '',
+                            citoStatus || 'Tidak'
+                          )
+                        }
+                        className={`w-full rounded-lg border px-3 py-2 text-xs font-semibold focus:outline-none ${
+                          inpatientWard
+                            ? 'border-slate-300 bg-white text-slate-900 focus:border-[#0B5A8E]'
+                            : 'border-amber-400 bg-amber-50/40 text-slate-800 focus:border-amber-500'
+                        }`}
+                      >
+                        <option value="">-- Pilih Nama Bangsal --</option>
+                        <option value="CAMELIA">CAMELIA</option>
+                        <option value="DAHLIA">DAHLIA</option>
+                        <option value="ICU">ICU</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-1.5">
+                        <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-700">
+                          <AlertTriangle className="h-3.5 w-3.5 text-slate-600" />
+                          Status CITO / Urgensi Pasien:
+                        </span>
+                        <span
+                          className={`text-[10px] font-bold uppercase tracking-wide ${
+                            (citoStatus || 'Tidak') === 'Ya'
+                              ? 'text-rose-600'
+                              : 'text-slate-500'
+                          }`}
+                        >
+                          {(citoStatus || 'Tidak') === 'Ya'
+                            ? 'CITO (URGENT)'
+                            : 'BIASA (NON-CITO)'}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          disabled={readOnly}
+                          onClick={() =>
+                            updatePoint31Selection(
+                              'Rawat Inap',
+                              patientCategory,
+                              inpatientWard,
+                              'Tidak'
+                            )
+                          }
+                          className={`flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold transition-colors ${
+                            (citoStatus || 'Tidak') === 'Tidak'
+                              ? 'border-[#0f172a] bg-[#0f172a] text-white'
+                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                          }`}
+                        >
+                          Tidak (Elektif)
+                        </button>
+                        <button
+                          type="button"
+                          disabled={readOnly}
+                          onClick={() =>
+                            updatePoint31Selection(
+                              'Rawat Inap',
+                              patientCategory,
+                              inpatientWard,
+                              'Ya'
+                            )
+                          }
+                          className={`flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold transition-colors ${
+                            citoStatus === 'Ya'
+                              ? 'border-rose-600 bg-rose-600 text-white'
+                              : 'border-rose-300 bg-white text-rose-600 hover:bg-rose-50'
+                          }`}
+                        >
+                          <AlertTriangle className="h-3.5 w-3.5" />
+                          Ya (CITO)
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Kategori Pasien */}
+              <div className="rounded-lg border border-slate-200 bg-slate-50/40 p-3">
+                <div className="flex items-center justify-between gap-2 mb-2.5">
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-700">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-600" />
+                    KATEGORI PASIEN
+                  </span>
+                  <span
+                    className={`text-[10px] font-bold uppercase tracking-wider ${
+                      patientCategory ? 'text-emerald-700' : 'text-slate-400'
+                    }`}
+                  >
+                    {patientCategory ? patientCategory.toUpperCase() : 'BELUM DIPILIH'}
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {(
+                    [
+                      {
+                        value: 'Reguler',
+                        label: 'REGULER',
+                        hint: 'Pasien HD non-isolasi',
+                      },
+                      {
+                        value: 'Isolasi Hepatitis B',
+                        label: 'ISOLASI HEPATITIS B',
+                        hint: 'HBsAg (+), mesin & ruang terpisah',
+                      },
+                      {
+                        value: 'Isolasi Hepatitis C/HIV',
+                        label: 'ISOLASI HEPATITIS C/HIV',
+                        hint: 'Anti-HCV (+) atau HIV (+)',
+                      },
+                    ] as const
+                  ).map((cat) => {
+                    const checked = patientCategory === cat.value;
+                    return (
+                      <label
+                        key={cat.value}
+                        className={`flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs transition-colors ${
+                          readOnly ? 'cursor-default' : 'cursor-pointer'
+                        } ${
+                          checked
+                            ? 'border-emerald-400 bg-emerald-50/60 text-emerald-900'
+                            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        <span className="inline-flex items-center gap-2 font-bold uppercase tracking-wide">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={readOnly}
+                            onChange={() =>
+                              updatePoint31Selection(serviceStatus, checked ? '' : cat.value)
+                            }
+                            className="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                          />
+                          <span>{cat.label}</span>
+                        </span>
+                        <span className="text-[11px] font-normal text-slate-400">{cat.hint}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-slate-200/80 bg-slate-50/70 px-3 py-2 text-[11px] text-slate-600">
+              <span className="font-semibold text-slate-700">Catatan:</span> Identifikasi Pasien (
+              {selectedPatient?.fullName || 'Pasien'}, RM: {selectedPatient?.mrn || '-'}
+              {serviceStatus
+                ? `, Status: ${serviceStatus.toUpperCase()}${
+                    serviceStatus === 'Rawat Inap'
+                      ? ` · Bangsal: ${inpatientWard || 'Belum dipilih'} · ${
+                          (citoStatus || 'Tidak') === 'Ya' ? 'Ya (CITO)' : 'Tidak (Elektif)'
+                        }`
+                      : ''
+                  }`
+                : ''}
+              ) —{' '}
+              {isPoint31Complete(serviceStatus, patientCategory)
+                ? `Kategori ${patientCategory}`
+                : !serviceStatus
+                ? 'Menunggu pilihan Status Pelayanan'
+                : serviceStatus === 'Rawat Inap' && !inpatientWard
+                ? 'Menunggu pilihan Nama Bangsal Rawat Inap'
+                : 'Menunggu pilihan Kategori Pasien'}
+            </div>
+
+            {!isPoint31Complete(serviceStatus, patientCategory) && (
+              <p className="text-[11px] font-medium text-amber-600">
+                {serviceStatus === 'Rawat Inap' && !inpatientWard
+                  ? 'Pilih Nama Bangsal Rawat Inap (CAMELIA, DAHLIA, atau ICU) dan Kategori Pasien agar Poin 3.1 otomatis bernilai DIKERJAKAN.'
+                  : 'Pilih Status Pelayanan dan Kategori Pasien agar Poin 3.1 otomatis bernilai DIKERJAKAN.'}
+              </p>
+            )}
+          </div>
+        );
+
+      case '3.2':
+        return (
+          <div className="space-y-2">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
+                  Berat Badan Datang
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={preWeight}
+                    onChange={(e) => updateWeightFields(e.target.value, postWeight, dryWeight)}
+                    className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-10 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                  />
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
+                    kg
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
+                  Berat Badan Pulang
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={postWeight}
+                    onChange={(e) => updateWeightFields(preWeight, e.target.value, dryWeight)}
+                    className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-10 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                  />
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
+                    kg
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
+                  Berat Badan Kering
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={dryWeight}
+                    onChange={(e) => updateWeightFields(preWeight, postWeight, e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-10 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                  />
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
+                    kg
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Kalkulator IDWG Otomatis */}
+            <div className="rounded-lg border border-sky-200/80 bg-sky-50/45 p-3 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Calculator className="h-3.5 w-3.5 text-[#0e4e78]" />
+                  <span className="text-[11px] font-bold uppercase tracking-wide text-[#0e4e78]">
+                    Kalkulator IDWG Otomatis
+                  </span>
+                  <span className="text-[11px] text-slate-500">(BB Datang − BB Kering)</span>
+                </div>
+
+                <span
+                  className={`rounded border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                    idwgMetrics.categoryTone === 'emerald'
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                      : idwgMetrics.categoryTone === 'amber'
+                      ? 'border-amber-200 bg-amber-50 text-amber-800'
+                      : idwgMetrics.categoryTone === 'rose'
+                      ? 'border-rose-200 bg-rose-50 text-rose-700'
+                      : 'border-slate-200 bg-white text-slate-500'
+                  }`}
+                >
+                  {idwgMetrics.categoryLabel}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                <div className="rounded-md border border-slate-200/80 bg-white px-3 py-2">
+                  <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                    Nilai IDWG (kg)
+                  </span>
+                  <span
+                    className={`mt-0.5 block font-mono text-sm font-bold tabular-nums ${
+                      !idwgMetrics.ready
+                        ? 'text-slate-400'
+                        : idwgMetrics.categoryTone === 'rose'
+                        ? 'text-rose-700'
+                        : idwgMetrics.categoryTone === 'amber'
+                        ? 'text-amber-700'
+                        : 'text-emerald-700'
+                    }`}
+                  >
+                    {idwgMetrics.ready
+                      ? `${idwgMetrics.idwgKg > 0 ? '+' : ''}${idwgMetrics.idwgKg.toFixed(2)} kg`
+                      : '—'}
+                  </span>
+                </div>
+
+                <div className="rounded-md border border-slate-200/80 bg-white px-3 py-2">
+                  <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                    Persentase IDWG
+                  </span>
+                  <span
+                    className={`mt-0.5 block font-mono text-sm font-bold tabular-nums ${
+                      !idwgMetrics.ready
+                        ? 'text-slate-400'
+                        : idwgMetrics.categoryTone === 'rose'
+                        ? 'text-rose-700'
+                        : idwgMetrics.categoryTone === 'amber'
+                        ? 'text-amber-700'
+                        : 'text-[#0e4e78]'
+                    }`}
+                  >
+                    {idwgMetrics.ready ? `${idwgMetrics.idwgPercent.toFixed(2)}%` : '—'}
+                  </span>
+                  <span className="block text-[10px] text-slate-400">
+                    Target SPO ≤ 4% BB Kering
+                  </span>
+                </div>
+
+                <div className="rounded-md border border-slate-200/80 bg-white px-3 py-2">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                      Estimasi UF Cairan
+                    </span>
+                    {!readOnly && idwgMetrics.ready && idwgMetrics.ufEstimateMl > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const val = String(idwgMetrics.ufEstimateMl);
+                          setUfGoal(val);
+                          syncPoint35Checklist(
+                            dialysisDurationHours,
+                            val,
+                            bfr,
+                            dfr,
+                            loadingDose
+                          );
+                        }}
+                        className="text-[10px] font-bold text-[#0B5A8E] hover:underline"
+                      >
+                        Isi ke UFG
+                      </button>
+                    )}
+                  </div>
+                  <span className="mt-0.5 block font-mono text-sm font-bold tabular-nums text-slate-800">
+                    {idwgMetrics.ready
+                      ? `${idwgMetrics.ufEstimateMl.toLocaleString('id-ID')} mL`
+                      : '—'}
+                  </span>
+                  <span className="block text-[10px] text-slate-400">
+                    Acuan target UFG (Poin 3.5)
+                  </span>
+                </div>
+
+                <div className="rounded-md border border-slate-200/80 bg-white px-3 py-2">
+                  <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                    Selisih Pre − Post HD
+                  </span>
+                  <span className="mt-0.5 block font-mono text-sm font-bold tabular-nums text-slate-800">
+                    {idwgMetrics.weightLossKg !== null
+                      ? `${idwgMetrics.weightLossKg.toFixed(2)} kg`
+                      : '—'}
+                  </span>
+                  <span className="block text-[10px] text-slate-400">
+                    Penurunan BB setelah HD
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {!isPoint32Complete(preWeight, postWeight, dryWeight) && (
+              <p className="text-[11px] font-medium text-amber-600">
+                Wajib mengisi kolom Berat Badan Datang, Berat Badan Pulang, dan Berat Badan Kering agar Poin 3.2 bernilai DIKERJAKAN.
+              </p>
+            )}
+          </div>
+        );
+
+      case '3.3':
+        return (
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
+              Tekanan Darah Pre HD (mmHg)
+            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="text"
+                inputMode="numeric"
+                value={systolicBp}
+                onChange={(e) => updateSystolicDiastolic(e.target.value, diastolicBp)}
+                placeholder="Sistolik"
+                className="w-36 sm:w-44 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+              />
+              <span className="text-sm font-semibold text-slate-400">/</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={diastolicBp}
+                onChange={(e) => updateSystolicDiastolic(systolicBp, e.target.value)}
+                placeholder="Diastolik"
+                className="w-36 sm:w-44 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+              />
+              <span className="text-xs font-semibold text-slate-500">mmHg</span>
+              {(!systolicBp.trim() || !diastolicBp.trim()) && (
+                <span className="text-[11px] font-medium text-amber-600">
+                  Wajib mengisi kedua kolom Sistolik dan Diastolik agar status ringkasan dikerjakan.
+                </span>
+              )}
+            </div>
+          </div>
+        );
+
+      case '3.5':
+        return (
+          <div className="space-y-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
+                  Waktu Dialisis / Time
+                </label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={dialysisDurationHours}
+                    onChange={(e) => handleDurationHoursChange(e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-11 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                  />
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
+                    Jam
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
+                  Target UFG
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    value={ufGoal}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setUfGoal(val);
+                      syncPoint35Checklist(dialysisDurationHours, val, bfr, dfr, loadingDose);
+                    }}
+                    className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-10 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                  />
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
+                    mL
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">QB</label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    value={bfr}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setBfr(val);
+                      syncPoint35Checklist(dialysisDurationHours, ufGoal, val, dfr, loadingDose);
+                    }}
+                    className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-16 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                  />
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
+                    mL/mnt
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">QD</label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    value={dfr}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setDfr(val);
+                      syncPoint35Checklist(dialysisDurationHours, ufGoal, bfr, val, loadingDose);
+                    }}
+                    className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-16 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                  />
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
+                    mL/mnt
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
+                  Dosis Heparin
+                </label>
+                <input
+                  type="text"
+                  value={loadingDose}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setLoadingDose(val);
+                    if (/free|bebas/i.test(val)) {
+                      setAnticoagulantType('Bebas Heparin');
+                    } else if (/lmwh/i.test(val)) {
+                      setAnticoagulantType('LMWH');
+                    } else if (val.trim()) {
+                      setAnticoagulantType('Heparin');
+                    }
+                    syncPoint35Checklist(dialysisDurationHours, ufGoal, bfr, dfr, val);
+                  }}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                />
+              </div>
+            </div>
+            {!isPoint35Complete(dialysisDurationHours, ufGoal, bfr, dfr, loadingDose) && (
+              <p className="text-[11px] font-medium text-amber-600">
+                Wajib mengisi kolom Waktu Dialisis / Time, Target UFG, QB, QD, dan Dosis Heparin agar Poin 3.5 bernilai DIKERJAKAN.
+              </p>
+            )}
+          </div>
+        );
+
+      case '3.6':
+        return (
+          <div className="space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50/40 px-3.5 py-2.5">
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-slate-800">
+                  Perawat yang Melakukan Aksessing Vaskular
+                </p>
+                <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">
+                  Pilih perawat yang secara aktual melakukan kanulasi / aksessing vaskular pada pasien ini (nilai Laporan Pasien Poin 3 dalam masa/aksi perawat pelaksana aksessing setelah diverifikasi).
+                </p>
+              </div>
+              <select
+                value={vascularNurseId}
+                onChange={(e) => setVascularNurseId(e.target.value)}
+                className="w-full sm:w-64 shrink-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 focus:border-[#0e4e78] focus:outline-none"
+              >
+                {vascularNurseOptions.map((n) => (
+                  <option key={n.uid} value={n.uid}>
+                    {n.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div
+                className={`rounded-lg border p-3 transition-colors ${
+                  selectedAccessOption === 'CIMINO'
+                    ? 'border-[#0e4e78] bg-[#0e4e78]/[0.03]'
+                    : 'border-slate-200 bg-white'
+                }`}
+              >
+                <label className="flex items-center justify-between gap-2 mb-2.5 cursor-pointer">
+                  <span className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={selectedAccessOption === 'CIMINO'}
+                      onChange={() =>
+                        handleSelectVascularOption(
+                          selectedAccessOption === 'CIMINO' ? '' : 'CIMINO'
+                        )
+                      }
+                      className="h-3.5 w-3.5 rounded border-slate-300 text-[#0e4e78] focus:ring-[#0e4e78]"
+                    />
+                    <span>CIMINO</span>
+                  </span>
+                  <span className="text-[11px] font-medium text-slate-400">
+                    AV Shunt / Fistula
+                  </span>
+                </label>
+                <input
+                  type="text"
+                  value={ciminoNote}
+                  onChange={(e) => {
+                    setCiminoNote(e.target.value);
+                    if (e.target.value && selectedAccessOption !== 'CIMINO') {
+                      handleSelectVascularOption('CIMINO');
+                    }
+                  }}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                />
+              </div>
+
+              <div
+                className={`rounded-lg border p-3 transition-colors ${
+                  selectedAccessOption === 'CDL'
+                    ? 'border-[#0e4e78] bg-[#0e4e78]/[0.03]'
+                    : 'border-slate-200 bg-white'
+                }`}
+              >
+                <label className="flex items-center justify-between gap-2 mb-2.5 cursor-pointer">
+                  <span className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={selectedAccessOption === 'CDL'}
+                      onChange={() =>
+                        handleSelectVascularOption(selectedAccessOption === 'CDL' ? '' : 'CDL')
+                      }
+                      className="h-3.5 w-3.5 rounded border-slate-300 text-[#0e4e78] focus:ring-[#0e4e78]"
+                    />
+                    <span>CDL</span>
+                  </span>
+                  <span className="text-[11px] font-medium text-slate-400">
+                    Catheter Double Lumen
+                  </span>
+                </label>
+                <input
+                  type="text"
+                  value={cdlNote}
+                  onChange={(e) => {
+                    setCdlNote(e.target.value);
+                    if (e.target.value && selectedAccessOption !== 'CDL') {
+                      handleSelectVascularOption('CDL');
+                    }
+                  }}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                />
+              </div>
+
+              <div
+                className={`rounded-lg border p-3 transition-colors ${
+                  selectedAccessOption === 'FEMORAL'
+                    ? 'border-[#0e4e78] bg-[#0e4e78]/[0.03]'
+                    : 'border-slate-200 bg-white'
+                }`}
+              >
+                <label className="flex items-center justify-between gap-2 mb-2.5 cursor-pointer">
+                  <span className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={selectedAccessOption === 'FEMORAL'}
+                      onChange={() =>
+                        handleSelectVascularOption(
+                          selectedAccessOption === 'FEMORAL' ? '' : 'FEMORAL'
+                        )
+                      }
+                      className="h-3.5 w-3.5 rounded border-slate-300 text-[#0e4e78] focus:ring-[#0e4e78]"
+                    />
+                    <span>FEMORAL</span>
+                  </span>
+                  <span className="text-[11px] font-medium text-slate-400">
+                    Akses Vena Femoralis
+                  </span>
+                </label>
+                <input
+                  type="text"
+                  value={femoralNote}
+                  onChange={(e) => {
+                    setFemoralNote(e.target.value);
+                    if (e.target.value && selectedAccessOption !== 'FEMORAL') {
+                      handleSelectVascularOption('FEMORAL');
+                    }
+                  }}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                />
+              </div>
+            </div>
+            {!selectedAccessOption && (
+              <p className="text-[11px] font-medium text-amber-600">
+                Wajib mencentang salah satu kolom akses vaskular (CIMINO, CDL, atau FEMORAL) agar Poin 3.6 bernilai DIKERJAKAN.
+              </p>
+            )}
+          </div>
+        );
+
+      case '4.1':
+        return (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50/40 px-3.5 py-2.5">
+              <div className="flex items-center gap-1.5 text-xs">
+                <Activity className="h-3.5 w-3.5 text-[#0e4e78]" />
+                <span className="font-bold text-slate-800">
+                  Observasi Tanda-Tanda Vital (TTV) Intra HD
+                </span>
+                <span className="text-[11px] text-slate-400">
+                  ({intraObservations.length} Observasi)
+                </span>
+              </div>
+              {!readOnly && (
+                <button
+                  type="button"
+                  onClick={handleAddIntraObservation}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#0e4e78] px-3.5 py-2 text-[11px] font-bold uppercase tracking-wide text-white shadow-xs hover:bg-[#0a3c5d] transition-colors"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  <span>TAMBAH OBSERVASI TTV</span>
+                </button>
+              )}
+            </div>
+
+            {intraObservations.map((obs, idx) => (
+              <div
+                key={obs.id}
+                className="rounded-lg border border-slate-200 bg-slate-50/40 p-3.5 space-y-2.5"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#0e4e78] text-[11px] font-bold text-white">
+                      {idx + 1}
+                    </span>
+                    <span className="font-bold text-slate-800">Observasi TTV #{idx + 1}</span>
+                    <span className="text-[11px] text-slate-400">
+                      {idx === 0 ? '(Utama · Jam, TD & TTV)' : '(Observasi Lanjutan)'}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {!readOnly && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleUpdateIntraObservation(obs.id, 'time', getCurrentTimeHHmm())
+                        }
+                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-teal-600 hover:text-teal-700"
+                      >
+                        <Clock className="h-3 w-3" />
+                        <span>Jam Sekarang</span>
+                      </button>
+                    )}
+                    {!readOnly && idx > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveIntraObservation(obs.id)}
+                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-600 hover:text-rose-700"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        <span>Hapus</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-end gap-3">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                      Jam Observasi
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={obs.time}
+                        onChange={(e) =>
+                          handleUpdateIntraObservation(obs.id, 'time', e.target.value)
+                        }
+                        className="w-40 sm:w-48 rounded-lg border border-slate-300 bg-white pl-3 pr-9 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                      />
+                      <Clock className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                      Tekanan Darah Intra HD{' '}
+                      <span className="text-slate-400 font-normal">(mmHg)</span>
+                      {idx === 0 && <span className="text-rose-600"> *</span>}
+                    </label>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={obs.systolic}
+                        onChange={(e) =>
+                          handleUpdateIntraObservation(obs.id, 'systolic', e.target.value)
+                        }
+                        placeholder="Sistolik"
+                        className="w-32 sm:w-40 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                      />
+                      <span className="text-sm font-semibold text-slate-400">/</span>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={obs.diastolic}
+                        onChange={(e) =>
+                          handleUpdateIntraObservation(obs.id, 'diastolic', e.target.value)
+                        }
+                        placeholder="Diastolik"
+                        className="w-32 sm:w-40 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                      />
+                      <span className="text-xs font-semibold text-slate-500">mmHg</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
+                  <div>
+                    <label className="block text-[10px] font-semibold text-slate-500 mb-1">
+                      Nadi (x/mnt)
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={obs.pulse || ''}
+                      onChange={(e) =>
+                        handleUpdateIntraObservation(obs.id, 'pulse', e.target.value)
+                      }
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-semibold text-slate-500 mb-1">
+                      Napas / RR (x/mnt)
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={obs.resp || ''}
+                      onChange={(e) =>
+                        handleUpdateIntraObservation(obs.id, 'resp', e.target.value)
+                      }
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-semibold text-slate-500 mb-1">
+                      Suhu (°C)
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={obs.temp || ''}
+                      onChange={(e) =>
+                        handleUpdateIntraObservation(obs.id, 'temp', e.target.value)
+                      }
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-semibold text-slate-500 mb-1">
+                      SpO₂ (%)
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={obs.spo2 || ''}
+                      onChange={(e) =>
+                        handleUpdateIntraObservation(obs.id, 'spo2', e.target.value)
+                      }
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            {(!intraSystolicBp.trim() || !intraDiastolicBp.trim()) && (
+              <p className="text-[11px] font-medium text-amber-600">
+                Wajib mengisi kedua kolom Sistolik dan Diastolik pada Observasi #1 agar status logbook Poin 4.1 dikerjakan.
+              </p>
+            )}
+          </div>
+        );
+
+      case '4.3':
+        return (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-end gap-2.5 rounded-lg border border-slate-200 bg-slate-50/40 px-3.5 py-2.5">
+              {!readOnly && (
+                <button
+                  type="button"
+                  onClick={handleAddComplicationIncident}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#0e4e78] px-3.5 py-2 text-[11px] font-bold uppercase tracking-wide text-white shadow-xs hover:bg-[#0a3c5d] transition-colors"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  <span>+ TAMBAH KOMPLIKASI</span>
+                </button>
+              )}
+
+              <label
+                className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold cursor-pointer transition-colors ${
+                  noComplication
+                    ? 'border-emerald-400 bg-emerald-50 text-emerald-800'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={noComplication}
+                  onChange={(e) => handleToggleNoComplication(e.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                />
+                <span>Tidak Ada Komplikasi (Nihil)</span>
+              </label>
+            </div>
+
+            {complicationIncidents.map((inc, idx) => {
+              const inputMeta = getComplicationInputMeta(inc.type);
+              const detailValue = inputMeta.field === 'bp' ? inc.bp : inc.clinicalDetail || '';
+              return (
+                <div
+                  key={inc.id}
+                  className="rounded-xl border border-amber-300 bg-amber-50/20 p-3.5 space-y-3"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-orange-600 text-[11px] font-bold text-white">
+                        {idx + 1}
+                      </span>
+                      <span className="text-xs font-bold text-slate-900">
+                        Insiden Komplikasi #{idx + 1}
+                      </span>
+                      <span className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-500">
+                        Pukul {inc.time || '--:--'} WIB
+                      </span>
+                    </div>
+
+                    {!readOnly && (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveComplicationIncident(inc.id)}
+                        className="inline-flex items-center gap-1 text-xs font-semibold text-rose-600 hover:text-rose-700"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        <span>Hapus</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div>
+                      <label className="block text-[10px] font-bold uppercase tracking-wide text-slate-600 mb-1">
+                        PILIHAN KOMPLIKASI <span className="text-rose-600">*</span>
+                      </label>
+                      <select
+                        value={inc.type}
+                        onChange={(e) =>
+                          handleUpdateComplicationIncident(inc.id, 'type', e.target.value)
+                        }
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 focus:border-[#0e4e78] focus:outline-none"
+                      >
+                        {INTRA_COMPLICATION_TYPES.map((opt) => (
+                          <option key={opt} value={opt}>
+                            {opt}
+                          </option>
+                        ))}
+                        {!INTRA_COMPLICATION_TYPES.includes(inc.type) && inc.type && (
+                          <option value={inc.type}>{inc.type}</option>
+                        )}
+                      </select>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-[10px] font-bold uppercase tracking-wide text-slate-600">
+                          JAM KEJADIAN
+                        </label>
+                        {!readOnly && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleUpdateComplicationIncident(
+                                inc.id,
+                                'time',
+                                getCurrentTimeHHmm()
+                              )
+                            }
+                            className="text-[11px] font-semibold text-[#0e4e78] hover:underline"
+                          >
+                            Sekarang
+                          </button>
+                        )}
+                      </div>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={inc.time}
+                          onChange={(e) =>
+                            handleUpdateComplicationIncident(inc.id, 'time', e.target.value)
+                          }
+                          className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-8 py-2 font-mono text-xs font-semibold text-slate-800 focus:border-[#0e4e78] focus:outline-none"
+                        />
+                        <Clock className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold uppercase tracking-wide text-slate-600 mb-1">
+                        {inputMeta.label}
+                        {inputMeta.unit && (
+                          <span className="normal-case font-normal"> {inputMeta.unit}</span>
+                        )}{' '}
+                        {inputMeta.required && <span className="text-rose-600">*</span>}
+                      </label>
+                      <input
+                        type="text"
+                        value={detailValue}
+                        onChange={(e) =>
+                          handleUpdateComplicationIncident(
+                            inc.id,
+                            inputMeta.field,
+                            e.target.value
+                          )
+                        }
+                        placeholder={inputMeta.placeholder}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold uppercase tracking-wide text-slate-600 mb-1">
+                        KOLOM ADVIS DOKTER (TBAK)
+                      </label>
+                      <input
+                        type="text"
+                        value={inc.doctorAdvice}
+                        onChange={(e) =>
+                          handleUpdateComplicationIncident(inc.id, 'doctorAdvice', e.target.value)
+                        }
+                        placeholder={inputMeta.advicePlaceholder}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+
+      case '6.3':
+        return (
+          <div className="space-y-2.5">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
+                  Tekanan Darah Post HD{' '}
+                  <span className="text-slate-400 font-normal">(mmHg)</span>
+                </label>
+                <input
+                  type="text"
+                  value={postBp}
+                  onChange={(e) => updatePostHdEvaluation(e.target.value, ufAchieved, ktv)}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="flex flex-wrap items-center justify-between gap-1.5 text-[11px] font-semibold text-slate-600 mb-1.5">
+                  <span>
+                    Nilai UFG Tercapai <span className="text-slate-400 font-normal">(mL)</span>
+                  </span>
+                  <span className="text-[10px] font-semibold text-[#0e4e78]">
+                    Target UFG: {ufGoal.trim() ? `${ufGoal.trim()} mL` : '-'}
+                  </span>
+                </label>
+                <input
+                  type="number"
+                  value={ufAchieved}
+                  onChange={(e) => updatePostHdEvaluation(postBp, e.target.value, ktv)}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
+                  KT/V <span className="text-slate-400 font-normal">(Adekuasi HD)</span>
+                </label>
+                <input
+                  type="text"
+                  value={ktv}
+                  onChange={(e) => updatePostHdEvaluation(postBp, ufAchieved, e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {(!postBp.trim() || !ufAchieved.trim() || !ktv.trim()) && (
+              <p className="text-[11px] font-medium text-amber-600">
+                Wajib mengisi semua kolom (Tekanan Darah Post HD, Nilai UFG Tercapai, dan KT/V) agar status logbook Poin 6.3 dikerjakan.
+              </p>
+            )}
+          </div>
+        );
+
+      default:
+        return undefined;
+    }
+  };
+
   const renderSpoPointCard = (
     pointId: string,
     children?: React.ReactNode,
     inlineFooter?: React.ReactNode
   ) => {
-    const meta = SPO_POINT_MAP.get(pointId);
+    const meta = pointTemplateMap.get(pointId) || SPO_POINT_MAP.get(pointId);
     if (!meta) return null;
     const status = spoChecklist[pointId] || 'TIDAK DIKERJAKAN';
     const isDone = status === 'DIKERJAKAN';
+    const customBlocks = renderTtvAndCustomFields(
+      pointId,
+      'enableTtv' in meta ? (meta as LogbookPointTemplate) : undefined
+    );
 
     return (
       <div
@@ -2971,7 +5062,9 @@ export function LogbookWizardModal({
               <h5 className="text-[13px] font-bold text-slate-900 leading-snug">
                 {meta.statement}
               </h5>
-              <p className="text-[11px] text-slate-500 leading-relaxed">{meta.description}</p>
+              {meta.description && (
+                <p className="text-[11px] text-slate-500 leading-relaxed">{meta.description}</p>
+              )}
               {meta.standard && (
                 <p className="text-[11px] text-slate-400">
                   <span className="font-semibold text-slate-500">Standar:</span> {meta.standard}
@@ -3019,7 +5112,7 @@ export function LogbookWizardModal({
                 </div>
               </div>
             ) : (
-              /* Single Checklist Toggle Button Matching Screenshot for Bagian 1 & 2 */
+              /* Single Checklist Toggle Button */
               <div className="shrink-0">
                 <button
                   type="button"
@@ -3045,7 +5138,12 @@ export function LogbookWizardModal({
             )}
           </div>
 
-          {inlineFooter && <div className="mt-3.5">{inlineFooter}</div>}
+          {(inlineFooter || customBlocks) && (
+            <div className="mt-3.5 space-y-3">
+              {inlineFooter}
+              {customBlocks}
+            </div>
+          )}
         </div>
 
         {/* Clinical Inputs Body (rendered when children provided) */}
@@ -3058,7 +5156,7 @@ export function LogbookWizardModal({
     );
   };
 
-  const activeStepMeta = STEPS[step - 1];
+  const activeStepMeta = activeSections[step - 1] || STEPS[step - 1];
 
   return (
     <div
@@ -3087,10 +5185,10 @@ export function LogbookWizardModal({
             <div className="min-w-0">
               <p className="truncate text-[11px] font-medium text-sky-100/90">
                 {readOnly
-                  ? `Detail Lengkap Logbook Hemodialisa · Bagian ${step} dari 7`
+                  ? `Detail Lengkap Logbook Hemodialisa · Bagian ${step} dari 8`
                   : isVerifierEdit
-                  ? `Ubah Logbook Sebelum Verifikasi (${userProfile?.role || 'Verifikator'}) · Bagian ${step} dari 7`
-                  : `Formulir Asuhan Keperawatan Hemodialisa · Bagian ${step} dari 7`}
+                  ? `Ubah Logbook Sebelum Verifikasi (${userProfile?.role || 'Verifikator'}) · Bagian ${step} dari 8`
+                  : `${resolvedTemplate.formTitle} · Bagian ${step} dari 8`}
                 <span className="mx-1.5 opacity-60" aria-hidden="true">·</span>
                 <span className="font-semibold text-white">
                   {selectedPatient ? `${selectedPatient.fullName} (${selectedPatient.mrn})` : 'Pilih Pasien'} ·{' '}
@@ -3146,7 +5244,7 @@ export function LogbookWizardModal({
               <button
                 type="button"
                 onClick={resetAllChecklist}
-                title="Reset seluruh checklist SPO Bagian 1–7 menjadi TIDAK DIKERJAKAN"
+                title="Reset seluruh checklist SPO Bagian 1–6 menjadi TIDAK DIKERJAKAN"
                 className="inline-flex items-center gap-1.5 rounded-lg bg-white/15 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/25 transition-colors whitespace-nowrap"
               >
                 <RotateCcw className="h-3.5 w-3.5" />
@@ -3165,13 +5263,13 @@ export function LogbookWizardModal({
           </div>
         </div>
 
-        {/* 7-Tab Navigation Strip (Bagian 1 - Bagian 7) */}
+        {/* 8-Tab Navigation Strip (Bagian 1 - Bagian 8) */}
         <div className="border-b border-slate-200 bg-white px-4 py-2.5 sm:px-6 shrink-0">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-wrap items-center gap-1.5">
-              {STEPS.map((s) => {
+              {activeSections.map((s) => {
                 const isActive = step === s.num;
-                const ptsInStep = SPO_POINTS.filter((p) => p.step === s.num);
+                const ptsInStep = activeSpoPoints.filter((p) => p.step === s.num);
                 const stepAllDone =
                   ptsInStep.length > 0 &&
                   ptsInStep.every((p) => spoChecklist[p.id] === 'DIKERJAKAN');
@@ -3316,1299 +5414,452 @@ export function LogbookWizardModal({
           )}
 
           <fieldset disabled={readOnly} className="contents">
-          {/* BAGIAN 1: Kesiapan Ruangan dan Air RO */}
-          {step === 1 && (
+          {/* BAGIAN 1–6: Indikator SPO Dinamis sesuai Template */}
+          {step >= 1 && step <= 6 && (
             <div className="space-y-3.5">
-              {renderSpoPointCard('1.1')}
-              {renderSpoPointCard('1.2')}
-              {renderSpoPointCard('1.3')}
-            </div>
-          )}
-
-          {/* BAGIAN 2: PPI, Mesin dan BHP */}
-          {step === 2 && (
-            <div className="space-y-3.5">
-              {renderSpoPointCard(
-                '2.1',
-                undefined,
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <label
-                    className={`flex items-center gap-2.5 rounded-lg border px-3.5 py-2.5 text-xs font-bold tracking-wide uppercase cursor-pointer transition-colors ${
-                      handHygieneChecked
-                        ? 'border-emerald-400 bg-emerald-50/70 text-emerald-800'
-                        : 'border-slate-200 bg-slate-50/50 text-slate-700 hover:bg-slate-50'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={handHygieneChecked}
-                      onChange={(e) => toggleHandHygieneSubCheck(e.target.checked)}
-                      className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                    />
-                    <Hand
-                      className={`h-4 w-4 shrink-0 ${
-                        handHygieneChecked ? 'text-emerald-600' : 'text-[#0e4e78]'
-                      }`}
-                    />
-                    <span>HAND HYGIENE</span>
-                  </label>
-
-                  <label
-                    className={`flex items-center gap-2.5 rounded-lg border px-3.5 py-2.5 text-xs font-bold tracking-wide uppercase cursor-pointer transition-colors ${
-                      apdUsedChecked
-                        ? 'border-emerald-400 bg-emerald-50/70 text-emerald-800'
-                        : 'border-slate-200 bg-slate-50/50 text-slate-700 hover:bg-slate-50'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={apdUsedChecked}
-                      onChange={(e) => toggleApdSubCheck(e.target.checked)}
-                      className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                    />
-                    <ShieldCheck
-                      className={`h-4 w-4 shrink-0 ${
-                        apdUsedChecked ? 'text-emerald-600' : 'text-[#0e4e78]'
-                      }`}
-                    />
-                    <span>PENGGUNAAN APD</span>
-                  </label>
+              {stepPoints.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-300 bg-white p-6 text-center text-xs text-slate-500">
+                  Tidak ada poin indikator SPO aktif pada bagian ini.
                 </div>
+              ) : (
+                stepPoints.map((pt) =>
+                  renderSpoPointCard(pt.id, undefined, renderBuiltInPointFooter(pt.id))
+                )
               )}
-              {renderSpoPointCard('2.2')}
-              {renderSpoPointCard('2.3')}
-              {renderSpoPointCard('2.4')}
-              {renderSpoPointCard('2.5')}
-              {renderSpoPointCard('2.6')}
             </div>
           )}
 
-          {/* BAGIAN 3: PRE HD (Pengkajian Sebelum Tindakan) */}
-          {step === 3 && (
-            <div className="space-y-3.5">
-              {/* Poin 3.1 */}
-              {renderSpoPointCard(
-                '3.1',
-                undefined,
-                <div className="space-y-2.5">
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                    {/* Status Pelayanan */}
-                    <div className="rounded-lg border border-slate-200 bg-slate-50/40 p-3 space-y-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-700">
-                          <span className="h-1.5 w-1.5 rounded-full bg-[#0e4e78]" />
-                          STATUS PELAYANAN
-                        </span>
-                        <span
-                          className={`text-[10px] font-bold uppercase tracking-wider ${
-                            serviceStatus ? 'text-emerald-700' : 'text-slate-400'
+          {/* BAGIAN 7: Transfusi Darah & Pemberian EPO */}
+          {step === 7 && (() => {
+            const pt71 = pointTemplateMap.get('7.1');
+            const pt72 = pointTemplateMap.get('7.2');
+            const show71 = pt71 ? pt71.visible !== false : true;
+            const show72 = pt72 ? pt72.visible !== false : true;
+            const extra71Blocks = renderTtvAndCustomFields('7.1', pt71);
+            const extra72Blocks = renderTtvAndCustomFields('7.2', pt72);
+            const sec7Blocks = renderTtvAndCustomFields('__sec7', {
+              enableTtv: false,
+              customFields: section7CustomFields,
+            });
+
+            return (
+              <div className="space-y-4">
+                {show71 && (
+                  <div className="rounded-xl border border-slate-200/90 bg-white overflow-hidden">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-slate-100 px-5 py-4">
+                      <div className="flex items-start gap-3">
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-rose-100 bg-rose-50 text-rose-500">
+                          <Droplets className="h-4.5 w-4.5" />
+                        </div>
+                        <div>
+                          <h5 className="text-[13px] font-bold text-slate-900">
+                            {pt71?.statement || '7.1 Keterangan Transfusi Darah'}
+                          </h5>
+                          <p className="mt-0.5 text-[11px] text-slate-500">
+                            {pt71?.description ||
+                              'Catat apakah pasien mendapatkan transfusi darah (PRC / WB / komponen lain) selama atau pasca tindakan HD.'}
+                          </p>
+                        </div>
+                      </div>
+                      <span
+                        className={`self-start sm:self-center shrink-0 rounded-md border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ${
+                          transfusionGiven
+                            ? 'border-rose-200 bg-rose-50 text-rose-600'
+                            : 'border-slate-200 bg-slate-50 text-slate-500'
+                        }`}
+                      >
+                        {transfusionGiven ? 'DILAKUKAN TRANSFUSI' : 'TIDAK TRANSFUSI'}
+                      </span>
+                    </div>
+
+                    <div className="p-5 space-y-4 text-xs">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <button
+                          type="button"
+                          disabled={readOnly}
+                          onClick={() => {
+                            setTransfusionGiven(false);
+                            setErrorMsg(null);
+                          }}
+                          className={`flex items-center gap-2.5 rounded-lg border px-4 py-3 text-left transition-all ${
+                            !transfusionGiven
+                              ? 'border-[#0e4e78] bg-sky-50/40 ring-1 ring-[#0e4e78]'
+                              : 'border-slate-200 bg-white hover:border-slate-300'
                           }`}
                         >
-                          {serviceStatus ? 'TERPILIH' : 'BELUM DIPILIH'}
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2.5">
-                        {(['Rawat Jalan', 'Rawat Inap'] as const).map((statusOption) => {
-                          const checked = serviceStatus === statusOption;
-                          return (
-                            <label
-                              key={statusOption}
-                              className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-bold uppercase tracking-wide transition-colors ${
-                                readOnly ? 'cursor-default' : 'cursor-pointer'
-                              } ${
-                                checked
-                                  ? 'border-[#0B4A75] bg-[#0B4A75] text-white shadow-sm'
-                                  : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                disabled={readOnly}
-                                onChange={() =>
-                                  updatePoint31Selection(
-                                    checked ? '' : statusOption,
-                                    patientCategory
-                                  )
-                                }
-                                className="h-3.5 w-3.5 rounded border-slate-300 text-[#0e4e78] accent-white focus:ring-[#0e4e78]"
-                              />
-                              <span>{statusOption.toUpperCase()}</span>
-                            </label>
-                          );
-                        })}
+                          <CheckCircle2
+                            className={`h-4 w-4 shrink-0 ${
+                              !transfusionGiven ? 'text-[#0e4e78]' : 'text-slate-300'
+                            }`}
+                          />
+                          <div>
+                            <p className="font-bold text-slate-900">Tidak Dilakukan Transfusi</p>
+                            <p className="text-[11px] text-slate-500">
+                              Pasien tidak menerima produk darah pada sesi HD ini.
+                            </p>
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={readOnly}
+                          onClick={() => {
+                            setTransfusionGiven(true);
+                            setErrorMsg(null);
+                          }}
+                          className={`flex items-center gap-2.5 rounded-lg border px-4 py-3 text-left transition-all ${
+                            transfusionGiven
+                              ? 'border-rose-500 bg-rose-50/30 ring-1 ring-rose-500'
+                              : 'border-slate-200 bg-white hover:border-slate-300'
+                          }`}
+                        >
+                          <CheckCircle2
+                            className={`h-4 w-4 shrink-0 ${
+                              transfusionGiven ? 'text-rose-500' : 'text-slate-300'
+                            }`}
+                          />
+                          <div>
+                            <p className="font-bold text-slate-900">Dilakukan Transfusi Darah</p>
+                            <p className="text-[11px] text-slate-500">
+                              Pasien menerima transfusi darah sesuai advis dokter DPJP.
+                            </p>
+                          </div>
+                        </button>
                       </div>
 
-                      {serviceStatus === 'Rawat Inap' && (
-                        <div className="space-y-3 border-t border-slate-200/80 pt-3">
-                          {/* Pemilihan Bangsal Rawat Inap */}
-                          <div>
-                            <div className="flex items-center justify-between gap-2 mb-1.5">
-                              <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-700">
-                                <Building2 className="h-3.5 w-3.5 text-slate-500" />
-                                Nama Bangsal / Ruang Rawat Inap:
-                              </span>
-                              <span
-                                className={`text-[10px] font-bold ${
-                                  inpatientWard ? 'text-emerald-700' : 'text-amber-600'
-                                }`}
+                      {transfusionGiven && (
+                        <div className="rounded-xl border border-rose-200 bg-rose-50/40 p-4 space-y-3.5">
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            <div>
+                              <label className="block text-[11px] font-semibold text-slate-700 mb-1.5">
+                                Komponen Darah <span className="text-rose-500">*</span>
+                              </label>
+                              <select
+                                value={transfusionComponent}
+                                onChange={(e) => setTransfusionComponent(e.target.value)}
+                                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-800 focus:border-rose-500 focus:outline-none"
                               >
-                                {inpatientWard ? inpatientWard : 'Wajib Dipilih'}
-                              </span>
+                                <option value="PRC (Packed Red Cell)">PRC (Packed Red Cell)</option>
+                                <option value="WB (Whole Blood)">WB (Whole Blood)</option>
+                                <option value="TC (Thrombocyte Concentrate)">TC (Thrombocyte Concentrate)</option>
+                                <option value="FFP (Fresh Frozen Plasma)">FFP (Fresh Frozen Plasma)</option>
+                                <option value="WE (Washed Erythrocyte)">WE (Washed Erythrocyte)</option>
+                                <option value="Lainnya">Lainnya</option>
+                              </select>
                             </div>
-                            <select
-                              value={inpatientWard}
-                              disabled={readOnly}
-                              onChange={(e) =>
-                                updatePoint31Selection(
-                                  'Rawat Inap',
-                                  patientCategory,
-                                  e.target.value as 'CAMELIA' | 'DAHLIA' | 'ICU' | '',
-                                  citoStatus || 'Tidak'
-                                )
-                              }
-                              className={`w-full rounded-lg border px-3 py-2 text-xs font-semibold focus:outline-none ${
-                                inpatientWard
-                                  ? 'border-slate-300 bg-white text-slate-900 focus:border-[#0B5A8E]'
-                                  : 'border-amber-400 bg-amber-50/40 text-slate-800 focus:border-amber-500'
-                              }`}
-                            >
-                              <option value="">-- Pilih Nama Bangsal --</option>
-                              <option value="CAMELIA">CAMELIA</option>
-                              <option value="DAHLIA">DAHLIA</option>
-                              <option value="ICU">ICU</option>
-                            </select>
+
+                            <div>
+                              <label className="block text-[11px] font-semibold text-slate-700 mb-1.5">
+                                Golongan Darah &amp; Rhesus
+                              </label>
+                              <select
+                                value={transfusionBloodGroup}
+                                onChange={(e) => setTransfusionBloodGroup(e.target.value)}
+                                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-800 focus:border-rose-500 focus:outline-none"
+                              >
+                                <option value="">-- Pilih Gol. Darah --</option>
+                                <option value="A+">A+</option>
+                                <option value="A-">A-</option>
+                                <option value="B+">B+</option>
+                                <option value="B-">B-</option>
+                                <option value="AB+">AB+</option>
+                                <option value="AB-">AB-</option>
+                                <option value="O+">O+</option>
+                                <option value="O-">O-</option>
+                              </select>
+                            </div>
+
+                            <div>
+                              <label className="block text-[11px] font-semibold text-slate-700 mb-1.5">
+                                Jumlah Kantong <span className="text-rose-500">*</span>
+                              </label>
+                              <input
+                                type="number"
+                                min={1}
+                                max={20}
+                                value={transfusionBagCount}
+                                onChange={(e) => setTransfusionBagCount(e.target.value)}
+                                placeholder="1"
+                                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-rose-500 focus:outline-none"
+                              />
+                            </div>
                           </div>
 
-                          {/* Status CITO / Urgensi Pasien */}
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            <div>
+                              <label className="block text-[11px] font-semibold text-slate-700 mb-1.5">
+                                Volume Total (mL)
+                              </label>
+                              <input
+                                type="text"
+                                value={transfusionVolumeMl}
+                                onChange={(e) => setTransfusionVolumeMl(e.target.value)}
+                                placeholder="cth: 250 mL"
+                                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-rose-500 focus:outline-none"
+                              />
+                            </div>
+
+                            <div>
+                              <label className="block text-[11px] font-semibold text-slate-700 mb-1.5">
+                                Nomor Kantong / Label Crossmatch
+                              </label>
+                              <input
+                                type="text"
+                                value={transfusionBagNumber}
+                                onChange={(e) => setTransfusionBagNumber(e.target.value)}
+                                placeholder="Nomor kantong PMI / BDRS"
+                                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-rose-500 focus:outline-none"
+                              />
+                            </div>
+
+                            <div>
+                              <label className="block text-[11px] font-semibold text-slate-700 mb-1.5">
+                                Reaksi Transfusi
+                              </label>
+                              <select
+                                value={transfusionReaction}
+                                onChange={(e) => setTransfusionReaction(e.target.value)}
+                                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-800 focus:border-rose-500 focus:outline-none"
+                              >
+                                <option value="Tidak Ada Reaksi">Tidak Ada Reaksi</option>
+                                <option value="Demam / Menggigil">Demam / Menggigil</option>
+                                <option value="Urtikaria / Alergi">Urtikaria / Alergi</option>
+                                <option value="Sesak / Fluid Overload">Sesak / Fluid Overload</option>
+                                <option value="Reaksi Hemolitik">Reaksi Hemolitik</option>
+                                <option value="Lainnya">Lainnya</option>
+                              </select>
+                            </div>
+                          </div>
+
                           <div>
-                            <div className="flex items-center justify-between gap-2 mb-1.5">
-                              <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-700">
-                                <AlertTriangle className="h-3.5 w-3.5 text-slate-600" />
-                                Status CITO / Urgensi Pasien:
-                              </span>
-                              <span
-                                className={`text-[10px] font-bold uppercase tracking-wide ${
-                                  (citoStatus || 'Tidak') === 'Ya'
-                                    ? 'text-rose-600'
-                                    : 'text-slate-500'
-                                }`}
-                              >
-                                {(citoStatus || 'Tidak') === 'Ya'
-                                  ? 'CITO (URGENT)'
-                                  : 'BIASA (NON-CITO)'}
-                              </span>
-                            </div>
-                            <div className="grid grid-cols-2 gap-2">
-                              <button
-                                type="button"
-                                disabled={readOnly}
-                                onClick={() =>
-                                  updatePoint31Selection(
-                                    'Rawat Inap',
-                                    patientCategory,
-                                    inpatientWard,
-                                    'Tidak'
-                                  )
-                                }
-                                className={`flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold transition-colors ${
-                                  (citoStatus || 'Tidak') === 'Tidak'
-                                    ? 'border-[#0f172a] bg-[#0f172a] text-white'
-                                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                                }`}
-                              >
-                                Tidak (Elektif)
-                              </button>
-                              <button
-                                type="button"
-                                disabled={readOnly}
-                                onClick={() =>
-                                  updatePoint31Selection(
-                                    'Rawat Inap',
-                                    patientCategory,
-                                    inpatientWard,
-                                    'Ya'
-                                  )
-                                }
-                                className={`flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold transition-colors ${
-                                  citoStatus === 'Ya'
-                                    ? 'border-rose-600 bg-rose-600 text-white'
-                                    : 'border-rose-300 bg-white text-rose-600 hover:bg-rose-50'
-                                }`}
-                              >
-                                <AlertTriangle className="h-3.5 w-3.5" />
-                                Ya (CITO)
-                              </button>
-                            </div>
+                            <label className="block text-[11px] font-semibold text-slate-700 mb-1.5">
+                              Keterangan / Catatan Transfusi
+                            </label>
+                            <textarea
+                              rows={2}
+                              value={transfusionNote}
+                              onChange={(e) => setTransfusionNote(e.target.value)}
+                              placeholder="Jam mulai & selesai transfusi, kadar Hb pre-transfusi, premedikasi, atau respon pasien..."
+                              className="w-full rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-rose-500 focus:outline-none"
+                            />
                           </div>
                         </div>
                       )}
-                    </div>
 
-                    {/* Kategori Pasien */}
-                    <div className="rounded-lg border border-slate-200 bg-slate-50/40 p-3">
-                      <div className="flex items-center justify-between gap-2 mb-2.5">
-                        <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-700">
-                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-600" />
-                          KATEGORI PASIEN
-                        </span>
-                        <span
-                          className={`text-[10px] font-bold uppercase tracking-wider ${
-                            patientCategory ? 'text-emerald-700' : 'text-slate-400'
-                          }`}
-                        >
-                          {patientCategory ? patientCategory.toUpperCase() : 'BELUM DIPILIH'}
-                        </span>
-                      </div>
-                      <div className="space-y-2">
-                        {(
-                          [
-                            {
-                              value: 'Reguler',
-                              label: 'REGULER',
-                              hint: 'Pasien HD non-isolasi',
-                            },
-                            {
-                              value: 'Isolasi Hepatitis B',
-                              label: 'ISOLASI HEPATITIS B',
-                              hint: 'HBsAg (+), mesin & ruang terpisah',
-                            },
-                            {
-                              value: 'Isolasi Hepatitis C/HIV',
-                              label: 'ISOLASI HEPATITIS C/HIV',
-                              hint: 'Anti-HCV (+) atau HIV (+)',
-                            },
-                          ] as const
-                        ).map((cat) => {
-                          const checked = patientCategory === cat.value;
-                          return (
-                            <label
-                              key={cat.value}
-                              className={`flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs transition-colors ${
-                                readOnly ? 'cursor-default' : 'cursor-pointer'
-                              } ${
-                                checked
-                                  ? 'border-emerald-400 bg-emerald-50/60 text-emerald-900'
-                                  : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                              }`}
-                            >
-                              <span className="inline-flex items-center gap-2 font-bold uppercase tracking-wide">
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  disabled={readOnly}
-                                  onChange={() =>
-                                    updatePoint31Selection(serviceStatus, checked ? '' : cat.value)
-                                  }
-                                  className="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                                />
-                                <span>{cat.label}</span>
-                              </span>
-                              <span className="text-[11px] font-normal text-slate-400">
-                                {cat.hint}
-                              </span>
-                            </label>
-                          );
-                        })}
-                      </div>
+                      {extra71Blocks}
                     </div>
                   </div>
+                )}
 
-                  <div className="rounded-lg border border-slate-200/80 bg-slate-50/70 px-3 py-2 text-[11px] text-slate-600">
-                    <span className="font-semibold text-slate-700">Catatan:</span> Identifikasi Pasien (
-                    {selectedPatient?.fullName || 'Pasien'}, RM: {selectedPatient?.mrn || '-'}
-                    {serviceStatus
-                      ? `, Status: ${serviceStatus.toUpperCase()}${
-                          serviceStatus === 'Rawat Inap'
-                            ? ` · Bangsal: ${inpatientWard || 'Belum dipilih'} · ${
-                                (citoStatus || 'Tidak') === 'Ya' ? 'Ya (CITO)' : 'Tidak (Elektif)'
-                              }`
-                            : ''
-                        }`
-                      : ''}
-                    ) —{' '}
-                    {isPoint31Complete(serviceStatus, patientCategory)
-                      ? `Kategori ${patientCategory}`
-                      : !serviceStatus
-                      ? 'Menunggu pilihan Status Pelayanan'
-                      : serviceStatus === 'Rawat Inap' && !inpatientWard
-                      ? 'Menunggu pilihan Nama Bangsal Rawat Inap'
-                      : 'Menunggu pilihan Kategori Pasien'}
-                  </div>
-
-                  {!isPoint31Complete(serviceStatus, patientCategory) && (
-                    <p className="text-[11px] font-medium text-amber-600">
-                      {serviceStatus === 'Rawat Inap' && !inpatientWard
-                        ? 'Pilih Nama Bangsal Rawat Inap (CAMELIA, DAHLIA, atau ICU) dan Kategori Pasien agar Poin 3.1 otomatis bernilai DIKERJAKAN.'
-                        : 'Pilih Status Pelayanan dan Kategori Pasien agar Poin 3.1 otomatis bernilai DIKERJAKAN.'}
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {/* Poin 3.2 */}
-              {renderSpoPointCard(
-                '3.2',
-                undefined,
-                <div className="space-y-2">
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div>
-                      <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
-                        Berat Badan Datang
-                      </label>
-                      <div className="relative">
-                        <input
-                          type="number"
-                          step="0.1"
-                          value={preWeight}
-                          onChange={(e) => updateWeightFields(e.target.value, postWeight, dryWeight)}
-                          className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-10 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                        />
-                        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
-                          kg
-                        </span>
+                {show72 && (
+                  <div className="rounded-xl border border-slate-200/90 bg-white overflow-hidden">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-slate-100 px-5 py-4">
+                      <div className="flex items-start gap-3">
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-sky-100 bg-sky-50 text-[#0e4e78]">
+                          <Syringe className="h-4.5 w-4.5" />
+                        </div>
+                        <div>
+                          <h5 className="text-[13px] font-bold text-slate-900">
+                            {pt72?.statement || '7.2 Keterangan Pemberian EPO (Eritropoietin)'}
+                          </h5>
+                          <p className="mt-0.5 text-[11px] text-slate-500">
+                            {pt72?.description ||
+                              'Catat apakah pasien diberikan injeksi EPO (Epoetin Alfa/Beta atau sejenisnya) pada sesi HD ini.'}
+                          </p>
+                        </div>
                       </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
-                        Berat Badan Pulang
-                      </label>
-                      <div className="relative">
-                        <input
-                          type="number"
-                          step="0.1"
-                          value={postWeight}
-                          onChange={(e) => updateWeightFields(preWeight, e.target.value, dryWeight)}
-                          className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-10 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                        />
-                        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
-                          kg
-                        </span>
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
-                        Berat Badan Kering
-                      </label>
-                      <div className="relative">
-                        <input
-                          type="number"
-                          step="0.1"
-                          value={dryWeight}
-                          onChange={(e) => updateWeightFields(preWeight, postWeight, e.target.value)}
-                          className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-10 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                        />
-                        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
-                          kg
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Kalkulator IDWG Otomatis */}
-                  <div className="rounded-lg border border-sky-200/80 bg-sky-50/45 p-3 space-y-2.5">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <Calculator className="h-3.5 w-3.5 text-[#0e4e78]" />
-                        <span className="text-[11px] font-bold uppercase tracking-wide text-[#0e4e78]">
-                          Kalkulator IDWG Otomatis
-                        </span>
-                        <span className="text-[11px] text-slate-500">
-                          (BB Datang − BB Kering)
-                        </span>
-                      </div>
-
                       <span
-                        className={`rounded border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
-                          idwgMetrics.categoryTone === 'emerald'
+                        className={`self-start sm:self-center shrink-0 rounded-md border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ${
+                          epoGiven
                             ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                            : idwgMetrics.categoryTone === 'amber'
-                            ? 'border-amber-200 bg-amber-50 text-amber-800'
-                            : idwgMetrics.categoryTone === 'rose'
-                            ? 'border-rose-200 bg-rose-50 text-rose-700'
-                            : 'border-slate-200 bg-white text-slate-500'
+                            : 'border-slate-200 bg-slate-50 text-slate-500'
                         }`}
                       >
-                        {idwgMetrics.categoryLabel}
+                        {epoGiven ? 'DIBERIKAN EPO' : 'TIDAK DIBERIKAN EPO'}
                       </span>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
-                      <div className="rounded-md border border-slate-200/80 bg-white px-3 py-2">
-                        <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                          Nilai IDWG (kg)
-                        </span>
-                        <span
-                          className={`mt-0.5 block font-mono text-sm font-bold tabular-nums ${
-                            !idwgMetrics.ready
-                              ? 'text-slate-400'
-                              : idwgMetrics.categoryTone === 'rose'
-                              ? 'text-rose-700'
-                              : idwgMetrics.categoryTone === 'amber'
-                              ? 'text-amber-700'
-                              : 'text-emerald-700'
+                    <div className="p-5 space-y-4 text-xs">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <button
+                          type="button"
+                          disabled={readOnly}
+                          onClick={() => {
+                            setEpoGiven(false);
+                            setErrorMsg(null);
+                          }}
+                          className={`flex items-center gap-2.5 rounded-lg border px-4 py-3 text-left transition-all ${
+                            !epoGiven
+                              ? 'border-[#0e4e78] bg-sky-50/40 ring-1 ring-[#0e4e78]'
+                              : 'border-slate-200 bg-white hover:border-slate-300'
                           }`}
                         >
-                          {idwgMetrics.ready
-                            ? `${idwgMetrics.idwgKg > 0 ? '+' : ''}${idwgMetrics.idwgKg.toFixed(2)} kg`
-                            : '—'}
-                        </span>
-                      </div>
+                          <CheckCircle2
+                            className={`h-4 w-4 shrink-0 ${
+                              !epoGiven ? 'text-[#0e4e78]' : 'text-slate-300'
+                            }`}
+                          />
+                          <div>
+                            <p className="font-bold text-slate-900">Tidak Diberikan EPO</p>
+                            <p className="text-[11px] text-slate-500">
+                              Tidak ada injeksi EPO yang diberikan pada sesi HD ini.
+                            </p>
+                          </div>
+                        </button>
 
-                      <div className="rounded-md border border-slate-200/80 bg-white px-3 py-2">
-                        <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                          Persentase IDWG
-                        </span>
-                        <span
-                          className={`mt-0.5 block font-mono text-sm font-bold tabular-nums ${
-                            !idwgMetrics.ready
-                              ? 'text-slate-400'
-                              : idwgMetrics.categoryTone === 'rose'
-                              ? 'text-rose-700'
-                              : idwgMetrics.categoryTone === 'amber'
-                              ? 'text-amber-700'
-                              : 'text-[#0e4e78]'
+                        <button
+                          type="button"
+                          disabled={readOnly}
+                          onClick={() => {
+                            setEpoGiven(true);
+                            setErrorMsg(null);
+                          }}
+                          className={`flex items-center gap-2.5 rounded-lg border px-4 py-3 text-left transition-all ${
+                            epoGiven
+                              ? 'border-emerald-500 bg-emerald-50/30 ring-1 ring-emerald-500'
+                              : 'border-slate-200 bg-white hover:border-slate-300'
                           }`}
                         >
-                          {idwgMetrics.ready ? `${idwgMetrics.idwgPercent.toFixed(2)}%` : '—'}
-                        </span>
-                        <span className="block text-[10px] text-slate-400">
-                          Target SPO ≤ 4% BB Kering
-                        </span>
-                      </div>
-
-                      <div className="rounded-md border border-slate-200/80 bg-white px-3 py-2">
-                        <div className="flex items-center justify-between gap-1">
-                          <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                            Estimasi UF Cairan
-                          </span>
-                          {!readOnly && idwgMetrics.ready && idwgMetrics.ufEstimateMl > 0 && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const val = String(idwgMetrics.ufEstimateMl);
-                                setUfGoal(val);
-                                syncPoint35Checklist(
-                                  dialysisDurationHours,
-                                  val,
-                                  bfr,
-                                  dfr,
-                                  loadingDose
-                                );
-                              }}
-                              className="text-[10px] font-bold text-[#0B5A8E] hover:underline"
-                            >
-                              Isi ke UFG
-                            </button>
-                          )}
-                        </div>
-                        <span className="mt-0.5 block font-mono text-sm font-bold tabular-nums text-slate-800">
-                          {idwgMetrics.ready
-                            ? `${idwgMetrics.ufEstimateMl.toLocaleString('id-ID')} mL`
-                            : '—'}
-                        </span>
-                        <span className="block text-[10px] text-slate-400">
-                          Acuan target UFG (Poin 3.5)
-                        </span>
-                      </div>
-
-                      <div className="rounded-md border border-slate-200/80 bg-white px-3 py-2">
-                        <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                          Selisih Pre − Post HD
-                        </span>
-                        <span className="mt-0.5 block font-mono text-sm font-bold tabular-nums text-slate-800">
-                          {idwgMetrics.weightLossKg !== null
-                            ? `${idwgMetrics.weightLossKg.toFixed(2)} kg`
-                            : '—'}
-                        </span>
-                        <span className="block text-[10px] text-slate-400">
-                          Penurunan BB setelah HD
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {!isPoint32Complete(preWeight, postWeight, dryWeight) && (
-                    <p className="text-[11px] font-medium text-amber-600">
-                      Wajib mengisi kolom Berat Badan Datang, Berat Badan Pulang, dan Berat Badan Kering agar Poin 3.2 bernilai DIKERJAKAN.
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {/* Poin 3.3 */}
-              {renderSpoPointCard(
-                '3.3',
-                undefined,
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
-                    Tekanan Darah Pre HD (mmHg)
-                  </label>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      value={systolicBp}
-                      onChange={(e) => updateSystolicDiastolic(e.target.value, diastolicBp)}
-                      placeholder="Sistolik"
-                      className="w-36 sm:w-44 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                    />
-                    <span className="text-sm font-semibold text-slate-400">/</span>
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      value={diastolicBp}
-                      onChange={(e) => updateSystolicDiastolic(systolicBp, e.target.value)}
-                      placeholder="Diastolik"
-                      className="w-36 sm:w-44 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                    />
-                    <span className="text-xs font-semibold text-slate-500">mmHg</span>
-                    {(!systolicBp.trim() || !diastolicBp.trim()) && (
-                      <span className="text-[11px] font-medium text-amber-600">
-                        Wajib mengisi kedua kolom Sistolik dan Diastolik agar status ringkasan dikerjakan.
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Poin 3.4 */}
-              {renderSpoPointCard('3.4')}
-
-              {/* Poin 3.5 */}
-              {renderSpoPointCard(
-                '3.5',
-                undefined,
-                <div className="space-y-2">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-                    <div>
-                      <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
-                        Waktu Dialisis / Time
-                      </label>
-                      <div className="relative">
-                        <input
-                          type="text"
-                          value={dialysisDurationHours}
-                          onChange={(e) => handleDurationHoursChange(e.target.value)}
-                          className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-11 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                        />
-                        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
-                          Jam
-                        </span>
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
-                        Target UFG
-                      </label>
-                      <div className="relative">
-                        <input
-                          type="number"
-                          value={ufGoal}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setUfGoal(val);
-                            syncPoint35Checklist(dialysisDurationHours, val, bfr, dfr, loadingDose);
-                          }}
-                          className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-10 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                        />
-                        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
-                          mL
-                        </span>
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
-                        QB
-                      </label>
-                      <div className="relative">
-                        <input
-                          type="number"
-                          value={bfr}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setBfr(val);
-                            syncPoint35Checklist(dialysisDurationHours, ufGoal, val, dfr, loadingDose);
-                          }}
-                          className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-16 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                        />
-                        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
-                          mL/mnt
-                        </span>
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
-                        QD
-                      </label>
-                      <div className="relative">
-                        <input
-                          type="number"
-                          value={dfr}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setDfr(val);
-                            syncPoint35Checklist(dialysisDurationHours, ufGoal, bfr, val, loadingDose);
-                          }}
-                          className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-16 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                        />
-                        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
-                          mL/mnt
-                        </span>
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
-                        Dosis Heparin
-                      </label>
-                      <input
-                        type="text"
-                        value={loadingDose}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setLoadingDose(val);
-                          if (/free|bebas/i.test(val)) {
-                            setAnticoagulantType('Bebas Heparin');
-                          } else if (/lmwh/i.test(val)) {
-                            setAnticoagulantType('LMWH');
-                          } else if (val.trim()) {
-                            setAnticoagulantType('Heparin');
-                          }
-                          syncPoint35Checklist(dialysisDurationHours, ufGoal, bfr, dfr, val);
-                        }}
-                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                      />
-                    </div>
-                  </div>
-                  {!isPoint35Complete(dialysisDurationHours, ufGoal, bfr, dfr, loadingDose) && (
-                    <p className="text-[11px] font-medium text-amber-600">
-                      Wajib mengisi kolom Waktu Dialisis / Time, Target UFG, QB, QD, dan Dosis Heparin agar Poin 3.5 bernilai DIKERJAKAN.
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {/* Poin 3.6 */}
-              {renderSpoPointCard(
-                '3.6',
-                undefined,
-                <div className="space-y-3">
-                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50/40 px-3.5 py-2.5">
-                    <div className="min-w-0">
-                      <p className="text-xs font-bold text-slate-800">
-                        Perawat yang Melakukan Aksessing Vaskular
-                      </p>
-                      <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">
-                        Pilih perawat yang secara aktual melakukan kanulasi / aksessing vaskular pada pasien ini (nilai Laporan Pasien Poin 3 dalam masa/aksi perawat pelaksana aksessing setelah diverifikasi).
-                      </p>
-                    </div>
-                    <select
-                      value={vascularNurseId}
-                      onChange={(e) => setVascularNurseId(e.target.value)}
-                      className="w-full sm:w-64 shrink-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 focus:border-[#0e4e78] focus:outline-none"
-                    >
-                      {vascularNurseOptions.map((n) => (
-                        <option key={n.uid} value={n.uid}>
-                          {n.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    {/* CIMINO */}
-                    <div
-                      className={`rounded-lg border p-3 transition-colors ${
-                        selectedAccessOption === 'CIMINO'
-                          ? 'border-[#0e4e78] bg-[#0e4e78]/[0.03]'
-                          : 'border-slate-200 bg-white'
-                      }`}
-                    >
-                      <label className="flex items-center justify-between gap-2 mb-2.5 cursor-pointer">
-                        <span className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-800">
-                          <input
-                            type="checkbox"
-                            checked={selectedAccessOption === 'CIMINO'}
-                            onChange={() =>
-                              handleSelectVascularOption(
-                                selectedAccessOption === 'CIMINO' ? '' : 'CIMINO'
-                              )
-                            }
-                            className="h-3.5 w-3.5 rounded border-slate-300 text-[#0e4e78] focus:ring-[#0e4e78]"
+                          <CheckCircle2
+                            className={`h-4 w-4 shrink-0 ${
+                              epoGiven ? 'text-emerald-600' : 'text-slate-300'
+                            }`}
                           />
-                          <span>CIMINO</span>
-                        </span>
-                        <span className="text-[11px] font-medium text-slate-400">
-                          AV Shunt / Fistula
-                        </span>
-                      </label>
-                      <input
-                        type="text"
-                        value={ciminoNote}
-                        onChange={(e) => {
-                          setCiminoNote(e.target.value);
-                          if (e.target.value && selectedAccessOption !== 'CIMINO') {
-                            handleSelectVascularOption('CIMINO');
-                          }
-                        }}
-                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                      />
-                    </div>
-
-                    {/* CDL */}
-                    <div
-                      className={`rounded-lg border p-3 transition-colors ${
-                        selectedAccessOption === 'CDL'
-                          ? 'border-[#0e4e78] bg-[#0e4e78]/[0.03]'
-                          : 'border-slate-200 bg-white'
-                      }`}
-                    >
-                      <label className="flex items-center justify-between gap-2 mb-2.5 cursor-pointer">
-                        <span className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-800">
-                          <input
-                            type="checkbox"
-                            checked={selectedAccessOption === 'CDL'}
-                            onChange={() =>
-                              handleSelectVascularOption(
-                                selectedAccessOption === 'CDL' ? '' : 'CDL'
-                              )
-                            }
-                            className="h-3.5 w-3.5 rounded border-slate-300 text-[#0e4e78] focus:ring-[#0e4e78]"
-                          />
-                          <span>CDL</span>
-                        </span>
-                        <span className="text-[11px] font-medium text-slate-400">
-                          Catheter Double Lumen
-                        </span>
-                      </label>
-                      <input
-                        type="text"
-                        value={cdlNote}
-                        onChange={(e) => {
-                          setCdlNote(e.target.value);
-                          if (e.target.value && selectedAccessOption !== 'CDL') {
-                            handleSelectVascularOption('CDL');
-                          }
-                        }}
-                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                      />
-                    </div>
-
-                    {/* FEMORAL */}
-                    <div
-                      className={`rounded-lg border p-3 transition-colors ${
-                        selectedAccessOption === 'FEMORAL'
-                          ? 'border-[#0e4e78] bg-[#0e4e78]/[0.03]'
-                          : 'border-slate-200 bg-white'
-                      }`}
-                    >
-                      <label className="flex items-center justify-between gap-2 mb-2.5 cursor-pointer">
-                        <span className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-800">
-                          <input
-                            type="checkbox"
-                            checked={selectedAccessOption === 'FEMORAL'}
-                            onChange={() =>
-                              handleSelectVascularOption(
-                                selectedAccessOption === 'FEMORAL' ? '' : 'FEMORAL'
-                              )
-                            }
-                            className="h-3.5 w-3.5 rounded border-slate-300 text-[#0e4e78] focus:ring-[#0e4e78]"
-                          />
-                          <span>FEMORAL</span>
-                        </span>
-                        <span className="text-[11px] font-medium text-slate-400">
-                          Akses Vena Femoralis
-                        </span>
-                      </label>
-                      <input
-                        type="text"
-                        value={femoralNote}
-                        onChange={(e) => {
-                          setFemoralNote(e.target.value);
-                          if (e.target.value && selectedAccessOption !== 'FEMORAL') {
-                            handleSelectVascularOption('FEMORAL');
-                          }
-                        }}
-                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                      />
-                    </div>
-                  </div>
-                  {!selectedAccessOption && (
-                    <p className="text-[11px] font-medium text-amber-600">
-                      Wajib mencentang salah satu kolom akses vaskular (CIMINO, CDL, atau FEMORAL) agar Poin 3.6 bernilai DIKERJAKAN.
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* BAGIAN 4: Intra HD (Monitoring Selama Tindakan) */}
-          {step === 4 && (
-            <div className="space-y-3.5">
-              {/* Poin 4.1 */}
-              {renderSpoPointCard(
-                '4.1',
-                undefined,
-                <div className="space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50/40 px-3.5 py-2.5">
-                    <div className="flex items-center gap-1.5 text-xs">
-                      <Activity className="h-3.5 w-3.5 text-[#0e4e78]" />
-                      <span className="font-bold text-slate-800">
-                        Observasi Tanda-Tanda Vital (TTV) Intra HD
-                      </span>
-                      <span className="text-[11px] text-slate-400">
-                        ({intraObservations.length} Observasi)
-                      </span>
-                    </div>
-                    {!readOnly && (
-                      <button
-                        type="button"
-                        onClick={handleAddIntraObservation}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-[#0e4e78] px-3.5 py-2 text-[11px] font-bold uppercase tracking-wide text-white shadow-xs hover:bg-[#0a3c5d] transition-colors"
-                      >
-                        <Plus className="h-3.5 w-3.5" />
-                        <span>TAMBAH OBSERVASI TTV</span>
-                      </button>
-                    )}
-                  </div>
-
-                  {intraObservations.map((obs, idx) => (
-                    <div
-                      key={obs.id}
-                      className="rounded-lg border border-slate-200 bg-slate-50/40 p-3.5 space-y-2.5"
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 text-xs">
-                          <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#0e4e78] text-[11px] font-bold text-white">
-                            {idx + 1}
-                          </span>
-                          <span className="font-bold text-slate-800">
-                            Observasi TTV #{idx + 1}
-                          </span>
-                          <span className="text-[11px] text-slate-400">
-                            {idx === 0 ? '(Utama · Jam, TD & TTV)' : '(Observasi Lanjutan)'}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          {!readOnly && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                handleUpdateIntraObservation(obs.id, 'time', getCurrentTimeHHmm())
-                              }
-                              className="inline-flex items-center gap-1 text-[11px] font-semibold text-teal-600 hover:text-teal-700"
-                            >
-                              <Clock className="h-3 w-3" />
-                              <span>Jam Sekarang</span>
-                            </button>
-                          )}
-                          {!readOnly && idx > 0 && (
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveIntraObservation(obs.id)}
-                              className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-600 hover:text-rose-700"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                              <span>Hapus</span>
-                            </button>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="flex flex-wrap items-end gap-3">
-                        <div>
-                          <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                            Jam Observasi
-                          </label>
-                          <div className="relative">
-                            <input
-                              type="text"
-                              value={obs.time}
-                              onChange={(e) =>
-                                handleUpdateIntraObservation(obs.id, 'time', e.target.value)
-                              }
-                              className="w-40 sm:w-48 rounded-lg border border-slate-300 bg-white pl-3 pr-9 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                            />
-                            <Clock className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-                          </div>
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                            Tekanan Darah Intra HD{' '}
-                            <span className="text-slate-400 font-normal">(mmHg)</span>
-                            {idx === 0 && <span className="text-rose-600"> *</span>}
-                          </label>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <input
-                              type="text"
-                              inputMode="numeric"
-                              value={obs.systolic}
-                              onChange={(e) =>
-                                handleUpdateIntraObservation(obs.id, 'systolic', e.target.value)
-                              }
-                              placeholder="Sistolik"
-                              className="w-32 sm:w-40 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                            />
-                            <span className="text-sm font-semibold text-slate-400">/</span>
-                            <input
-                              type="text"
-                              inputMode="numeric"
-                              value={obs.diastolic}
-                              onChange={(e) =>
-                                handleUpdateIntraObservation(obs.id, 'diastolic', e.target.value)
-                              }
-                              placeholder="Diastolik"
-                              className="w-32 sm:w-40 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                            />
-                            <span className="text-xs font-semibold text-slate-500">mmHg</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
-                        <div>
-                          <label className="block text-[10px] font-semibold text-slate-500 mb-1">
-                            Nadi (x/mnt)
-                          </label>
-                          <input
-                            type="text"
-                            inputMode="numeric"
-                            value={obs.pulse || ''}
-                            onChange={(e) =>
-                              handleUpdateIntraObservation(obs.id, 'pulse', e.target.value)
-                            }
-                            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-semibold text-slate-500 mb-1">
-                            Napas / RR (x/mnt)
-                          </label>
-                          <input
-                            type="text"
-                            inputMode="numeric"
-                            value={obs.resp || ''}
-                            onChange={(e) =>
-                              handleUpdateIntraObservation(obs.id, 'resp', e.target.value)
-                            }
-                            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-semibold text-slate-500 mb-1">
-                            Suhu (°C)
-                          </label>
-                          <input
-                            type="text"
-                            inputMode="decimal"
-                            value={obs.temp || ''}
-                            onChange={(e) =>
-                              handleUpdateIntraObservation(obs.id, 'temp', e.target.value)
-                            }
-                            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-semibold text-slate-500 mb-1">
-                            SpO₂ (%)
-                          </label>
-                          <input
-                            type="text"
-                            inputMode="numeric"
-                            value={obs.spo2 || ''}
-                            onChange={(e) =>
-                              handleUpdateIntraObservation(obs.id, 'spo2', e.target.value)
-                            }
-                            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-
-                  {(!intraSystolicBp.trim() || !intraDiastolicBp.trim()) && (
-                    <p className="text-[11px] font-medium text-amber-600">
-                      Wajib mengisi kedua kolom Sistolik dan Diastolik pada Observasi #1 agar status logbook Poin 4.1 dikerjakan.
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {/* Poin 4.2 */}
-              {renderSpoPointCard('4.2')}
-
-              {/* Poin 4.3 */}
-              {renderSpoPointCard(
-                '4.3',
-                undefined,
-                <div className="space-y-3">
-                  <div className="flex flex-wrap items-center justify-end gap-2.5 rounded-lg border border-slate-200 bg-slate-50/40 px-3.5 py-2.5">
-                    {!readOnly && (
-                      <button
-                        type="button"
-                        onClick={handleAddComplicationIncident}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-[#0e4e78] px-3.5 py-2 text-[11px] font-bold uppercase tracking-wide text-white shadow-xs hover:bg-[#0a3c5d] transition-colors"
-                      >
-                        <Plus className="h-3.5 w-3.5" />
-                        <span>+ TAMBAH KOMPLIKASI</span>
-                      </button>
-                    )}
-
-                    <label
-                      className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold cursor-pointer transition-colors ${
-                        noComplication
-                          ? 'border-emerald-400 bg-emerald-50 text-emerald-800'
-                          : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={noComplication}
-                        onChange={(e) => handleToggleNoComplication(e.target.checked)}
-                        className="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                      />
-                      <span>Tidak Ada Komplikasi (Nihil)</span>
-                    </label>
-                  </div>
-
-                  {complicationIncidents.map((inc, idx) => {
-                    const inputMeta = getComplicationInputMeta(inc.type);
-                    const detailValue =
-                      inputMeta.field === 'bp' ? inc.bp : inc.clinicalDetail || '';
-                    return (
-                      <div
-                        key={inc.id}
-                        className="rounded-xl border border-amber-300 bg-amber-50/20 p-3.5 space-y-3"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2">
-                            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-orange-600 text-[11px] font-bold text-white">
-                              {idx + 1}
-                            </span>
-                            <span className="text-xs font-bold text-slate-900">
-                              Insiden Komplikasi #{idx + 1}
-                            </span>
-                            <span className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-500">
-                              Pukul {inc.time || '--:--'} WIB
-                            </span>
-                          </div>
-
-                          {!readOnly && (
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveComplicationIncident(inc.id)}
-                              className="inline-flex items-center gap-1 text-xs font-semibold text-rose-600 hover:text-rose-700"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                              <span>Hapus</span>
-                            </button>
-                          )}
-                        </div>
-
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                           <div>
-                            <label className="block text-[10px] font-bold uppercase tracking-wide text-slate-600 mb-1">
-                              PILIHAN KOMPLIKASI <span className="text-rose-600">*</span>
-                            </label>
-                            <select
-                              value={inc.type}
-                              onChange={(e) =>
-                                handleUpdateComplicationIncident(inc.id, 'type', e.target.value)
-                              }
-                              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 focus:border-[#0e4e78] focus:outline-none"
-                            >
-                              {INTRA_COMPLICATION_TYPES.map((opt) => (
-                                <option key={opt} value={opt}>
-                                  {opt}
-                                </option>
-                              ))}
-                              {!INTRA_COMPLICATION_TYPES.includes(inc.type) && inc.type && (
-                                <option value={inc.type}>{inc.type}</option>
-                              )}
-                            </select>
+                            <p className="font-bold text-slate-900">Diberikan EPO</p>
+                            <p className="text-[11px] text-slate-500">
+                              Pasien mendapatkan terapi injeksi Eritropoietin (EPO).
+                            </p>
                           </div>
+                        </button>
+                      </div>
 
-                          <div>
-                            <div className="flex items-center justify-between mb-1">
-                              <label className="text-[10px] font-bold uppercase tracking-wide text-slate-600">
-                                JAM KEJADIAN
+                      {epoGiven && (
+                        <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-4 space-y-3.5">
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            <div>
+                              <label className="block text-[11px] font-semibold text-slate-700 mb-1.5">
+                                Jenis / Nama Preparat EPO <span className="text-rose-500">*</span>
                               </label>
-                              {!readOnly && (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    handleUpdateComplicationIncident(
-                                      inc.id,
-                                      'time',
-                                      getCurrentTimeHHmm()
-                                    )
-                                  }
-                                  className="text-[11px] font-semibold text-[#0e4e78] hover:underline"
-                                >
-                                  Sekarang
-                                </button>
-                              )}
-                            </div>
-                            <div className="relative">
                               <input
                                 type="text"
-                                value={inc.time}
-                                onChange={(e) =>
-                                  handleUpdateComplicationIncident(inc.id, 'time', e.target.value)
-                                }
-                                className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-8 py-2 font-mono text-xs font-semibold text-slate-800 focus:border-[#0e4e78] focus:outline-none"
+                                list="epo-preparations-list"
+                                value={epoPreparation}
+                                onChange={(e) => setEpoPreparation(e.target.value)}
+                                placeholder="cth: Epoetin Alfa"
+                                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none"
                               />
-                              <Clock className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                              <datalist id="epo-preparations-list">
+                                <option value="Epoetin Alfa" />
+                                <option value="Epoetin Beta" />
+                                <option value="Darbepoetin Alfa" />
+                                <option value="Methoxy Polyethylene Glycol-Epoetin Beta" />
+                              </datalist>
+                            </div>
+
+                            <div>
+                              <label className="block text-[11px] font-semibold text-slate-700 mb-1.5">
+                                Dosis Pemberian <span className="text-rose-500">*</span>
+                              </label>
+                              <input
+                                type="text"
+                                value={epoDose}
+                                onChange={(e) => setEpoDose(e.target.value)}
+                                placeholder="cth: 3000 IU"
+                                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none"
+                              />
+                            </div>
+
+                            <div>
+                              <label className="block text-[11px] font-semibold text-slate-700 mb-1.5">
+                                Rute Pemberian
+                              </label>
+                              <select
+                                value={epoRoute}
+                                onChange={(e) => setEpoRoute(e.target.value)}
+                                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-800 focus:border-emerald-500 focus:outline-none"
+                              >
+                                <option value="Subkutan (SC)">Subkutan (SC)</option>
+                                <option value="Intravena (IV)">Intravena (IV)</option>
+                                <option value="Intra-Dialyzer / Venous Line">
+                                  Intra-Dialyzer / Venous Line
+                                </option>
+                              </select>
                             </div>
                           </div>
 
                           <div>
-                            <label className="block text-[10px] font-bold uppercase tracking-wide text-slate-600 mb-1">
-                              {inputMeta.label}
-                              {inputMeta.unit && (
-                                <span className="normal-case font-normal"> {inputMeta.unit}</span>
-                              )}{' '}
-                              {inputMeta.required && <span className="text-rose-600">*</span>}
+                            <label className="block text-[11px] font-semibold text-slate-700 mb-1.5">
+                              Keterangan / Catatan Pemberian EPO
                             </label>
-                            <input
-                              type="text"
-                              value={detailValue}
-                              onChange={(e) =>
-                                handleUpdateComplicationIncident(
-                                  inc.id,
-                                  inputMeta.field,
-                                  e.target.value
-                                )
-                              }
-                              placeholder={inputMeta.placeholder}
-                              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                            />
-                          </div>
-
-                          <div>
-                            <label className="block text-[10px] font-bold uppercase tracking-wide text-slate-600 mb-1">
-                              KOLOM ADVIS DOKTER (TBAK)
-                            </label>
-                            <input
-                              type="text"
-                              value={inc.doctorAdvice}
-                              onChange={(e) =>
-                                handleUpdateComplicationIncident(
-                                  inc.id,
-                                  'doctorAdvice',
-                                  e.target.value
-                                )
-                              }
-                              placeholder={inputMeta.advicePlaceholder}
-                              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                            <textarea
+                              rows={2}
+                              value={epoNote}
+                              onChange={(e) => setEpoNote(e.target.value)}
+                              placeholder="Jam injeksi, lokasi penyuntikan, atau catatan respon pasien..."
+                              className="w-full rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none"
                             />
                           </div>
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+                      )}
 
-              {/* Poin 4.4 */}
-              {renderSpoPointCard('4.4')}
-            </div>
-          )}
-
-          {/* BAGIAN 5: Edukasi Pasien & Keluarga */}
-          {step === 5 && (
-            <div className="space-y-3.5">
-              {renderSpoPointCard('5.1')}
-              {renderSpoPointCard('5.2')}
-              {renderSpoPointCard('5.3')}
-              {renderSpoPointCard('5.4')}
-              {renderSpoPointCard('5.5')}
-            </div>
-          )}
-
-          {/* BAGIAN 6: Post HD (Pengakhiran & Evaluasi) */}
-          {step === 6 && (
-            <div className="space-y-3.5">
-              {/* Poin 6.1 */}
-              {renderSpoPointCard('6.1')}
-
-              {/* Poin 6.2 */}
-              {renderSpoPointCard('6.2')}
-
-              {/* Poin 6.3 */}
-              {renderSpoPointCard(
-                '6.3',
-                undefined,
-                <div className="space-y-2.5">
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div>
-                      <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
-                        Tekanan Darah Post HD <span className="text-slate-400 font-normal">(mmHg)</span>
-                      </label>
-                      <input
-                        type="text"
-                        value={postBp}
-                        onChange={(e) => updatePostHdEvaluation(e.target.value, ufAchieved, ktv)}
-                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="flex flex-wrap items-center justify-between gap-1.5 text-[11px] font-semibold text-slate-600 mb-1.5">
-                        <span>
-                          Nilai UFG Tercapai <span className="text-slate-400 font-normal">(mL)</span>
-                        </span>
-                        <span className="text-[10px] font-semibold text-[#0e4e78]">
-                          Target UFG: {ufGoal.trim() ? `${ufGoal.trim()} mL` : '-'}
-                        </span>
-                      </label>
-                      <input
-                        type="number"
-                        value={ufAchieved}
-                        onChange={(e) => updatePostHdEvaluation(postBp, e.target.value, ktv)}
-                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
-                        KT/V <span className="text-slate-400 font-normal">(Adekuasi HD)</span>
-                      </label>
-                      <input
-                        type="text"
-                        value={ktv}
-                        onChange={(e) => updatePostHdEvaluation(postBp, ufAchieved, e.target.value)}
-                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                      />
+                      {extra72Blocks}
                     </div>
                   </div>
+                )}
 
-                  {(!postBp.trim() || !ufAchieved.trim() || !ktv.trim()) && (
-                    <p className="text-[11px] font-medium text-amber-600">
-                      Wajib mengisi semua kolom (Tekanan Darah Post HD, Nilai UFG Tercapai, dan KT/V) agar status logbook Poin 6.3 dikerjakan.
-                    </p>
-                  )}
-                </div>
-              )}
+                {extraStep7Points.map((pt) => {
+                  const ptBlocks = renderTtvAndCustomFields(pt.id, pt);
+                  return (
+                    <div
+                      key={pt.id}
+                      className="rounded-xl border border-slate-200/90 bg-white overflow-hidden"
+                    >
+                      <div className="border-b border-slate-100 px-5 py-4 space-y-1">
+                        <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                          <span className="font-bold text-slate-800">Poin {pt.id}</span>
+                          <span className="text-slate-300" aria-hidden="true">·</span>
+                          <span className="font-semibold text-[#0e4e78]">{pt.category}</span>
+                        </div>
+                        <h5 className="text-[13px] font-bold text-slate-900 leading-snug">
+                          {pt.statement}
+                        </h5>
+                        {pt.description && (
+                          <p className="text-[11px] text-slate-500 leading-relaxed">
+                            {pt.description}
+                          </p>
+                        )}
+                        {pt.standard && (
+                          <p className="text-[11px] text-slate-400">
+                            <span className="font-semibold text-slate-500">Standar:</span>{' '}
+                            {pt.standard}
+                          </p>
+                        )}
+                      </div>
+                      {ptBlocks && <div className="p-5 text-xs">{ptBlocks}</div>}
+                    </div>
+                  );
+                })}
 
-              {/* Poin 6.4 */}
-              {renderSpoPointCard('6.4')}
+                {sec7Blocks && (
+                  <div className="rounded-xl border border-slate-200/90 bg-white overflow-hidden">
+                    <div className="border-b border-slate-100 px-5 py-3.5">
+                      <h5 className="text-[13px] font-bold text-slate-900">
+                        Kolom Tambahan Bagian 7
+                      </h5>
+                      <p className="mt-0.5 text-[11px] text-slate-500">
+                        Kolom penginputan khusus yang dikonfigurasi pada Master Logbook untuk Bagian 7.
+                      </p>
+                    </div>
+                    <div className="p-5 text-xs">{sec7Blocks}</div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
-              {/* Poin 6.5 */}
-              {renderSpoPointCard('6.5')}
-            </div>
-          )}
-
-          {/* BAGIAN 7: Pengajuan Verifikasi */}
-          {step === 7 && (
+          {/* BAGIAN 8: Pengajuan Verifikasi */}
+          {step === 8 && (
             <div className="space-y-4">
               {/* Card 1: Rekapitulasi Kelengkapan Logbook Pasien */}
               <div className="rounded-xl border border-slate-200/90 bg-white overflow-hidden">
@@ -4620,7 +5871,7 @@ export function LogbookWizardModal({
                       ({selectedMachine?.machineNumber || 'BED HD'})
                     </h4>
                     <p className="text-[11px] text-slate-500 mt-0.5">
-                      Klik tombol Tinjau untuk memeriksa atau melengkapi indikator SPO Bagian I - VI pasien ini sebelum pengajuan verifikasi.
+                      Klik tombol Tinjau untuk memeriksa atau melengkapi indikator SPO dan data Bagian I - VII pasien ini sebelum pengajuan verifikasi.
                     </p>
                   </div>
 
@@ -4635,72 +5886,77 @@ export function LogbookWizardModal({
                     <thead>
                       <tr className="border-b border-slate-200/80 bg-slate-50/60 text-[11px] font-medium text-slate-500">
                         <th className="px-5 py-2.5 font-medium">Bagian Logbook</th>
-                        <th className="px-4 py-2.5 font-medium">Cakupan Standar SPO</th>
-                        <th className="px-4 py-2.5 text-right font-medium">Capaian SPO</th>
+                        <th className="px-4 py-2.5 font-medium">Cakupan Standar SPO / Data</th>
+                        <th className="px-4 py-2.5 text-right font-medium">Capaian / Status</th>
                         <th className="px-5 py-2.5 text-right font-medium">Aksi</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-xs">
-                      {[
-                        {
-                          stepNum: 1,
-                          roman: 'BAGIAN I',
-                          scope: 'Kesiapan Fasilitas Ruangan & Water Treatment (RO)',
-                        },
-                        {
-                          stepNum: 2,
-                          roman: 'BAGIAN II',
-                          scope: 'Persiapan Perawat, Mesin HD & Alkes (Pre-HD)',
-                        },
-                        {
-                          stepNum: 3,
-                          roman: 'BAGIAN III',
-                          scope: 'Identifikasi Pasien, Pengkajian Pre-HD & Keselamatan',
-                        },
-                        {
-                          stepNum: 4,
-                          roman: 'BAGIAN IV',
-                          scope: 'Monitoring Intra-HD & Pencegahan IKP',
-                        },
-                        {
-                          stepNum: 5,
-                          roman: 'BAGIAN V',
-                          scope: 'Edukasi Terstruktur Pasien & Keluarga',
-                        },
-                        {
-                          stepNum: 6,
-                          roman: 'BAGIAN VI',
-                          scope: 'Terminasi Aman, Evaluasi Post-HD & Dokumentasi',
-                        },
-                      ].map((row) => {
-                        const pts = SPO_POINTS.filter((p) => p.step === row.stepNum);
-                        const doneCount = pts.filter(
-                          (p) => spoChecklist[p.id] === 'DIKERJAKAN'
-                        ).length;
-                        const totalCount = pts.length;
-                        const pct =
-                          totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
-                        const allDone = totalCount > 0 && doneCount === totalCount;
+                      {activeSections
+                        .filter((s) => s.num >= 1 && s.num <= 6 && s.visible !== false)
+                        .map((sec) => {
+                          const pts = activeSpoPoints.filter((p) => p.step === sec.num);
+                          const doneCount = pts.filter(
+                            (p) => spoChecklist[p.id] === 'DIKERJAKAN'
+                          ).length;
+                          const totalCount = pts.length;
+                          const pct =
+                            totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
+                          const allDone = totalCount > 0 && doneCount === totalCount;
 
+                          return (
+                            <tr key={sec.num} className="hover:bg-slate-50/70 transition-colors">
+                              <td className="px-5 py-3 font-bold text-[#0e4e78] text-[11px] whitespace-nowrap">
+                                {sec.roman}
+                              </td>
+                              <td className="px-4 py-3 text-slate-700">{sec.scope}</td>
+                              <td
+                                className={`px-4 py-3 text-right font-mono text-[11px] font-bold tabular-nums whitespace-nowrap ${
+                                  allDone ? 'text-emerald-600' : 'text-amber-600'
+                                }`}
+                              >
+                                {doneCount}/{totalCount} SPO ({pct}%)
+                              </td>
+                              <td className="px-5 py-3 text-right whitespace-nowrap">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setErrorMsg(null);
+                                    setStep(sec.num);
+                                  }}
+                                  className="text-[11px] font-semibold text-[#0e4e78] hover:underline"
+                                >
+                                  Tinjau
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      {(() => {
+                        const sec7 = activeSections.find((s) => s.num === 7);
+                        if (sec7 && sec7.visible === false) return null;
                         return (
-                          <tr key={row.stepNum} className="hover:bg-slate-50/70 transition-colors">
+                          <tr className="hover:bg-slate-50/70 transition-colors">
                             <td className="px-5 py-3 font-bold text-[#0e4e78] text-[11px] whitespace-nowrap">
-                              {row.roman}
+                              {sec7?.roman || 'BAGIAN VII'}
                             </td>
-                            <td className="px-4 py-3 text-slate-700">{row.scope}</td>
-                            <td
-                              className={`px-4 py-3 text-right font-mono text-[11px] font-bold tabular-nums whitespace-nowrap ${
-                                allDone ? 'text-emerald-600' : 'text-amber-600'
-                              }`}
-                            >
-                              {doneCount}/{totalCount} SPO ({pct}%)
+                            <td className="px-4 py-3 text-slate-700">
+                              {sec7?.scope || 'Pemberian Transfusi Darah & Terapi EPO'}
+                            </td>
+                            <td className="px-4 py-3 text-right font-mono text-[11px] font-bold text-emerald-600 whitespace-nowrap">
+                              Transfusi:{' '}
+                              {transfusionGiven
+                                ? `${transfusionBagCount || '1'} kolf ${transfusionComponent.split(' ')[0]}`
+                                : 'Tidak'}{' '}
+                              · EPO:{' '}
+                              {epoGiven ? epoDose.trim() || epoPreparation || 'Ya' : 'Tidak'}
                             </td>
                             <td className="px-5 py-3 text-right whitespace-nowrap">
                               <button
                                 type="button"
                                 onClick={() => {
                                   setErrorMsg(null);
-                                  setStep(row.stepNum);
+                                  setStep(7);
                                 }}
                                 className="text-[11px] font-semibold text-[#0e4e78] hover:underline"
                               >
@@ -4709,7 +5965,7 @@ export function LogbookWizardModal({
                             </td>
                           </tr>
                         );
-                      })}
+                      })()}
                     </tbody>
                   </table>
                 </div>
@@ -4891,7 +6147,7 @@ export function LogbookWizardModal({
                     className="mt-0.5 sm:mt-0 h-4 w-4 shrink-0 rounded border-slate-300 text-[#0e4e78] focus:ring-[#0e4e78]"
                   />
                   <span className="text-xs font-medium text-slate-700 leading-snug">
-                    Seluruh pengisian indikator SPO Bagian I–VI untuk pasien{' '}
+                    Seluruh pengisian indikator SPO dan data asuhan Bagian I–VII untuk pasien{' '}
                     {selectedPatient ? selectedPatient.fullName.toUpperCase() : '-'} telah diperiksa dan siap diajukan untuk diverifikasi oleh{' '}
                     {targetVerifierRole === 'Kepala Ruang' ? 'Kepala Ruang' : 'PJ Shift'}.
                   </span>
@@ -4918,7 +6174,7 @@ export function LogbookWizardModal({
 
           {readOnly &&
             verifierReview &&
-            step === 7 &&
+            step === 8 &&
             editingEntry?.verificationStatus !== 'Approved' && (
               <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 shadow-xs space-y-2">
                 <label className="block text-xs font-semibold text-slate-700">
@@ -4969,10 +6225,10 @@ export function LogbookWizardModal({
             {readOnly ? (
               verifierReview && editingEntry?.verificationStatus !== 'Approved' ? (
                 <>
-                  {step < 7 && (
+                  {step < 8 && (
                     <button
                       type="button"
-                      onClick={() => setStep((s) => Math.min(7, s + 1))}
+                      onClick={() => setStep((s) => Math.min(8, s + 1))}
                       className="inline-flex items-center gap-1.5 rounded-lg bg-[#0e4e78] px-4 py-2 text-xs font-semibold text-white hover:bg-[#093b5c] transition-colors"
                     >
                       Bagian {step + 1}
@@ -4998,10 +6254,10 @@ export function LogbookWizardModal({
                     Setujui &amp; Validasi
                   </button>
                 </>
-              ) : step < 7 ? (
+              ) : step < 8 ? (
                 <button
                   type="button"
-                  onClick={() => setStep((s) => Math.min(7, s + 1))}
+                  onClick={() => setStep((s) => Math.min(8, s + 1))}
                   className="inline-flex items-center gap-1.5 rounded-lg bg-[#0e4e78] px-4 py-2 text-xs font-semibold text-white hover:bg-[#093b5c] transition-colors"
                 >
                   Bagian {step + 1}
@@ -5032,7 +6288,7 @@ export function LogbookWizardModal({
                   {saving ? 'Menyimpan Perubahan...' : 'Simpan Perubahan Logbook'}
                 </button>
 
-                {step < 7 && (
+                {step < 8 && (
                   <button
                     type="button"
                     onClick={handleNextStep}
@@ -5061,12 +6317,12 @@ export function LogbookWizardModal({
                     : 'Simpan sebagai Draft'}
                 </button>
 
-                {step < 7 ? (
+                {step < 8 ? (
                   <button
                     type="button"
                     disabled={saving}
                     onClick={() => {
-                      void handleSwitchStep(Math.min(7, step + 1), { validateCurrent: true });
+                      void handleSwitchStep(Math.min(8, step + 1), { validateCurrent: true });
                     }}
                     className="inline-flex items-center gap-1.5 rounded-lg bg-[#0e4e78] px-4 py-2 text-xs font-semibold text-white hover:bg-[#093b5c] transition-colors disabled:opacity-60"
                   >
@@ -5081,7 +6337,7 @@ export function LogbookWizardModal({
                     onClick={() => handleSave('Pending')}
                     className="inline-flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-xs font-semibold text-white hover:bg-teal-700 disabled:opacity-60"
                   >
-                    {step === 7 ? <Send className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
+                    {step === 8 ? <Send className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
                     {saving ? 'Mengajukan...' : 'Ajukan Verifikasi'}
                   </button>
                 )}

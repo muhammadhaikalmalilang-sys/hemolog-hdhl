@@ -9,6 +9,7 @@ import type {
   ActionCategory,
   Doctor,
   LogbookEntry,
+  LogbookFormTemplate,
   Machine,
   MachineLock,
   Patient,
@@ -25,6 +26,7 @@ interface HistoryPageProps {
   actionCategories?: ActionCategory[];
   staffDirectory?: StaffDirectoryEntry[];
   machineLocks?: MachineLock[];
+  formTemplate?: LogbookFormTemplate;
 }
 
 export function HistoryPage({
@@ -36,6 +38,7 @@ export function HistoryPage({
   actionCategories = [],
   staffDirectory = [],
   machineLocks = [],
+  formTemplate,
 }: HistoryPageProps) {
   const { userProfile } = useAuth();
   const { todayDate: liveTodayDate } = useLiveClock();
@@ -264,7 +267,7 @@ export function HistoryPage({
                             type="button"
                             onClick={() => setDetailEntryId(item.id)}
                             className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-colors"
-                            title="Lihat Detail Logbook Lengkap (Bagian 1–7)"
+                            title="Lihat Detail Logbook Lengkap (Bagian 1–8)"
                           >
                             <Eye className="h-3.5 w-3.5" />
                             Detail
@@ -328,6 +331,7 @@ export function HistoryPage({
           actionCategories={actionCategories}
           staffDirectory={staffDirectory}
           machineLocks={machineLocks}
+          formTemplate={formTemplate}
           onClose={() => setDetailEntryId(null)}
         />
       )}

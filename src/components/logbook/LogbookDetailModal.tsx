@@ -3,6 +3,7 @@ import type {
   ActionCategory,
   Doctor,
   LogbookEntry,
+  LogbookFormTemplate,
   LogbookLock,
   Machine,
   MachineLock,
@@ -21,6 +22,7 @@ interface LogbookDetailModalProps {
   machines?: Machine[];
   actionCategories?: ActionCategory[];
   staffDirectory?: StaffDirectoryEntry[];
+  formTemplate?: LogbookFormTemplate;
 }
 
 export function LogbookDetailModal({
@@ -34,6 +36,7 @@ export function LogbookDetailModal({
   machines = [],
   actionCategories = [],
   staffDirectory = [],
+  formTemplate,
 }: LogbookDetailModalProps) {
   return (
     <LogbookWizardModal
@@ -54,6 +57,7 @@ export function LogbookDetailModal({
       machines={machines}
       actionCategories={actionCategories}
       staffDirectory={staffDirectory}
+      formTemplate={formTemplate}
       onClose={onClose}
     />
   );

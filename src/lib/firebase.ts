@@ -1,11 +1,13 @@
 import { initializeApp, getApps, deleteApp, type FirebaseApp } from 'firebase/app';
 import { getAuth, type Auth } from 'firebase/auth';
 import {
-  getFirestore,
   initializeFirestore,
+  getFirestore,
   persistentLocalCache,
   persistentMultipleTabManager,
+  memoryLocalCache,
   enableNetwork,
+  disableNetwork,
   doc,
   getDocFromServer,
   type Firestore,
@@ -27,25 +29,42 @@ const firebaseConfig = envApiKey
   : firebaseAppletConfig;
 
 const app: FirebaseApp = getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig);
+const activeDatabaseId = firebaseConfig.firestoreDatabaseId || '(default)';
 
-function createFirestoreInstance(): Firestore {
+function createFirestoreInstance(targetApp: FirebaseApp, databaseId: string): Firestore {
   try {
     return initializeFirestore(
-      app,
+      targetApp,
       {
         localCache: persistentLocalCache({
           tabManager: persistentMultipleTabManager(),
         }),
       },
-      firebaseConfig.firestoreDatabaseId
+      databaseId
     );
-  } catch {
-    // Fallback if Firestore was already initialized (e.g., module hot reload or multiple imports)
-    return getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+    if (message.includes('already been called') || message.includes('already exists')) {
+      return getFirestore(targetApp, databaseId);
+    }
+    console.warn(
+      'persistentLocalCache tidak tersedia, beralih ke memoryLocalCache:',
+      error
+    );
+    try {
+      return initializeFirestore(
+        targetApp,
+        { localCache: memoryLocalCache() },
+        databaseId
+      );
+    } catch {
+      return getFirestore(targetApp, databaseId);
+    }
   }
 }
 
-export const db: Firestore = createFirestoreInstance();
+export const db: Firestore = createFirestoreInstance(app, activeDatabaseId);
 export const auth: Auth = getAuth(app);
 
 export const ACTIVE_FIREBASE_PROJECT_ID: string = firebaseConfig.projectId;
@@ -153,69 +172,162 @@ export function isTransientFirestoreError(error: unknown): boolean {
   );
 }
 
-export async function testConnection(): Promise<void> {
+export async function testConnection(): Promise<boolean> {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
+    return true;
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
       console.error('Please check your Firebase configuration. Firestore client is offline.');
+      return false;
     }
+    return !isTransientFirestoreError(error);
   }
 }
 
-const reconnectListeners = new Set<() => void>();
+export type ReconnectReason = 'online' | 'visibilitychange' | 'focus' | 'error' | 'manual';
 
-export function onFirestoreReconnect(listener: () => void): () => void {
+export interface ReconnectEvent {
+  reason: ReconnectReason;
+  shouldResubscribe: boolean;
+}
+
+export interface ReconnectOptions {
+  force?: boolean;
+  hardReset?: boolean;
+  resubscribe?: boolean;
+  reason?: ReconnectReason;
+}
+
+const reconnectListeners = new Set<(event: ReconnectEvent) => void>();
+
+export function onFirestoreReconnect(listener: (event: ReconnectEvent) => void): () => void {
   reconnectListeners.add(listener);
   return () => {
     reconnectListeners.delete(listener);
   };
 }
 
+const RECONNECT_COOLDOWN_MS = 2000;
+const RESUBSCRIBE_COOLDOWN_MS = 4000;
+
 let lastReconnectAt = 0;
+let lastResubscribeAt = 0;
+let lastHiddenAt = 0;
+let wasOffline = typeof navigator !== 'undefined' ? !navigator.onLine : false;
 let reconnectPromise: Promise<void> | null = null;
 
-export async function reconnectFirestore(force = false): Promise<void> {
+export async function reconnectFirestore(
+  forceOrOptions: boolean | ReconnectOptions = false
+): Promise<void> {
+  const opts: ReconnectOptions =
+    typeof forceOrOptions === 'boolean'
+      ? {
+          force: forceOrOptions,
+          hardReset: forceOrOptions,
+          resubscribe: true,
+          reason: forceOrOptions ? 'manual' : 'focus',
+        }
+      : forceOrOptions;
+
+  const force = Boolean(opts.force);
+  const hardReset = Boolean(opts.hardReset);
+  const wantResubscribe = opts.resubscribe ?? true;
+  const reason: ReconnectReason = opts.reason ?? (force ? 'manual' : 'focus');
+
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    wasOffline = true;
     return;
   }
+
   const now = Date.now();
-  if (!force && now - lastReconnectAt < 2500) {
-    return reconnectPromise ?? Promise.resolve();
+  if (reconnectPromise) {
+    return reconnectPromise;
   }
+  if (!force && now - lastReconnectAt < RECONNECT_COOLDOWN_MS) {
+    return Promise.resolve();
+  }
+
   lastReconnectAt = now;
-  reconnectPromise = (async () => {
+  const hadOfflineGap = wasOffline;
+  const task = (async () => {
     try {
+      if (hardReset) {
+        await disableNetwork(db).catch(() => undefined);
+      }
       await enableNetwork(db).catch(() => undefined);
-      await testConnection();
+      const reachable = await testConnection();
+      if (!reachable && !hardReset && (hadOfflineGap || reason === 'online' || reason === 'error')) {
+        await disableNetwork(db).catch(() => undefined);
+        await enableNetwork(db).catch(() => undefined);
+        await testConnection();
+      }
+      wasOffline = false;
     } finally {
+      reconnectPromise = null;
+      const doneAt = Date.now();
+      const shouldResubscribe =
+        wantResubscribe &&
+        (force ||
+          hadOfflineGap ||
+          reason === 'online' ||
+          reason === 'manual' ||
+          reason === 'error' ||
+          doneAt - lastResubscribeAt >= RESUBSCRIBE_COOLDOWN_MS);
+      if (shouldResubscribe) {
+        lastResubscribeAt = doneAt;
+      }
       reconnectListeners.forEach((cb) => {
         try {
-          cb();
+          cb({ reason, shouldResubscribe });
         } catch {
           // Ignore callback error
         }
       });
     }
   })();
-  return reconnectPromise;
+
+  reconnectPromise = task;
+  return task;
 }
 
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+  window.addEventListener('offline', () => {
+    wasOffline = true;
+  });
   window.addEventListener('online', () => {
-    void reconnectFirestore(true);
+    void reconnectFirestore({
+      force: true,
+      hardReset: wasOffline,
+      resubscribe: true,
+      reason: 'online',
+    });
   });
   window.addEventListener('focus', () => {
-    void reconnectFirestore(false);
+    void reconnectFirestore({
+      force: wasOffline,
+      resubscribe: true,
+      reason: 'focus',
+    });
   });
   document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      lastHiddenAt = Date.now();
+      return;
+    }
     if (document.visibilityState === 'visible') {
-      void reconnectFirestore(false);
+      const hiddenDuration = lastHiddenAt > 0 ? Date.now() - lastHiddenAt : 0;
+      const staleBackground = hiddenDuration >= 15000;
+      void reconnectFirestore({
+        force: wasOffline || staleBackground,
+        resubscribe: true,
+        reason: 'visibilitychange',
+      });
     }
   });
 }
 
-testConnection();
+void testConnection();
 
 /**
  * Secondary Firebase app instance for Administrator account provisioning

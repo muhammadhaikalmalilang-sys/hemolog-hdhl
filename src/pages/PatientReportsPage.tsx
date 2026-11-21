@@ -16,6 +16,7 @@ import { LogbookDetailModal } from '../components/logbook/LogbookDetailModal';
 import { VerificationBadge } from '../components/ui/StatusBadge';
 import type {
   LogbookEntry,
+  LogbookFormTemplate,
   Machine,
   Patient,
   PjShiftAssignmentEntry,
@@ -31,6 +32,7 @@ interface PatientReportsPageProps {
   machines?: Machine[];
   staffDirectory?: StaffDirectoryEntry[];
   pjShiftAssignments?: PjShiftAssignmentEntry[];
+  formTemplate?: LogbookFormTemplate;
 }
 
 function calcDurationHours(startTime: string, endTime: string): number | null {
@@ -77,6 +79,7 @@ export function PatientReportsPage({
   machines = [],
   staffDirectory = [],
   pjShiftAssignments = [],
+  formTemplate,
 }: PatientReportsPageProps) {
   const { userProfile } = useAuth();
   const sheetRef = useRef<HTMLDivElement>(null);
@@ -238,13 +241,14 @@ export function PatientReportsPage({
 
   // Build normalized table rows aligned to PDF layout
   const tableRows = useMemo(() => {
-    return filteredServices.map((s, idx) => {
+    return filteredServices.map((s) => {
       const pat = patientMap.get(s.patientId);
       const mach = machineMap.get(s.machineId);
       const sec2 = s.wizardDetails?.section2;
       const sec3 = s.wizardDetails?.section3;
       const sec4 = s.wizardDetails?.section4;
       const sec6 = s.wizardDetails?.section6;
+      const sec7 = s.wizardDetails?.section7;
 
       const parsedSec3Duration = sec3?.dialysisDurationHours
         ? Number(String(sec3.dialysisDurationHours).replace(',', '.'))
@@ -263,7 +267,9 @@ export function PatientReportsPage({
           (/icu|bangsal|ranap|rawat inap/i.test(s.patientName) ||
             /rawat inap|cito/i.test(s.actionCategory) ||
             /rawat inap/i.test(pat?.notes || '')));
-      const statusRawat = sec3?.serviceStatus || (isInpatient ? 'Rawat Inap' : 'Rawat Jalan');
+      const rawStatus = sec3?.serviceStatus || (isInpatient ? 'Rawat Inap' : 'Rawat Jalan');
+      const statusRawat =
+        rawStatus === 'Rawat Inap' ? 'RI' : rawStatus === 'Rawat Jalan' ? 'RJ' : rawStatus;
 
       const roomCategory =
         sec3?.patientCategory ||
@@ -272,7 +278,31 @@ export function PatientReportsPage({
 
       const bedMachine = s.machineNumber || mach?.machineNumber || '-';
 
-      const dialyzer = sec3?.dialyzerType || 'High Flux';
+      const accessLabel =
+        s.vascularAccess === 'CDL' || s.vascularAccess === 'CVC'
+          ? 'CDL'
+          : s.vascularAccess === 'Femoral'
+          ? 'FEMORAL'
+          : s.vascularAccess === 'AV Fistula' || s.vascularAccess === 'AV Shunt'
+          ? 'CIMINO'
+          : s.vascularAccess || '-';
+      const accessNote =
+        accessLabel === 'CDL'
+          ? sec3?.cdlNote?.trim() || sec3?.accessDetailNote?.trim() || ''
+          : accessLabel === 'FEMORAL'
+          ? sec3?.femoralNote?.trim() || sec3?.accessDetailNote?.trim() || ''
+          : accessLabel === 'CIMINO'
+          ? sec3?.ciminoNote?.trim() || sec3?.accessDetailNote?.trim() || ''
+          : sec3?.accessDetailNote?.trim() || '';
+      const isAccessChecked = s.wizardDetails?.spoChecklist?.['3.6']
+        ? s.wizardDetails.spoChecklist['3.6'] === 'DIKERJAKAN'
+        : Boolean(s.vascularAccess);
+      const vascularAccessLabel = isAccessChecked ? accessLabel : '-';
+      const vascularAccessNote = isAccessChecked ? accessNote : '';
+      const vascularAccessDisplay = vascularAccessNote
+        ? `${vascularAccessLabel} (${vascularAccessNote})`
+        : vascularAccessLabel;
+
       const heparinDisplay =
         sec2?.loadingDose && s.heparinType !== 'Bebas Heparin'
           ? `${s.heparinType} (${sec2.loadingDose})`
@@ -332,17 +362,65 @@ export function PatientReportsPage({
       const compTime = compTimeLines.join(', ');
       const dpjpAdviceDisplay = dpjpAdviceLines.join('; ');
 
+      const transfusionGiven = sec7 ? sec7.transfusionGiven : null;
+      const transfusionParts: string[] = [];
+      if (sec7?.transfusionGiven) {
+        if (sec7.transfusionComponent?.trim()) {
+          const countPart = sec7.transfusionBagCount?.trim() ? ` ${sec7.transfusionBagCount.trim()} kolf` : '';
+          transfusionParts.push(`${sec7.transfusionComponent.trim()}${countPart}`);
+        } else if (sec7.transfusionBagCount?.trim()) {
+          transfusionParts.push(`${sec7.transfusionBagCount.trim()} kolf`);
+        }
+        if (sec7.transfusionBloodGroup?.trim()) {
+          transfusionParts.push(`Gol. ${sec7.transfusionBloodGroup.trim()}`);
+        }
+        if (sec7.transfusionVolumeMl?.trim()) {
+          transfusionParts.push(sec7.transfusionVolumeMl.trim());
+        }
+        if (sec7.transfusionBagNumber?.trim()) {
+          transfusionParts.push(`No. ${sec7.transfusionBagNumber.trim()}`);
+        }
+        if (sec7.transfusionReaction?.trim() && sec7.transfusionReaction.trim() !== 'Tidak Ada Reaksi') {
+          transfusionParts.push(`Reaksi: ${sec7.transfusionReaction.trim()}`);
+        }
+        if (sec7.transfusionNote?.trim()) {
+          transfusionParts.push(sec7.transfusionNote.trim());
+        }
+      }
+      const transfusionNote = transfusionParts.join(' · ');
+      const transfusionDisplay =
+        transfusionGiven === null
+          ? '-'
+          : transfusionGiven
+          ? transfusionNote
+            ? `Ya (${transfusionNote})`
+            : 'Ya'
+          : 'Tidak';
+
+      const epoGiven = sec7 ? sec7.epoGiven : null;
+      const epoParts: string[] = [];
+      if (sec7?.epoGiven) {
+        const prepDose = [sec7.epoPreparation?.trim(), sec7.epoDose?.trim()].filter(Boolean).join(' ');
+        if (prepDose) epoParts.push(prepDose);
+        if (sec7.epoRoute?.trim()) epoParts.push(sec7.epoRoute.trim());
+        if (sec7.epoNote?.trim()) epoParts.push(sec7.epoNote.trim());
+      }
+      const epoNote = epoParts.join(' · ');
+      const epoDisplay =
+        epoGiven === null ? '-' : epoGiven ? (epoNote ? `Ya (${epoNote})` : 'Ya') : 'Tidak';
+
       return {
-        index: idx + 1,
         entry: s,
         statusRawat,
         roomCategory,
         bedMachine,
+        vascularAccessLabel,
+        vascularAccessNote,
+        vascularAccessDisplay,
         durationHours,
         dryWeight,
         qbVal: qbVal && !Number.isNaN(qbVal) ? qbVal : null,
         qdVal: qdVal && !Number.isNaN(qdVal) ? qdVal : null,
-        dialyzer,
         heparinDisplay,
         ktvDisplay: sec6?.ktv?.trim() || '-',
         hasComplication,
@@ -351,6 +429,12 @@ export function PatientReportsPage({
         dpjpAdviceLines,
         compTime,
         dpjpAdviceDisplay,
+        transfusionGiven,
+        transfusionNote,
+        transfusionDisplay,
+        epoGiven,
+        epoNote,
+        epoDisplay,
       };
     });
   }, [filteredServices, patientMap, machineMap]);
@@ -376,6 +460,9 @@ export function PatientReportsPage({
       0
     );
 
+    const transfusionCount = tableRows.filter((r) => r.transfusionGiven === true).length;
+    const epoCount = tableRows.filter((r) => r.epoGiven === true).length;
+
     return {
       avgDurasi,
       avgDry,
@@ -385,6 +472,8 @@ export function PatientReportsPage({
       avgQd,
       totalTargetUf,
       totalAchievedUf,
+      transfusionCount,
+      epoCount,
     };
   }, [tableRows]);
 
@@ -492,59 +581,59 @@ export function PatientReportsPage({
     exportToCsv(
       `logbook-detail-pasien-${dateFilter || monthFilter || 'semua'}.csv`,
       [
-        'NO',
+        'NO. BED / MESIN',
         'TANGGAL',
         'SHIFT',
         'NAMA LENGKAP PASIEN / NO. RM',
-        'STATUS RAWAT',
-        'RUANG / KATEGORI',
-        'NO. BED / MESIN',
+        'STATUS',
+        'RUANG',
         'AKSES VASKULAR',
         'DURASI (JAM)',
-        'BB KERING (KG)',
         'BB PRE HD (KG)',
         'BB POST HD (KG)',
+        'BB KERING (KG)',
         'QB (ML/M)',
         'QD (ML/M)',
+        'HEPARIN',
         'TARGET UF (ML)',
         'KT/V',
         'CAPAIAN UF (ML)',
         'TD PRE (MMHG)',
         'TD POST (MMHG)',
-        'DIALISER',
-        'HEPARINISASI',
         'KOMPLIKASI INTRA-HD',
         'JAM KOMPLIKASI',
         'TINDAKAN & ADVIS MEDIS DPJP',
+        'TRANSFUSI',
+        'EPO',
         'PERAWAT PELAKSANA',
         'DOKTER DPJP',
         'STATUS VERIFIKASI',
       ],
       tableRows.map((r) => [
-        r.index,
+        r.bedMachine,
         r.entry.date,
         r.entry.shift,
         `${r.entry.patientName} (${r.entry.patientRm})`,
         r.statusRawat,
         r.roomCategory,
-        r.bedMachine,
-        r.entry.vascularAccess,
+        r.vascularAccessDisplay,
         r.durationHours !== null ? r.durationHours : '-',
-        r.dryWeight !== null ? r.dryWeight : '-',
         r.entry.preWeight,
         r.entry.postWeight,
+        r.dryWeight !== null ? r.dryWeight : '-',
         r.qbVal !== null ? r.qbVal : '-',
         r.qdVal !== null ? r.qdVal : '-',
+        r.heparinDisplay,
         r.entry.ufGoal,
         r.ktvDisplay,
         r.entry.ufAchieved,
         r.entry.preBp,
         r.entry.postBp,
-        r.dialyzer,
-        r.heparinDisplay,
         r.complicationLines.join('\n'),
         r.compTimeLines.join('\n'),
         r.dpjpAdviceLines.join('\n'),
+        r.transfusionDisplay,
+        r.epoDisplay,
         r.entry.nurseName,
         r.entry.doctorName,
         r.entry.verificationStatus,
@@ -804,7 +893,7 @@ export function PatientReportsPage({
                       rowSpan={2}
                       className="border border-[#2d6687] px-2 py-2 text-center font-bold whitespace-normal"
                     >
-                      NO
+                      NO. BED / MESIN
                     </th>
                     <th
                       colSpan={3}
@@ -813,16 +902,16 @@ export function PatientReportsPage({
                       DATA IDENTITAS &amp; STATUS PASIEN
                     </th>
                     <th
-                      colSpan={3}
+                      colSpan={2}
                       className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-normal"
                     >
                       PENGATURAN TEKNIS &amp; PRE-HD
                     </th>
                     <th
-                      colSpan={5}
+                      colSpan={6}
                       className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-normal"
                     >
-                      PARAMETER BERAT BADAN &amp; ALIRAN (QB/QD)
+                      PARAMETER BERAT BADAN &amp; ALIRAN
                     </th>
                     <th
                       colSpan={3}
@@ -837,16 +926,16 @@ export function PatientReportsPage({
                       TANDA VITAL (HEMODINAMIK)
                     </th>
                     <th
-                      colSpan={2}
-                      className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-normal"
-                    >
-                      SPESIFIKASI DIALISER &amp; HEPARINISASI
-                    </th>
-                    <th
                       colSpan={3}
                       className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-normal"
                     >
                       KOMPLIKASI, TATALAKSANA &amp; ADVIS DPJP
+                    </th>
+                    <th
+                      colSpan={2}
+                      className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-normal"
+                    >
+                      TRANSFUSI &amp; EPO
                     </th>
                     <th
                       rowSpan={2}
@@ -874,15 +963,12 @@ export function PatientReportsPage({
                       NAMA PASIEN / NO. RM
                     </th>
                     <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
-                      STATUS RAWAT
+                      Status
                     </th>
                     <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
-                      RUANG / KATEGORI
+                      RUANG
                     </th>
 
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
-                      NO. BED / MESIN
-                    </th>
                     <th className="border border-[#34759b] px-2 py-1.5 text-left font-semibold whitespace-normal">
                       AKSES VASKULAR
                     </th>
@@ -891,19 +977,22 @@ export function PatientReportsPage({
                     </th>
 
                     <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
-                      BB KERING (KG)
-                    </th>
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
                       BB PRE HD (KG)
                     </th>
                     <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
                       BB POST HD (KG)
                     </th>
                     <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
+                      BB KERING (KG)
+                    </th>
+                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
                       QB (ML/M)
                     </th>
                     <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
                       QD (ML/M)
+                    </th>
+                    <th className="border border-[#34759b] px-2 py-1.5 text-left font-semibold whitespace-normal">
+                      HEPARIN
                     </th>
 
                     <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
@@ -924,13 +1013,6 @@ export function PatientReportsPage({
                     </th>
 
                     <th className="border border-[#34759b] px-2 py-1.5 text-left font-semibold whitespace-normal">
-                      DIALISER
-                    </th>
-                    <th className="border border-[#34759b] px-2 py-1.5 text-left font-semibold whitespace-normal">
-                      HEPARINISASI
-                    </th>
-
-                    <th className="border border-[#34759b] px-2 py-1.5 text-left font-semibold whitespace-normal">
                       KOMPLIKASI INTRA-HD
                     </th>
                     <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
@@ -938,6 +1020,13 @@ export function PatientReportsPage({
                     </th>
                     <th className="border border-[#34759b] px-2 py-1.5 text-left font-semibold whitespace-normal">
                       TINDAKAN &amp; ADVIS MEDIS DPJP
+                    </th>
+
+                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
+                      TRANSFUSI
+                    </th>
+                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
+                      EPO
                     </th>
                   </tr>
                 </thead>
@@ -952,8 +1041,9 @@ export function PatientReportsPage({
                         key={s.id}
                         className="odd:bg-white even:bg-slate-50/70 hover:bg-sky-50/60 transition-colors"
                       >
-                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums font-medium whitespace-nowrap">
-                          {row.index}
+                        {/* NO. BED / MESIN (Kolom Paling Kiri) */}
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono font-semibold whitespace-nowrap">
+                          {row.bedMachine}
                         </td>
 
                         {/* DATA IDENTITAS & STATUS PASIEN */}
@@ -963,7 +1053,7 @@ export function PatientReportsPage({
                             {s.patientRm}
                           </div>
                         </td>
-                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center whitespace-nowrap">
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-semibold whitespace-nowrap">
                           {row.statusRawat}
                         </td>
                         <td
@@ -975,20 +1065,19 @@ export function PatientReportsPage({
                         </td>
 
                         {/* PENGATURAN TEKNIS & PRE-HD */}
-                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono whitespace-nowrap">
-                          {row.bedMachine}
-                        </td>
                         <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 whitespace-nowrap">
-                          {s.vascularAccess}
+                          <div className="font-semibold text-slate-900">{row.vascularAccessLabel}</div>
+                          {row.vascularAccessNote && (
+                            <div className="f4-patient-sub text-[10px] text-slate-500">
+                              {row.vascularAccessNote}
+                            </div>
+                          )}
                         </td>
                         <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                           {formatNumId(row.durationHours, 1)}
                         </td>
 
-                        {/* PARAMETER BERAT BADAN & ALIRAN */}
-                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
-                          {formatNumId(row.dryWeight, 1)}
-                        </td>
+                        {/* PARAMETER BERAT BADAN & ALIRAN + HEPARIN */}
                         <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                           {formatNumId(s.preWeight, 1)}
                         </td>
@@ -996,10 +1085,16 @@ export function PatientReportsPage({
                           {formatNumId(s.postWeight, 1)}
                         </td>
                         <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
+                          {formatNumId(row.dryWeight, 1)}
+                        </td>
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                           {row.qbVal !== null ? formatIntId(row.qbVal) : '-'}
                         </td>
                         <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                           {row.qdVal !== null ? formatIntId(row.qdVal) : '-'}
+                        </td>
+                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 whitespace-nowrap">
+                          {row.heparinDisplay}
                         </td>
 
                         {/* MONITORING ULTRAFILTRASI & ADEKUASI */}
@@ -1019,14 +1114,6 @@ export function PatientReportsPage({
                         </td>
                         <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                           {s.postBp || '-'}
-                        </td>
-
-                        {/* SPESIFIKASI DIALISER & HEPARINISASI */}
-                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 whitespace-nowrap">
-                          {row.dialyzer}
-                        </td>
-                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 whitespace-nowrap">
-                          {row.heparinDisplay}
                         </td>
 
                         {/* KOMPLIKASI, TATALAKSANA & ADVIS DPJP */}
@@ -1093,6 +1180,48 @@ export function PatientReportsPage({
                           )}
                         </td>
 
+                        {/* TRANSFUSI & EPO */}
+                        <td
+                          className={`f4-col-flex border border-slate-200 px-2 py-2 text-center align-top whitespace-normal break-words ${
+                            row.transfusionGiven === true ? 'bg-rose-50/50' : ''
+                          }`}
+                        >
+                          {row.transfusionGiven === null ? (
+                            <span className="text-slate-400">-</span>
+                          ) : row.transfusionGiven ? (
+                            <div>
+                              <span className="font-semibold text-rose-700">Ya</span>
+                              {row.transfusionNote && (
+                                <div className="f4-patient-sub text-[10px] text-slate-600 mt-0.5">
+                                  {row.transfusionNote}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-slate-600">Tidak</span>
+                          )}
+                        </td>
+                        <td
+                          className={`f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center align-top whitespace-nowrap ${
+                            row.epoGiven === true ? 'bg-teal-50/50' : ''
+                          }`}
+                        >
+                          {row.epoGiven === null ? (
+                            <span className="text-slate-400">-</span>
+                          ) : row.epoGiven ? (
+                            <div>
+                              <span className="font-semibold text-teal-700">Ya</span>
+                              {row.epoNote && (
+                                <div className="f4-patient-sub text-[10px] text-slate-600 mt-0.5 whitespace-normal">
+                                  {row.epoNote}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-slate-600">Tidak</span>
+                          )}
+                        </td>
+
                         {/* PERAWAT PELAKSANA */}
                         <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 whitespace-nowrap">
                           <div className="font-medium text-slate-900">{s.nurseName}</div>
@@ -1112,7 +1241,7 @@ export function PatientReportsPage({
                             type="button"
                             onClick={() => setDetailEntryId(s.id)}
                             className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-[10px] font-semibold text-slate-700 hover:bg-slate-50"
-                            title="Lihat Detail Lengkap 7 Bagian"
+                            title="Lihat Detail Lengkap 8 Bagian"
                           >
                             <Eye className="h-3 w-3" />
                             Detail
@@ -1127,7 +1256,7 @@ export function PatientReportsPage({
                   <tfoot>
                     <tr className="bg-slate-100 font-bold text-slate-900">
                       <td
-                        colSpan={6}
+                        colSpan={5}
                         className="f4-col-fit border border-slate-300 px-2 py-2 text-center uppercase tracking-wide whitespace-nowrap"
                       >
                         TOTAL &amp; RATA-RATA
@@ -1136,13 +1265,13 @@ export function PatientReportsPage({
                         {formatNumId(summaryStats.avgDurasi, 1)}
                       </td>
                       <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
-                        {formatNumId(summaryStats.avgDry, 1)}
-                      </td>
-                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                         {formatNumId(summaryStats.avgPreW, 1)}
                       </td>
                       <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                         {formatNumId(summaryStats.avgPostW, 1)}
+                      </td>
+                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
+                        {formatNumId(summaryStats.avgDry, 1)}
                       </td>
                       <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                         {summaryStats.avgQb !== null ? formatIntId(summaryStats.avgQb) : '-'}
@@ -1150,6 +1279,7 @@ export function PatientReportsPage({
                       <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                         {summaryStats.avgQd !== null ? formatIntId(summaryStats.avgQd) : '-'}
                       </td>
+                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center whitespace-nowrap">-</td>
                       <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                         {formatIntId(summaryStats.totalTargetUf)}
                       </td>
@@ -1161,11 +1291,15 @@ export function PatientReportsPage({
                       </td>
                       <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center whitespace-nowrap">-</td>
                       <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center whitespace-nowrap">-</td>
-                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center whitespace-nowrap">-</td>
-                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center whitespace-nowrap">-</td>
                       <td className="f4-col-flex border border-slate-300 px-2 py-2 text-center">-</td>
                       <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center whitespace-nowrap">-</td>
                       <td className="f4-col-flex border border-slate-300 px-2 py-2 text-center">-</td>
+                      <td className="f4-col-flex border border-slate-300 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
+                        {summaryStats.transfusionCount > 0 ? `${summaryStats.transfusionCount} Ya` : '-'}
+                      </td>
+                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
+                        {summaryStats.epoCount > 0 ? `${summaryStats.epoCount} Ya` : '-'}
+                      </td>
                       <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center whitespace-nowrap">-</td>
                       <td className="no-print f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center whitespace-nowrap">-</td>
                       <td className="no-print f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center whitespace-nowrap">-</td>
@@ -1228,7 +1362,7 @@ export function PatientReportsPage({
         </div>
       )}
 
-      {/* Logbook Detail 7-Part Modal */}
+      {/* Logbook Detail 8-Part Modal */}
       {detailEntry && (
         <LogbookDetailModal
           entry={detailEntry}
@@ -1236,6 +1370,7 @@ export function PatientReportsPage({
           patients={patients}
           machines={machines}
           staffDirectory={staffDirectory}
+          formTemplate={formTemplate}
           onClose={() => setDetailEntryId(null)}
         />
       )}

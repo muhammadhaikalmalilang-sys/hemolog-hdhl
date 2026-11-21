@@ -9,11 +9,17 @@ import {
   reconnectFirestore,
 } from '../lib/firebase';
 import { useAuth } from '../context/AuthContext';
+import {
+  DEFAULT_LOGBOOK_TEMPLATE,
+  LOGBOOK_TEMPLATE_DOC_ID,
+  mergeWithDefaultTemplate,
+} from '../lib/logbookTemplate';
 import type {
   ActionCategory,
   Doctor,
   DoctorScheduleEntry,
   LogbookEntry,
+  LogbookFormTemplate,
   LogbookLock,
   Machine,
   MachineLock,
@@ -47,6 +53,7 @@ export function useUnitData() {
   const [patientReports, setPatientReports] = useState<ReportEntry[]>([]);
   const [unitReports, setUnitReports] = useState<ReportEntry[]>([]);
   const [nurseMonthlyReports, setNurseMonthlyReports] = useState<ReportEntry[]>([]);
+  const [formTemplate, setFormTemplate] = useState<LogbookFormTemplate>(DEFAULT_LOGBOOK_TEMPLATE);
   const [loading, setLoading] = useState(true);
 
   const [approvedReady, setApprovedReady] = useState(false);
@@ -56,6 +63,7 @@ export function useUnitData() {
   const [machineLocksReady, setMachineLocksReady] = useState(false);
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [resubscribeEpoch, setResubscribeEpoch] = useState(0);
+  const hydratedSessionKeyRef = useRef<string | null>(null);
   const prunedLockIdsRef = useRef<Set<string>>(new Set());
   const prunedMachineLockIdsRef = useRef<Set<string>>(new Set());
 
@@ -69,19 +77,27 @@ export function useUnitData() {
 
   useEffect(() => {
     if (!authReady || !firebaseUser || !userProfile?.isActive) {
+      hydratedSessionKeyRef.current = null;
       setLoading(false);
       return;
     }
 
-    setLoading(true);
+    const sessionKey = `${firebaseUser.uid}:${userProfile.role}`;
+    const isInitialSessionLoad = hydratedSessionKeyRef.current !== sessionKey;
+    hydratedSessionKeyRef.current = sessionKey;
+
     setFatalError(null);
-    setApprovedReady(false);
-    setOwnReady(false);
-    setSupervisorReady(false);
-    setLocksReady(false);
-    setMachineLocksReady(false);
-    prunedLockIdsRef.current.clear();
-    prunedMachineLockIdsRef.current.clear();
+    if (isInitialSessionLoad) {
+      setLoading(true);
+      setApprovedReady(false);
+      setOwnReady(false);
+      setSupervisorReady(false);
+      setLocksReady(false);
+      setMachineLocksReady(false);
+      prunedLockIdsRef.current.clear();
+      prunedMachineLockIdsRef.current.clear();
+    }
+
     const unsubs: (() => void)[] = [];
     let needsResubscribe = false;
     let retryTimer: number | null = null;
@@ -93,7 +109,7 @@ export function useUnitData() {
         needsResubscribe = true;
         setLoading(false);
         console.warn(`Sinkronisasi ${path} terputus sementara, menyambungkan ulang...`);
-        void reconnectFirestore();
+        void reconnectFirestore({ force: true, resubscribe: true, reason: 'error' });
         if (retryTimer !== null) window.clearTimeout(retryTimer);
         retryTimer = window.setTimeout(() => {
           if (!cancelled && (typeof navigator === 'undefined' || navigator.onLine)) {
@@ -105,8 +121,8 @@ export function useUnitData() {
       setFatalError(formatFirestoreError(err, OperationType.LIST, path));
     };
 
-    const unsubReconnect = onFirestoreReconnect(() => {
-      if (needsResubscribe && !cancelled) {
+    const unsubReconnect = onFirestoreReconnect((event) => {
+      if (!cancelled && (needsResubscribe || event.shouldResubscribe)) {
         needsResubscribe = false;
         setResubscribeEpoch((e) => e + 1);
       }
@@ -370,6 +386,32 @@ export function useUnitData() {
       );
     }
 
+    // 13. Dynamic Logbook Form Template (customizable by Admin via Master Logbook)
+    unsubs.push(
+      onSnapshot(
+        doc(db, 'form_templates', LOGBOOK_TEMPLATE_DOC_ID),
+        (snap) => {
+          if (snap.exists()) {
+            setFormTemplate(
+              mergeWithDefaultTemplate({
+                id: snap.id,
+                ...(snap.data() as Partial<LogbookFormTemplate>),
+              })
+            );
+          } else {
+            setFormTemplate(DEFAULT_LOGBOOK_TEMPLATE);
+          }
+        },
+        (err) => {
+          if (isTransientFirestoreError(err)) {
+            handleSnapshotError(err, `form_templates/${LOGBOOK_TEMPLATE_DOC_ID}`);
+          } else {
+            console.warn('Gagal membaca template logbook kustom, menggunakan default:', err);
+          }
+        }
+      )
+    );
+
     return () => {
       cancelled = true;
       unsubReconnect();
@@ -505,5 +547,6 @@ export function useUnitData() {
     pjShiftAssignments,
     doctorSchedules,
     allReports,
+    formTemplate,
   };
 }

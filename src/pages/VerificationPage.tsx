@@ -16,6 +16,7 @@ import type {
   ActionCategory,
   Doctor,
   LogbookEntry,
+  LogbookFormTemplate,
   LogbookLock,
   Machine,
   MachineLock,
@@ -33,6 +34,7 @@ interface VerificationPageProps {
   machines: Machine[];
   actionCategories: ActionCategory[];
   staffDirectory: StaffDirectoryEntry[];
+  formTemplate?: LogbookFormTemplate;
 }
 
 export function VerificationPage({
@@ -44,6 +46,7 @@ export function VerificationPage({
   machines,
   actionCategories,
   staffDirectory,
+  formTemplate,
 }: VerificationPageProps) {
   const { firebaseUser, userProfile } = useAuth();
   const { todayDate: liveTodayDate } = useLiveClock();
@@ -401,6 +404,7 @@ export function VerificationPage({
           machines={machines}
           actionCategories={actionCategories}
           staffDirectory={staffDirectory}
+          formTemplate={formTemplate}
           verifierReview={{
             canEdit: Boolean(
               canEditBeforeVerify &&
@@ -452,6 +456,7 @@ export function VerificationPage({
           machines={machines}
           actionCategories={actionCategories}
           staffDirectory={staffDirectory}
+          formTemplate={formTemplate}
           onSaved={() => {
             setEditSuccessMsg(
               `Perubahan logbook pasien ${editingWizardEntry.patientName} berhasil disimpan. Silakan lanjutkan proses verifikasi.`

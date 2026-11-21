@@ -1265,22 +1265,34 @@ export function PjShiftReportsPage({
     setReviewNote(activeSavedReport?.reviewNote || '');
   };
 
-  const formatIncidentSummary = (
+  const formatIncidentLines = (
     items: ReturnType<typeof collectIncidents>,
     emptyText: string
-  ) => {
-    if (items.length === 0) return emptyText;
-    return items
-      .map((i) => {
-        const meta: string[] = [];
-        if (i.time && i.time !== '-') meta.push(`Pkl ${i.time}`);
-        if (i.bp && i.bp !== '-') meta.push(`TD ${i.bp}`);
-        if (i.detail) meta.push(i.detail);
-        return `${i.entry.machineNumber} (${i.entry.patientName}) [${i.type}]${
-          meta.length > 0 ? ` (${meta.join(', ')})` : ''
-        }${i.advice ? `: ${i.advice}` : ''}`;
-      })
-      .join('; ');
+  ): string[] => {
+    if (items.length === 0) return [emptyText];
+    const byPatient = new Map<string, { header: string; details: string[] }>();
+    for (const i of items) {
+      const meta: string[] = [];
+      if (i.time && i.time !== '-') meta.push(`Pkl ${i.time}`);
+      if (i.bp && i.bp !== '-') meta.push(`TD ${i.bp}`);
+      if (i.detail) meta.push(i.detail);
+      const detailStr = `[${i.type}]${
+        meta.length > 0 ? ` (${meta.join(', ')})` : ''
+      }${i.advice ? `: ${i.advice}` : ''}`;
+
+      const existing = byPatient.get(i.entry.id);
+      if (existing) {
+        existing.details.push(detailStr);
+      } else {
+        byPatient.set(i.entry.id, {
+          header: `${i.entry.machineNumber} (${i.entry.patientName})`,
+          details: [detailStr],
+        });
+      }
+    }
+    return Array.from(byPatient.values()).map(
+      (p) => `${p.header} ${p.details.join(' | ')}`
+    );
   };
 
   // Computed Section D rows from verified logbooks (or saved overrides)
@@ -1509,246 +1521,196 @@ export function PjShiftReportsPage({
   };
 
   // All Section C rows (all 12 complication categories + UF + Duration + Consult)
-  const sectionCRows = useMemo(
-    () => [
-      {
-        indicator: 'Pencapaian Target UF (Dry Weight)',
-        result:
-          shiftStats.totalVerified > 0
-            ? `${shiftStats.ufMetCount} Pasien (${formatPct(
-                shiftStats.ufMetCount,
-                shiftStats.totalVerified
-              )})`
-            : '0 Pasien (0%)',
-        target: '>= 85%',
-        analysis:
-          shiftStats.totalVerified === 0
-            ? 'Belum ada logbook terverifikasi'
-            : shiftStats.underUfDetails.length > 0
-            ? shiftStats.underUfDetails.join('; ')
-            : 'Seluruh pasien mencapai target UF sesuai resep DPJP',
-        hasCases: false,
-      },
-      {
-        indicator: 'Rata-rata Durasi Hemodialisis',
-        result: `${shiftStats.avgDuration} Jam`,
-        target: '4.0 - 5.0 Jam',
-        analysis:
+  const sectionCRows = useMemo(() => {
+    const countUniquePatients = (items: ReturnType<typeof collectIncidents>): number =>
+      new Set(items.map((i) => i.entry.patientId || i.entry.id)).size;
+
+    const formatPatientIncidentResult = (items: ReturnType<typeof collectIncidents>): string => {
+      const patientCount = countUniquePatients(items);
+      return patientCount > 0
+        ? `${patientCount} Pasien (${formatPct(patientCount, shiftStats.totalVerified)})`
+        : '0 Pasien (Nihil)';
+    };
+
+    const buildRow = (
+      indicator: string,
+      result: string,
+      target: string,
+      analysisLines: string[],
+      hasCases: boolean
+    ) => ({
+      indicator,
+      result,
+      target,
+      analysisLines,
+      analysis: analysisLines.join('\n'),
+      hasCases,
+    });
+
+    return [
+      buildRow(
+        'Pencapaian Target UF (Dry Weight)',
+        shiftStats.totalVerified > 0
+          ? `${shiftStats.ufMetCount} Pasien (${formatPct(
+              shiftStats.ufMetCount,
+              shiftStats.totalVerified
+            )})`
+          : '0 Pasien (0%)',
+        '>= 85%',
+        shiftStats.totalVerified === 0
+          ? ['Belum ada logbook terverifikasi']
+          : shiftStats.underUfDetails.length > 0
+          ? shiftStats.underUfDetails
+          : ['Seluruh pasien mencapai target UF sesuai resep DPJP'],
+        false
+      ),
+      buildRow(
+        'Rata-rata Durasi Hemodialisis',
+        `${shiftStats.avgDuration} Jam`,
+        '4.0 - 5.0 Jam',
+        [
           shiftStats.durationBreakdown
             ? `Rata-rata tercapai sesuai resep DPJP (${shiftStats.durationBreakdown})`
             : 'Belum ada data durasi tindakan terverifikasi',
-        hasCases: false,
-      },
-      {
-        indicator: 'Insiden Hipertensi Intradialitik',
-        result:
-          shiftStats.hipertensiIncidents.length > 0
-            ? `${shiftStats.hipertensiIncidents.length} Kasus (${formatPct(
-                shiftStats.hipertensiIncidents.length,
-                shiftStats.totalVerified
-              )})`
-            : '0 Kasus (Nihil)',
-        target: 'Terkendali',
-        analysis: formatIncidentSummary(
+        ],
+        false
+      ),
+      buildRow(
+        'Insiden Hipertensi Intradialitik',
+        formatPatientIncidentResult(shiftStats.hipertensiIncidents),
+        'Terkendali',
+        formatIncidentLines(
           shiftStats.hipertensiIncidents,
           'Tidak ada kejadian hipertensi intradialitik pada shift ini'
         ),
-        hasCases: shiftStats.hipertensiIncidents.length > 0,
-      },
-      {
-        indicator: 'Insiden Hipotensi Intradialitik',
-        result:
-          shiftStats.hipotensiIncidents.length > 0
-            ? `${shiftStats.hipotensiIncidents.length} Kasus (${formatPct(
-                shiftStats.hipotensiIncidents.length,
-                shiftStats.totalVerified
-              )})`
-            : '0 Kasus (Nihil)',
-        target: '< 15%',
-        analysis: formatIncidentSummary(
+        shiftStats.hipertensiIncidents.length > 0
+      ),
+      buildRow(
+        'Insiden Hipotensi Intradialitik',
+        formatPatientIncidentResult(shiftStats.hipotensiIncidents),
+        '< 15%',
+        formatIncidentLines(
           shiftStats.hipotensiIncidents,
           'Tidak ada kejadian hipotensi intradialitik pada shift ini'
         ),
-        hasCases: shiftStats.hipotensiIncidents.length > 0,
-      },
-      {
-        indicator: 'Insiden Hipoglikemi Intra-HD',
-        result:
-          shiftStats.hipoglikemiIncidents.length > 0
-            ? `${shiftStats.hipoglikemiIncidents.length} Kasus (${formatPct(
-                shiftStats.hipoglikemiIncidents.length,
-                shiftStats.totalVerified
-              )})`
-            : '0 Kasus (Nihil)',
-        target: '0 Kasus',
-        analysis: formatIncidentSummary(
+        shiftStats.hipotensiIncidents.length > 0
+      ),
+      buildRow(
+        'Insiden Hipoglikemi Intra-HD',
+        formatPatientIncidentResult(shiftStats.hipoglikemiIncidents),
+        '0 Kasus',
+        formatIncidentLines(
           shiftStats.hipoglikemiIncidents,
           'Tidak ada kejadian hipoglikemi intra-HD pada shift ini'
         ),
-        hasCases: shiftStats.hipoglikemiIncidents.length > 0,
-      },
-      {
-        indicator: 'Insiden Hipertermi Intra-HD',
-        result:
-          shiftStats.hipertermiIncidents.length > 0
-            ? `${shiftStats.hipertermiIncidents.length} Kasus (${formatPct(
-                shiftStats.hipertermiIncidents.length,
-                shiftStats.totalVerified
-              )})`
-            : '0 Kasus (Nihil)',
-        target: '0 Kasus',
-        analysis: formatIncidentSummary(
+        shiftStats.hipoglikemiIncidents.length > 0
+      ),
+      buildRow(
+        'Insiden Hipertermi Intra-HD',
+        formatPatientIncidentResult(shiftStats.hipertermiIncidents),
+        '0 Kasus',
+        formatIncidentLines(
           shiftStats.hipertermiIncidents,
           'Tidak ada kejadian hipertermi/demam intra-HD pada shift ini'
         ),
-        hasCases: shiftStats.hipertermiIncidents.length > 0,
-      },
-      {
-        indicator: 'Insiden Kram Otot Intra-HD',
-        result:
-          shiftStats.kramIncidents.length > 0
-            ? `${shiftStats.kramIncidents.length} Kasus (${formatPct(
-                shiftStats.kramIncidents.length,
-                shiftStats.totalVerified
-              )})`
-            : '0 Kasus (Nihil)',
-        target: '< 10%',
-        analysis: formatIncidentSummary(
+        shiftStats.hipertermiIncidents.length > 0
+      ),
+      buildRow(
+        'Insiden Kram Otot Intra-HD',
+        formatPatientIncidentResult(shiftStats.kramIncidents),
+        '< 10%',
+        formatIncidentLines(
           shiftStats.kramIncidents,
           'Tidak ada kejadian kram otot intra-HD pada shift ini'
         ),
-        hasCases: shiftStats.kramIncidents.length > 0,
-      },
-      {
-        indicator: 'Insiden Mual Intra-HD',
-        result:
-          shiftStats.mualIncidents.length > 0
-            ? `${shiftStats.mualIncidents.length} Kasus (${formatPct(
-                shiftStats.mualIncidents.length,
-                shiftStats.totalVerified
-              )})`
-            : '0 Kasus (Nihil)',
-        target: '< 10%',
-        analysis: formatIncidentSummary(
+        shiftStats.kramIncidents.length > 0
+      ),
+      buildRow(
+        'Insiden Mual Intra-HD',
+        formatPatientIncidentResult(shiftStats.mualIncidents),
+        '< 10%',
+        formatIncidentLines(
           shiftStats.mualIncidents,
           'Tidak ada keluhan mual intra-HD pada shift ini'
         ),
-        hasCases: shiftStats.mualIncidents.length > 0,
-      },
-      {
-        indicator: 'Insiden Muntah Intra-HD',
-        result:
-          shiftStats.muntahIncidents.length > 0
-            ? `${shiftStats.muntahIncidents.length} Kasus (${formatPct(
-                shiftStats.muntahIncidents.length,
-                shiftStats.totalVerified
-              )})`
-            : '0 Kasus (Nihil)',
-        target: '0 Kasus',
-        analysis: formatIncidentSummary(
+        shiftStats.mualIncidents.length > 0
+      ),
+      buildRow(
+        'Insiden Muntah Intra-HD',
+        formatPatientIncidentResult(shiftStats.muntahIncidents),
+        '0 Kasus',
+        formatIncidentLines(
           shiftStats.muntahIncidents,
           'Tidak ada kejadian muntah intra-HD pada shift ini'
         ),
-        hasCases: shiftStats.muntahIncidents.length > 0,
-      },
-      {
-        indicator: 'Insiden Clotting Sirkit / Dialiser',
-        result:
-          shiftStats.clottingIncidents.length > 0
-            ? `${shiftStats.clottingIncidents.length} Kasus (${formatPct(
-                shiftStats.clottingIncidents.length,
-                shiftStats.totalVerified
-              )})`
-            : '0 Kasus (Nihil)',
-        target: '0 Kasus',
-        analysis: formatIncidentSummary(
+        shiftStats.muntahIncidents.length > 0
+      ),
+      buildRow(
+        'Insiden Clotting Sirkit / Dialiser',
+        formatPatientIncidentResult(shiftStats.clottingIncidents),
+        '0 Kasus',
+        formatIncidentLines(
           shiftStats.clottingIncidents,
           'Heparinisasi adekuat, flushing NaCl berkala berjalan lancar'
         ),
-        hasCases: shiftStats.clottingIncidents.length > 0,
-      },
-      {
-        indicator: 'Akses Bleeding / Hematom Post-HD',
-        result:
-          shiftStats.bleedingIncidents.length > 0
-            ? `${shiftStats.bleedingIncidents.length} Kasus (${formatPct(
-                shiftStats.bleedingIncidents.length,
-                shiftStats.totalVerified
-              )})`
-            : '0 Kasus (Nihil)',
-        target: '0 Kasus',
-        analysis: formatIncidentSummary(
+        shiftStats.clottingIncidents.length > 0
+      ),
+      buildRow(
+        'Akses Bleeding / Hematom Post-HD',
+        formatPatientIncidentResult(shiftStats.bleedingIncidents),
+        '0 Kasus',
+        formatIncidentLines(
           shiftStats.bleedingIncidents,
           'Penekanan kanulasi AVF 10-15 menit sesuai SOP dan hemostasis baik'
         ),
-        hasCases: shiftStats.bleedingIncidents.length > 0,
-      },
-      {
-        indicator: 'Insiden First-Use Syndrome / Alergi',
-        result:
-          shiftStats.allergyIncidents.length > 0
-            ? `${shiftStats.allergyIncidents.length} Kasus (${formatPct(
-                shiftStats.allergyIncidents.length,
-                shiftStats.totalVerified
-              )})`
-            : '0 Kasus (Nihil)',
-        target: '0 Kasus',
-        analysis: formatIncidentSummary(
+        shiftStats.bleedingIncidents.length > 0
+      ),
+      buildRow(
+        'Insiden First-Use Syndrome / Alergi',
+        formatPatientIncidentResult(shiftStats.allergyIncidents),
+        '0 Kasus',
+        formatIncidentLines(
           shiftStats.allergyIncidents,
           `Priming dialiser sesuai SOP ${shiftStats.avgPriming} mL NaCl 0.9%`
         ),
-        hasCases: shiftStats.allergyIncidents.length > 0,
-      },
-      {
-        indicator: 'Insiden Penurunan Kesadaran Intra-HD',
-        result:
-          shiftStats.kesadaranIncidents.length > 0
-            ? `${shiftStats.kesadaranIncidents.length} Kasus (${formatPct(
-                shiftStats.kesadaranIncidents.length,
-                shiftStats.totalVerified
-              )})`
-            : '0 Kasus (Nihil)',
-        target: '0 Kasus',
-        analysis: formatIncidentSummary(
+        shiftStats.allergyIncidents.length > 0
+      ),
+      buildRow(
+        'Insiden Penurunan Kesadaran Intra-HD',
+        formatPatientIncidentResult(shiftStats.kesadaranIncidents),
+        '0 Kasus',
+        formatIncidentLines(
           shiftStats.kesadaranIncidents,
           'Tidak ada kejadian penurunan kesadaran pada shift ini'
         ),
-        hasCases: shiftStats.kesadaranIncidents.length > 0,
-      },
-      {
-        indicator: 'Komplikasi Intra-HD Lainnya',
-        result:
-          shiftStats.otherIncidents.length > 0
-            ? `${shiftStats.otherIncidents.length} Kasus (${formatPct(
-                shiftStats.otherIncidents.length,
-                shiftStats.totalVerified
-              )})`
-            : '0 Kasus (Nihil)',
-        target: '0 Kasus',
-        analysis: formatIncidentSummary(
+        shiftStats.kesadaranIncidents.length > 0
+      ),
+      buildRow(
+        'Komplikasi Intra-HD Lainnya',
+        formatPatientIncidentResult(shiftStats.otherIncidents),
+        '0 Kasus',
+        formatIncidentLines(
           shiftStats.otherIncidents,
           'Tidak ada komplikasi lain yang tercatat pada shift ini'
         ),
-        hasCases: shiftStats.otherIncidents.length > 0,
-      },
-      {
-        indicator: 'Konsultasi Cito ke DPJP',
-        result:
-          shiftStats.consultIncidents.length > 0
-            ? `${shiftStats.consultIncidents.length} Kali${
-                shiftStats.dutyDoctorLabel !== '-' ? ` (${shiftStats.dutyDoctorLabel})` : ''
-              }`
-            : '0 Kali (Nihil)',
-        target: 'Sesuai Indikasi',
-        analysis: formatIncidentSummary(
+        shiftStats.otherIncidents.length > 0
+      ),
+      buildRow(
+        'Konsultasi Cito ke DPJP',
+        shiftStats.consultIncidents.length > 0
+          ? `${shiftStats.consultIncidents.length} Kali${
+              shiftStats.dutyDoctorLabel !== '-' ? ` (${shiftStats.dutyDoctorLabel})` : ''
+            }`
+          : '0 Kali (Nihil)',
+        'Sesuai Indikasi',
+        formatIncidentLines(
           shiftStats.consultIncidents,
           'Kondisi pasien stabil, tidak ada konsultasi cito emergensi'
         ),
-        hasCases: false,
-      },
-    ],
-    [shiftStats]
-  );
+        false
+      ),
+    ];
+  }, [shiftStats]);
 
   const handleExportCsv = () => {
     const rows: (string | number)[][] = [
@@ -2242,8 +2204,25 @@ export function PjShiftReportsPage({
                     <td className="border border-slate-300 px-3 py-1.5 text-center font-mono tabular-nums text-slate-700">
                       {row.target}
                     </td>
-                    <td className="border border-slate-300 px-3 py-1.5 text-slate-700">
-                      {row.analysis}
+                    <td className="border border-slate-300 px-3 py-1.5 text-slate-700 align-top">
+                      {row.analysisLines.length > 1 ? (
+                        <div className="space-y-1">
+                          {row.analysisLines.map((line, lineIdx) => (
+                            <div
+                              key={`${row.indicator}-${lineIdx}`}
+                              className={
+                                lineIdx > 0
+                                  ? 'border-t border-slate-200/80 pt-1'
+                                  : undefined
+                              }
+                            >
+                              {lineIdx + 1}. {line}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        row.analysisLines[0]
+                      )}
                     </td>
                   </tr>
                 ))}
