@@ -56,7 +56,7 @@ service cloud.firestore {
     }
 
     function isVerifier() {
-      return isBootstrapAdmin() || isActiveWithRoles(['Administrator', 'Kepala Ruang', 'PJ Shift']);
+      return isActiveWithRoles(['Kepala Ruang', 'PJ Shift']);
     }
 
     function isLeadershipOrAdmin() {
@@ -235,10 +235,11 @@ service cloud.firestore {
           ((!('createdAt' in prev) || !(prev.createdAt is timestamp)) && data.createdAt == request.time)
         )
         && (
-          // Action: PJ Shift / Kepala Ruang / Admin verifies entry
+          // Action: PJ Shift / Kepala Ruang verifies entry (Administrator cannot verify)
           (
             'verificationStatus' in prev
             && prev.verificationStatus in ['Pending', 'Revision']
+            && (!('nurseId' in prev) || prev.nurseId != request.auth.uid)
             && data.verificationStatus in ['Approved', 'Revision']
             && 'verifiedBy' in data
             && data.verifiedBy == request.auth.uid
@@ -287,15 +288,15 @@ service cloud.firestore {
             && isVerifier()
           )
           ||
-          // Action: Admin full edit override
+          // Action: Admin clinical/master data edit override (cannot alter verification fields)
           (
             data.diff(prev).affectedKeys().hasOnly([
               'nurseName', 'nurseNip', 'patientId', 'patientName', 'patientRm', 'machineId', 'machineNumber',
               'doctorId', 'doctorName', 'dutyDoctorId', 'dutyDoctorName', 'actionCategory', 'date', 'monthKey', 'shift',
               'startTime', 'endTime', 'preWeight', 'postWeight', 'preBp', 'postBp',
               'ufGoal', 'ufAchieved', 'vascularAccess', 'heparinType', 'complications',
-              'nursingNotes', 'verificationStatus', 'targetVerifierRole', 'targetVerifierId', 'targetVerifierName',
-              'verifiedBy', 'verifiedByName', 'verificationNote', 'verifiedAt', 'wizardDetails', 'createdAt', 'updatedAt'
+              'nursingNotes', 'targetVerifierRole', 'targetVerifierId', 'targetVerifierName',
+              'wizardDetails', 'createdAt', 'updatedAt'
             ])
             && isValidLogbookEntryFields(data)
             && isAdmin()
@@ -763,9 +764,13 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
-          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly([
-            'nurseName', 'date', 'monthKey', 'shift', 'validationStatus', 'validatedBy', 'validatedByName', 'notes', 'updatedAt'
-          ]))
+          (
+            isAdmin()
+            && incoming().validationStatus == 'Draft'
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'nurseName', 'date', 'monthKey', 'shift', 'validationStatus', 'validatedBy', 'validatedByName', 'notes', 'updatedAt'
+            ])
+          )
           ||
           (
             isActiveWithRoles(['Kepala Ruang'])
@@ -890,7 +895,7 @@ service cloud.firestore {
                   && (!('reviewedByName' in incoming()) || (incoming().reviewedByName is string && incoming().reviewedByName.size() <= 120))
                   && (!('reviewNote' in incoming()) || (incoming().reviewNote is string && incoming().reviewNote.size() <= 500))
                   && 'reviewedAt' in incoming() && incoming().reviewedAt == request.time
-                  && (isKepalaRuangUser() || isAdmin())
+                  && isKepalaRuangUser()
                 )
             )
             && isVerifier()
@@ -957,7 +962,7 @@ service cloud.firestore {
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'reviewStatus', 'reviewedBy', 'reviewedByName', 'reviewNote', 'reviewedAt', 'updatedAt'
             ])
-            && (isKepalaRuangUser() || isAdmin())
+            && isKepalaRuangUser()
           )
           ||
           (
@@ -1076,7 +1081,6 @@ service cloud.firestore {
             incoming().diff(existing()).affectedKeys().hasOnly([
               'date', 'monthKey', 'shift', 'totalPatients', 'activeMachines', 'nursesOnDuty',
               'incidents', 'handoverNotes', 'sectionDItems', 'sbarSituation', 'sbarBackground', 'sbarAssessment', 'sbarRecommendation',
-              'reviewStatus', 'reviewedBy', 'reviewedByName', 'reviewNote', 'reviewedAt',
               'patientId', 'patientName', 'patientRm', 'soapSubjective', 'soapObjective', 'soapAssessment', 'soapPlan', 'medicalOrder',
               'totalTreatments', 'approvedTreatments', 'summaryNotes', 'updatedAt'
             ])

@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { doc, serverTimestamp, writeBatch } from 'firebase/firestore';
+import { deleteField, doc, getDoc, serverTimestamp, writeBatch } from 'firebase/firestore';
 import {
   AlertCircle,
   CheckCircle2,
@@ -9,7 +9,12 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
+import {
+  db,
+  formatFirestoreError,
+  getUserFriendlyFirestoreError,
+  OperationType,
+} from '../../lib/firebase';
 import {
   clampString,
   exportToCsv,
@@ -554,9 +559,19 @@ export function ImportScheduleSpreadsheetModal({
     setRows((prev) => prev.filter((r) => r.rowKey !== rowKey));
   };
 
+  const ensureMinName = (value: string | undefined, maxLen: number, fallback: string): string => {
+    const cleaned = clampString(value || '', maxLen);
+    return cleaned.length >= 2 ? cleaned : fallback;
+  };
+
   const handleSaveSchedules = async () => {
     if (!userProfile) return;
     setSaveError(null);
+
+    if (!/^\d{4}-\d{2}$/.test(targetMonthKey)) {
+      setSaveError('Bulan & tahun target tidak valid. Pilih bulan terlebih dahulu.');
+      return;
+    }
 
     if (stats.invalidCells > 0) {
       setSaveError(
@@ -605,42 +620,65 @@ export function ImportScheduleSpreadsheetModal({
       return;
     }
 
+    const effectiveValidationMode: 'Draft' | 'Validated' =
+      userProfile.role === 'Administrator' ? 'Draft' : validationMode;
+
     setSaving(true);
     try {
+      const safeValidatorName = ensureMinName(userProfile.fullName, 120, 'Kepala Ruang');
       const CHUNK_SIZE = 400;
+
       for (let i = 0; i < ops.length; i += CHUNK_SIZE) {
         const chunk = ops.slice(i, i + CHUNK_SIZE);
+        const liveSnaps = await Promise.all(
+          chunk.map((op) => getDoc(doc(db, 'schedules', op.docId)).catch(() => null))
+        );
+
         const batch = writeBatch(db);
-        for (const op of chunk) {
+        chunk.forEach((op, idx) => {
           const ref = doc(db, 'schedules', op.docId);
-          if (op.exists) {
+          const snap = liveSnaps[idx];
+          const exists = snap ? snap.exists() : op.exists;
+          const existingData = snap?.exists() ? snap.data() : undefined;
+          const safeNurseName = ensureMinName(op.nurse.fullName, 120, 'Staf HD');
+
+          if (exists) {
+            const clearValidator =
+              effectiveValidationMode === 'Draft' &&
+              existingData &&
+              (existingData.validatedBy !== undefined || existingData.validatedByName !== undefined)
+                ? {
+                    validatedBy: deleteField(),
+                    validatedByName: deleteField(),
+                  }
+                : {};
             batch.update(ref, {
-              nurseName: clampString(op.nurse.fullName, 120),
+              nurseName: safeNurseName,
               date: op.date,
               monthKey: targetMonthKey,
               shift: op.shift,
-              validationStatus: validationMode,
-              ...(validationMode === 'Validated'
+              validationStatus: effectiveValidationMode,
+              ...(effectiveValidationMode === 'Validated'
                 ? {
                     validatedBy: userProfile.uid,
-                    validatedByName: clampString(userProfile.fullName, 120),
+                    validatedByName: safeValidatorName,
                   }
-                : {}),
+                : clearValidator),
               notes: 'Impor Spreadsheet',
               updatedAt: serverTimestamp(),
             });
           } else {
             batch.set(ref, {
               nurseId: op.nurse.uid,
-              nurseName: clampString(op.nurse.fullName, 120),
+              nurseName: safeNurseName,
               date: op.date,
               monthKey: targetMonthKey,
               shift: op.shift,
-              validationStatus: validationMode,
-              ...(validationMode === 'Validated'
+              validationStatus: effectiveValidationMode,
+              ...(effectiveValidationMode === 'Validated'
                 ? {
                     validatedBy: userProfile.uid,
-                    validatedByName: clampString(userProfile.fullName, 120),
+                    validatedByName: safeValidatorName,
                   }
                 : {}),
               notes: 'Impor Spreadsheet',
@@ -648,17 +686,18 @@ export function ImportScheduleSpreadsheetModal({
               updatedAt: serverTimestamp(),
             });
           }
-        }
+        });
         await batch.commit();
       }
       onImported({ monthKey: targetMonthKey, savedCount: ops.length });
     } catch (err) {
+      formatFirestoreError(err, OperationType.WRITE, 'schedules');
       setSaveError(
-        err instanceof Error
-          ? err.message
-          : 'Gagal menyimpan jadwal ke Firestore. Pastikan akun Administrator aktif.'
+        getUserFriendlyFirestoreError(
+          err,
+          'Gagal menyimpan jadwal ke Firestore. Pastikan akun Administrator aktif.'
+        )
       );
-      handleFirestoreError(err, OperationType.WRITE, 'schedules');
     } finally {
       setSaving(false);
     }
@@ -761,12 +800,15 @@ export function ImportScheduleSpreadsheetModal({
                 Status Jadwal Setelah Impor
               </label>
               <select
-                value={validationMode}
+                value={userProfile?.role === 'Administrator' ? 'Draft' : validationMode}
+                disabled={userProfile?.role === 'Administrator'}
                 onChange={(e) => setValidationMode(e.target.value as 'Draft' | 'Validated')}
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs focus:border-[#0B5A8E] focus:outline-none"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs focus:border-[#0B5A8E] focus:outline-none disabled:bg-slate-100 disabled:text-slate-600"
               >
                 <option value="Draft">Draft (Validasi oleh Kepala Ruang)</option>
-                <option value="Validated">Langsung Validated (Disetujui)</option>
+                {userProfile?.role !== 'Administrator' && (
+                  <option value="Validated">Langsung Validated (Disetujui)</option>
+                )}
               </select>
             </div>
 

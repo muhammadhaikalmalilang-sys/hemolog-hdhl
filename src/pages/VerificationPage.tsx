@@ -1,15 +1,19 @@
 import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
-import { doc, serverTimestamp, updateDoc } from 'firebase/firestore';
-import { CheckCircle2, Search, Eye, Pencil, X } from 'lucide-react';
+import { doc, serverTimestamp, updateDoc, writeBatch } from 'firebase/firestore';
+import { AlertTriangle, CheckCircle2, Clock, Search, Eye, Pencil, X } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import {
   clampString,
   formatDateId,
   formatFullDayDateId,
+  getLogbookVerificationAccess,
   isLogbookAssignedToVerifier,
+  VERIFICATION_WINDOW_WIB,
 } from '../lib/formatters';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import { useLiveClock } from '../hooks/useLiveClock';
+import { DEFAULT_LOGBOOK_TEMPLATE, mergeWithDefaultTemplate } from '../lib/logbookTemplate';
 import { ShiftBadge, VerificationBadge } from '../components/ui/StatusBadge';
 
 const LazyLogbookWizardModal = lazy(() =>
@@ -54,7 +58,8 @@ export function VerificationPage({
   formTemplate,
 }: VerificationPageProps) {
   const { firebaseUser, userProfile } = useAuth();
-  const { todayDate: liveTodayDate } = useLiveClock();
+  const { showToast } = useToast();
+  const { todayDate: liveTodayDate, nowMs, wibTimeLabel } = useLiveClock();
   const [todayDate, setTodayDate] = useState(liveTodayDate);
   const [dateFilter, setDateFilter] = useState(liveTodayDate);
   const [shiftFilter, setShiftFilter] = useState('ALL');
@@ -66,6 +71,20 @@ export function VerificationPage({
   const [editSuccessMsg, setEditSuccessMsg] = useState<string | null>(null);
   const [verificationNote, setVerificationNote] = useState('');
   const [processingId, setProcessingId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batchApproving, setBatchApproving] = useState(false);
+
+  const visibleSpoIds = useMemo(() => {
+    const tpl = mergeWithDefaultTemplate(formTemplate || DEFAULT_LOGBOOK_TEMPLATE);
+    return tpl.points
+      .filter((p) => p.step >= 1 && p.step <= 6 && p.visible !== false)
+      .map((p) => p.id);
+  }, [formTemplate]);
+
+  const hasHistoricalMalam = useMemo(
+    () => logbooks.some((l) => l.shift === 'Malam') || shiftFilter === 'Malam',
+    [logbooks, shiftFilter]
+  );
 
   useEffect(() => {
     if (liveTodayDate !== todayDate) {
@@ -85,10 +104,20 @@ export function VerificationPage({
     [logbooks, editingWizardEntryId]
   );
 
+  const isAdminUser = userProfile?.role === 'Administrator';
   const canEditBeforeVerify =
     userProfile?.role === 'PJ Shift' ||
-    userProfile?.role === 'Kepala Ruang' ||
-    userProfile?.role === 'Administrator';
+    userProfile?.role === 'Kepala Ruang';
+
+  const totalAssignedPendingCount = useMemo(
+    () =>
+      logbooks.filter(
+        (item) =>
+          isLogbookAssignedToVerifier(item, userProfile) &&
+          item.verificationStatus === 'Pending'
+      ).length,
+    [logbooks, userProfile]
+  );
 
   const queueItems = useMemo(() => {
     return logbooks.filter((item) => {
@@ -114,6 +143,25 @@ export function VerificationPage({
     });
   }, [logbooks, userProfile, dateFilter, statusFilter, shiftFilter, searchTerm]);
 
+  const approvableQueueItems = useMemo(
+    () =>
+      queueItems.filter(
+        (item) =>
+          item.verificationStatus !== 'Approved' &&
+          getLogbookVerificationAccess(item, userProfile, nowMs).allowed
+      ),
+    [queueItems, userProfile, nowMs]
+  );
+
+  useEffect(() => {
+    const validIds = new Set(approvableQueueItems.map((i) => i.id));
+    setSelectedIds((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Set(Array.from(prev).filter((id) => validIds.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [approvableQueueItems]);
+
   const handleOpenEditWizard = (entry: LogbookEntry, fromReviewModal: boolean) => {
     setEditSuccessMsg(null);
     if (fromReviewModal) {
@@ -127,6 +175,11 @@ export function VerificationPage({
 
   const handleVerify = async (entry: LogbookEntry, nextStatus: VerificationStatus, note?: string) => {
     if (!firebaseUser || !userProfile || !entry.id) return;
+    const access = getLogbookVerificationAccess(entry, userProfile, Date.now());
+    if (!access.allowed) {
+      showToast(access.reason || 'Tidak dapat memverifikasi di luar jam operasional WIB.', 'error');
+      return;
+    }
     const targetStatus: VerificationStatus = nextStatus === 'Approved' ? 'Approved' : 'Revision';
     const verifierName =
       clampString(
@@ -146,10 +199,64 @@ export function VerificationPage({
       setSelectedEntryId(null);
       setVerificationNote('');
       setEditSuccessMsg(null);
+      showToast(
+        targetStatus === 'Approved'
+          ? `Logbook ${entry.patientName} berhasil disetujui.`
+          : `Permintaan revisi untuk ${entry.patientName} berhasil dikirim.`,
+        'success'
+      );
     } catch (err) {
+      showToast('Gagal menyimpan status verifikasi logbook.', 'error');
       handleFirestoreError(err, OperationType.UPDATE, `logbook/${entry.id}`);
     } finally {
       setProcessingId(null);
+    }
+  };
+
+  const handleBatchApprove = async () => {
+    if (!firebaseUser || !userProfile || selectedIds.size === 0 || batchApproving) return;
+    if (userProfile.role === 'Administrator') {
+      showToast('Administrator tidak diperbolehkan memberikan verifikasi.', 'error');
+      return;
+    }
+    const now = Date.now();
+    const targets = approvableQueueItems.filter(
+      (item) =>
+        selectedIds.has(item.id) &&
+        getLogbookVerificationAccess(item, userProfile, now).allowed
+    );
+    if (targets.length === 0) {
+      showToast('Tidak ada logbook terpilih yang masih berada dalam jam verifikasi WIB.', 'error');
+      return;
+    }
+
+    const verifierName =
+      clampString(
+        userProfile.fullName || firebaseUser.displayName || firebaseUser.email || 'Verifikator',
+        120
+      ) || 'Verifikator';
+
+    setBatchApproving(true);
+    try {
+      const batch = writeBatch(db);
+      for (const entry of targets) {
+        batch.update(doc(db, 'logbook', entry.id), {
+          verificationStatus: 'Approved',
+          verifiedBy: firebaseUser.uid,
+          verifiedByName: verifierName,
+          verificationNote: 'Sesuai standar asuhan HD',
+          verifiedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+      await batch.commit();
+      setSelectedIds(new Set());
+      showToast(`${targets.length} logbook berhasil disetujui sekaligus.`, 'success');
+    } catch (err) {
+      showToast('Gagal menyetujui beberapa logbook terpilih.', 'error');
+      handleFirestoreError(err, OperationType.UPDATE, 'logbook');
+    } finally {
+      setBatchApproving(false);
     }
   };
 
@@ -160,9 +267,28 @@ export function VerificationPage({
           Verifikasi Logbook Tindakan Hemodialisa
         </h2>
         <p className="text-xs text-slate-500">
-          Periksa atau ubah kesesuaian tindakan Pre/Post HD yang diajukan kepada akun Anda sebelum masuk ke rekapitulasi terverifikasi unit.
+          Validasi kelengkapan tindakan perawat sebelum data masuk ke rekapitulasi terverifikasi unit.
         </p>
+        <div className="mt-2 inline-flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-lg border border-sky-200 bg-sky-50/70 px-3 py-1.5 text-[11px] text-slate-700">
+          <Clock className="h-3.5 w-3.5 text-[#0e4e78] shrink-0" />
+          <span>
+            <strong>Jam Verifikasi WIB:</strong> Shift Pagi{' '}
+            <strong className="font-mono">{VERIFICATION_WINDOW_WIB.Pagi.label}</strong> · Shift Siang{' '}
+            <strong className="font-mono">{VERIFICATION_WINDOW_WIB.Siang.label}</strong>{' '}
+            (tutup tepat saat jam berakhir) · Sekarang{' '}
+            <strong className="font-mono text-[#0e4e78]">{wibTimeLabel}</strong>
+          </span>
+        </div>
       </div>
+
+      {isAdminUser && (
+        <div className="flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-medium text-rose-800">
+          <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0" />
+          <span>
+            Akun Administrator tidak memiliki wewenang untuk memberikan verifikasi logbook.
+          </span>
+        </div>
+      )}
 
       {editSuccessMsg && !selectedEntry && (
         <div className="flex items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-medium text-emerald-800">
@@ -230,7 +356,7 @@ export function VerificationPage({
             <option value="ALL">Semua Shift</option>
             <option value="Pagi">Shift Pagi</option>
             <option value="Siang">Shift Siang</option>
-            <option value="Malam">Shift Malam</option>
+            {hasHistoricalMalam && <option value="Malam">Shift Malam</option>}
           </select>
           <select
             value={statusFilter}
@@ -264,6 +390,33 @@ export function VerificationPage({
         </div>
       </div>
 
+      {/* Batch Approval Bar */}
+      {approvableQueueItems.length > 0 && selectedIds.size > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-teal-200 bg-teal-50/90 px-4 py-2.5 text-xs">
+          <span className="font-semibold text-teal-900">
+            {selectedIds.size} logbook dipilih untuk disetujui
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setSelectedIds(new Set())}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Batal Pilih
+            </button>
+            <button
+              type="button"
+              disabled={batchApproving}
+              onClick={handleBatchApprove}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-teal-600 px-3.5 py-1.5 font-semibold text-white hover:bg-teal-700 disabled:opacity-60"
+            >
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              {batchApproving ? 'Menyetujui...' : `Setujui Terpilih (${selectedIds.size})`}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Queue Table */}
       <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
         {queueItems.length === 0 ? (
@@ -276,30 +429,101 @@ export function VerificationPage({
             </p>
             <p className="mt-1 text-xs text-slate-500">
               {statusFilter === 'Approved'
-                ? 'Coba ubah tanggal atau shift untuk melihat logbook yang sudah diverifikasi.'
+                ? 'Ubah tanggal atau shift untuk melihat logbook yang sudah diverifikasi.'
                 : 'Seluruh logbook pada filter ini telah divalidasi.'}
             </p>
+            {totalAssignedPendingCount > 0 && (dateFilter || shiftFilter !== 'ALL' || statusFilter !== 'Pending') && (
+              <button
+                type="button"
+                onClick={() => {
+                  setDateFilter('');
+                  setShiftFilter('ALL');
+                  setStatusFilter('Pending');
+                  setSearchTerm('');
+                }}
+                className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-[#0B5A8E] px-4 py-2 text-xs font-semibold text-white hover:bg-[#094a75]"
+              >
+                Tampilkan Semua Tanggal &amp; Shift ({totalAssignedPendingCount} Pending)
+              </button>
+            )}
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 border-b border-slate-200 text-slate-500">
                 <tr>
+                  {approvableQueueItems.length > 0 && (
+                    <th className="w-10 px-3 py-3 text-center">
+                      <input
+                        type="checkbox"
+                        aria-label="Pilih semua logbook"
+                        checked={
+                          approvableQueueItems.length > 0 &&
+                          approvableQueueItems.every((i) => selectedIds.has(i.id))
+                        }
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedIds(new Set(approvableQueueItems.map((i) => i.id)));
+                          } else {
+                            setSelectedIds(new Set());
+                          }
+                        }}
+                        className="h-3.5 w-3.5 rounded border-slate-300 text-teal-600 focus:ring-teal-600"
+                      />
+                    </th>
+                  )}
                   <th className="px-4 py-3 font-semibold">Tanggal</th>
                   <th className="px-4 py-3 font-semibold">Perawat</th>
                   <th className="px-4 py-3 font-semibold">Pasien &amp; Tindakan</th>
-                  <th className="px-4 py-3 font-semibold">Parameter HD</th>
+                  <th className="px-4 py-3 font-semibold">Ringkasan Klinis</th>
                   <th className="px-4 py-3 font-semibold">Status</th>
                   <th className="px-4 py-3 font-semibold text-right">Aksi Verifikasi</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {queueItems.map((item) => {
+                  const verAccess = getLogbookVerificationAccess(item, userProfile, nowMs);
                   const canEditItem =
                     canEditBeforeVerify &&
+                    verAccess.allowed &&
                     (item.verificationStatus === 'Pending' || item.verificationStatus === 'Revision');
+                  const isApprovable =
+                    item.verificationStatus !== 'Approved' && verAccess.allowed;
+                  const hasComplication =
+                    (item.wizardDetails?.section4?.complicationIncidents?.length || 0) > 0 ||
+                    (Boolean(item.complications) &&
+                      !/^tidak ada\b/i.test(item.complications.trim()) &&
+                      item.complications.trim() !== '-');
+                  const checklist = item.wizardDetails?.spoChecklist || {};
+                  const spoDoneCount = visibleSpoIds.filter(
+                    (id) => checklist[id] === 'DIKERJAKAN'
+                  ).length;
+                  const spoTotal = visibleSpoIds.length;
+                  const hasSpoChecklist = Object.keys(checklist).length > 0;
+                  const spoIncomplete = hasSpoChecklist && spoDoneCount < spoTotal;
+
                   return (
                     <tr key={item.id} className="hover:bg-slate-50">
+                      {approvableQueueItems.length > 0 && (
+                        <td className="w-10 px-3 py-3 text-center">
+                          {isApprovable && (
+                            <input
+                              type="checkbox"
+                              aria-label={`Pilih ${item.patientName}`}
+                              checked={selectedIds.has(item.id)}
+                              onChange={(e) => {
+                                setSelectedIds((prev) => {
+                                  const next = new Set(prev);
+                                  if (e.target.checked) next.add(item.id);
+                                  else next.delete(item.id);
+                                  return next;
+                                });
+                              }}
+                              className="h-3.5 w-3.5 rounded border-slate-300 text-teal-600 focus:ring-teal-600"
+                            />
+                          )}
+                        </td>
+                      )}
                       <td className="px-4 py-3 whitespace-nowrap">
                         <div className="font-mono font-semibold text-slate-900 tabular-nums">
                           {formatDateId(item.date)}
@@ -324,11 +548,27 @@ export function VerificationPage({
                       </td>
                       <td className="px-4 py-3 font-mono text-[11px] tabular-nums text-slate-700">
                         <div>
-                          BB: {item.preWeight} &rarr; {item.postWeight} kg
+                          BB: {item.preWeight} &rarr; {item.postWeight} kg · UF:{' '}
+                          <strong className="text-slate-900">{item.ufAchieved}</strong>/{item.ufGoal} ml
                         </div>
                         <div>
-                          TD: {item.preBp} &rarr; {item.postBp} · UF: {item.ufAchieved} ml
+                          TD: {item.preBp || '-'} &rarr; {item.postBp || '-'}
                         </div>
+                        {(hasComplication || spoIncomplete) && (
+                          <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 font-sans text-[11px]">
+                            {hasComplication && (
+                              <span className="inline-flex items-center gap-1 font-semibold text-rose-700">
+                                <AlertTriangle className="h-3 w-3 shrink-0" />
+                                Ada Komplikasi ({item.complications || 'Intra-HD'})
+                              </span>
+                            )}
+                            {spoIncomplete && (
+                              <span className="font-semibold text-amber-700">
+                                SPO {spoDoneCount}/{spoTotal}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <VerificationBadge status={item.verificationStatus} />
@@ -367,16 +607,25 @@ export function VerificationPage({
                               Ubah
                             </button>
                           )}
-                          {item.verificationStatus !== 'Approved' && (
+                          {isApprovable && (
                             <button
                               type="button"
-                              disabled={processingId === item.id}
+                              disabled={processingId === item.id || batchApproving}
                               onClick={() => handleVerify(item, 'Approved', 'Sesuai standar asuhan HD')}
                               className="inline-flex items-center gap-1 rounded-md bg-teal-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-teal-700 disabled:opacity-60"
                             >
                               <CheckCircle2 className="h-3.5 w-3.5" />
                               Setujui
                             </button>
+                          )}
+                          {item.verificationStatus !== 'Approved' && !verAccess.allowed && (
+                            <span
+                              title={verAccess.reason || undefined}
+                              className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-medium text-slate-500"
+                            >
+                              <Clock className="h-3 w-3 text-slate-400" />
+                              Tutup ({verAccess.windowLabel})
+                            </span>
                           )}
                         </div>
                       </td>
@@ -422,6 +671,7 @@ export function VerificationPage({
             verifierReview={{
               canEdit: Boolean(
                 canEditBeforeVerify &&
+                  getLogbookVerificationAccess(selectedEntry, userProfile, nowMs).allowed &&
                   (selectedEntry.verificationStatus === 'Pending' ||
                     selectedEntry.verificationStatus === 'Revision')
               ),
@@ -482,9 +732,9 @@ export function VerificationPage({
             staffDirectory={staffDirectory}
             formTemplate={formTemplate}
             onSaved={() => {
-              setEditSuccessMsg(
-                `Perubahan logbook pasien ${editingWizardEntry.patientName} berhasil disimpan. Silakan lanjutkan proses verifikasi.`
-              );
+              const msg = `Perubahan logbook ${editingWizardEntry.patientName} berhasil disimpan.`;
+              setEditSuccessMsg(msg);
+              showToast(msg, 'success');
             }}
             onClose={() => {
               const toReopen = reopenReviewEntryId;

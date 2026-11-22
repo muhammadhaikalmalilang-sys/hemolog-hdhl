@@ -14,6 +14,7 @@ import {
   Calendar,
   CalendarPlus,
   CheckCircle2,
+  Clock,
   Eye,
   FolderPlus,
   Lock,
@@ -32,9 +33,12 @@ import {
   formatDateId,
   getCurrentMonthKey,
   getDayNameId,
+  getLogbookSubmissionAccess,
   isPatientScheduledOnDay,
+  SUBMISSION_WINDOW_WIB,
 } from '../lib/formatters';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import { useLiveClock } from '../hooks/useLiveClock';
 import { ShiftBadge, VerificationBadge } from '../components/ui/StatusBadge';
 import { LogbookDetailModal } from '../components/logbook/LogbookDetailModal';
@@ -144,7 +148,12 @@ export function LogbookPage({
   const [catSaving, setCatSaving] = useState(false);
 
   // Active Date & Shift (automatically follows calendar day rollover + Administrator schedule matrix)
-  const { todayDate: liveTodayDate, currentShift: systemShiftFallback } = useLiveClock();
+  const {
+    todayDate: liveTodayDate,
+    currentShift: systemShiftFallback,
+    nowMs,
+    wibTimeLabel,
+  } = useLiveClock();
   const [todayDate, setTodayDate] = useState(liveTodayDate);
   const [inputDate, setInputDate] = useState(liveTodayDate);
   const [manualShiftOverride, setManualShiftOverride] = useState<ShiftType | null>(null);
@@ -180,11 +189,13 @@ export function LogbookPage({
   );
 
   // Doctor overrides (automatically seeded from Administrator doctor_schedules per date+shift)
+  const [showMedicalTeamEditor, setShowMedicalTeamEditor] = useState(false);
   const [dpjpOverride, setDpjpOverride] = useState<string>('');
   const [dutyDoctorOverride, setDutyDoctorOverride] = useState<string>('');
   const [manualDutyDoctorName, setManualDutyDoctorName] = useState('');
 
   // Patient selector & input form
+  const { showToast } = useToast();
   const [includeOutsideShift, setIncludeOutsideShift] = useState(false);
   const [selectedDropdownPatientId, setSelectedDropdownPatientId] = useState('');
   const [draftPatientName, setDraftPatientName] = useState('');
@@ -357,6 +368,11 @@ export function LogbookPage({
     }
     return fallbackDutyDoctor?.id || '';
   }, [dutyDoctorOverride, dutyDoctors, doctorScheduleForSlot, fallbackDutyDoctor]);
+
+  const resolvedDpjpName = useMemo(
+    () => dpjpDoctors.find((d) => d.id === resolvedDpjpId)?.fullName || 'Belum diatur',
+    [dpjpDoctors, resolvedDpjpId]
+  );
 
   const resolvedDutyDoctorName = useMemo(() => {
     if (resolvedDutyDoctorId === '__manual__') {
@@ -562,13 +578,53 @@ export function LogbookPage({
     });
   }, [queuedSlots.length, machineLocks, ownShiftLogbooks, inputDate, activeShift, userProfile?.uid]);
 
-  const totalShiftSubmittedCount = useMemo(
-    () =>
-      logbooks.filter(
-        (lb) => lb.date === inputDate && lb.shift === activeShift
-      ).length,
+  const shiftSlotLogs = useMemo(
+    () => logbooks.filter((lb) => lb.date === inputDate && lb.shift === activeShift),
     [logbooks, inputDate, activeShift]
   );
+
+  const totalShiftSubmittedCount = shiftSlotLogs.length;
+
+  const hasHistoricalMalam = useMemo(
+    () => activeShift === 'Malam' || shiftFilter === 'Malam' || logbooks.some((lb) => lb.shift === 'Malam'),
+    [activeShift, shiftFilter, logbooks]
+  );
+
+  const nurseShiftProgress = useMemo(() => {
+    const scheduledTotal = scheduledPatientsForSlot.length;
+    const shiftPatientIds = new Set(shiftSlotLogs.map((lb) => lb.patientId));
+    const scheduledCoveredCount = scheduledPatientsForSlot.filter((p) =>
+      shiftPatientIds.has(p.id)
+    ).length;
+    const remainingScheduledCount = Math.max(0, scheduledTotal - scheduledCoveredCount);
+
+    let approved = 0;
+    let pending = 0;
+    let draftOrRevision = 0;
+    for (const lb of shiftSlotLogs) {
+      if (lb.verificationStatus === 'Approved') approved += 1;
+      else if (lb.verificationStatus === 'Pending') pending += 1;
+      else draftOrRevision += 1;
+    }
+
+    const pct =
+      scheduledTotal > 0
+        ? Math.min(100, Math.round((scheduledCoveredCount / scheduledTotal) * 100))
+        : shiftSlotLogs.length > 0
+        ? 100
+        : 0;
+
+    return {
+      scheduledTotal,
+      scheduledCoveredCount,
+      remainingScheduledCount,
+      totalSubmitted: shiftSlotLogs.length,
+      approved,
+      pending,
+      draftOrRevision,
+      pct,
+    };
+  }, [scheduledPatientsForSlot, shiftSlotLogs]);
 
   const shiftPatientList = useMemo(() => {
     const byPatientId = new Map(patients.map((p) => [p.id, p]));
@@ -785,6 +841,7 @@ export function LogbookPage({
       setDraftPatientName('');
       setDraftPatientRm('');
       setDraftMachineId('');
+      showToast(`${pat.fullName} ditambahkan ke daftar Shift ${activeShift} (${mach.machineNumber}).`, 'success');
       return true;
     } catch (err) {
       const errCode = (err as { code?: string })?.code || '';
@@ -892,6 +949,16 @@ export function LogbookPage({
         `Logbook ${item.patient.fullName} sudah berstatus ${own.verificationStatus} sehingga Bed/Mesin tidak dapat diubah lagi.`
       );
       return;
+    }
+    if (own && own.verificationStatus === 'Revision') {
+      const revAccess = getLogbookSubmissionAccess(own.date, own.shift, own, Date.now());
+      if (!revAccess.canEditRevision) {
+        setListFeedback(
+          revAccess.reason ||
+            'Batas waktu perbaikan revisi (1 jam) telah berakhir.'
+        );
+        return;
+      }
     }
 
     const newMach = machines.find((m) => m.id === newMachineId);
@@ -1055,6 +1122,7 @@ export function LogbookPage({
           )
         );
       }
+      showToast(`Bed/Mesin ${item.patient.fullName} diubah ke ${newMach.machineNumber}.`, 'success');
     } catch (err) {
       const errCode = (err as { code?: string })?.code || '';
       const msg = err instanceof Error ? err.message : '';
@@ -1151,8 +1219,11 @@ export function LogbookPage({
       }
 
       await batch.commit();
+      const deletedName = deleteTarget.patientName;
       setDeleteTargetId(null);
+      showToast(`Logbook ${deletedName} berhasil dihapus.`, 'success');
     } catch (err) {
+      showToast('Gagal menghapus logbook.', 'error');
       handleFirestoreError(err, OperationType.DELETE, `logbook/${deleteTarget.id}`);
     }
   };
@@ -1161,6 +1232,7 @@ export function LogbookPage({
     e.preventDefault();
     if (!catName.trim() || !catCode.trim()) return;
     setCatSaving(true);
+    const wasEditing = Boolean(editingCat);
     try {
       const payload = {
         name: clampString(catName, 80),
@@ -1181,7 +1253,12 @@ export function LogbookPage({
       setCatCode('');
       setCatDesc('');
       setEditingCat(null);
+      showToast(
+        wasEditing ? 'Kategori tindakan HD diperbarui.' : 'Kategori tindakan HD ditambahkan.',
+        'success'
+      );
     } catch (err) {
+      showToast('Gagal menyimpan kategori tindakan HD.', 'error');
       handleFirestoreError(err, OperationType.WRITE, 'action_categories');
     } finally {
       setCatSaving(false);
@@ -1194,7 +1271,12 @@ export function LogbookPage({
         isActive: !cat.isActive,
         updatedAt: serverTimestamp(),
       });
+      showToast(
+        `Kategori "${cat.name}" ${!cat.isActive ? 'diaktifkan' : 'dinonaktifkan'}.`,
+        'info'
+      );
     } catch (err) {
+      showToast('Gagal memperbarui status kategori.', 'error');
       handleFirestoreError(err, OperationType.UPDATE, `action_categories/${cat.id}`);
     }
   };
@@ -1202,13 +1284,15 @@ export function LogbookPage({
   const deleteCategory = async (catId: string) => {
     try {
       await deleteDoc(doc(db, 'action_categories', catId));
+      showToast('Kategori tindakan HD dihapus.', 'info');
     } catch (err) {
+      showToast('Gagal menghapus kategori tindakan.', 'error');
       handleFirestoreError(err, OperationType.DELETE, `action_categories/${catId}`);
     }
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       {/* Top Workspace Header Matching Screenshot */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1">
@@ -1217,7 +1301,7 @@ export function LogbookPage({
           </h2>
           {isAdminMaster ? (
             <p className="text-xs text-slate-600">
-              Overview seluruh logbook unit, rekapitulasi terverifikasi, hapus entri, dan pengaturan kategori tindakan HD.
+              Kelola seluruh arsip logbook unit, kategori tindakan HD, dan template formulir.
             </p>
           ) : (
             <p className="text-xs text-slate-700 leading-relaxed">
@@ -1240,6 +1324,15 @@ export function LogbookPage({
                 <strong className="font-bold text-slate-900">
                   {totalShiftSubmittedCount} Pasien
                 </strong>
+              </span>
+              <span className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-600">
+                <Clock className="h-3.5 w-3.5 text-[#0B5A8E] shrink-0" />
+                <span>
+                  Batas Ajukan Verifikasi WIB: Shift Pagi{' '}
+                  <strong className="font-mono">{SUBMISSION_WINDOW_WIB.Pagi.label}</strong> · Shift Siang{' '}
+                  <strong className="font-mono">{SUBMISSION_WINDOW_WIB.Siang.label}</strong> · Sekarang{' '}
+                  <strong className="font-mono text-[#0B5A8E]">{wibTimeLabel}</strong>
+                </span>
               </span>
             </p>
           )}
@@ -1321,7 +1414,9 @@ export function LogbookPage({
               >
                 <option value="Pagi">Shift Pagi (07.00–14.00 WIB)</option>
                 <option value="Siang">Shift Siang (12.00–19.00 WIB)</option>
-                <option value="Malam">Shift Malam (21.00–07.00 WIB)</option>
+                {hasHistoricalMalam && (
+                  <option value="Malam">Shift Malam (21.00–07.00 WIB)</option>
+                )}
               </select>
             </div>
           </div>
@@ -1521,103 +1616,168 @@ export function LogbookPage({
         <>
           {!isAdminMaster && (
             <>
-              {/* CARD 1: Tim Medis Berdinas Shift {activeShift} · Otomatis dari Matriks Jadwal Dokter */}
-              <section className="rounded-xl border border-slate-200/90 bg-white/95 p-5 shadow-sm space-y-4">
-                <div className="flex items-start gap-3.5">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sky-50 border border-sky-100 text-[#0B5A8E]">
-                    <Stethoscope className="h-5 w-5" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                      <h3 className="font-display text-sm font-bold text-slate-900">
-                        Tim Medis Berdinas Shift {activeShift}
-                      </h3>
-                      <span className="text-xs font-semibold text-[#0B5A8E]">
-                        ·{' '}
-                        {doctorScheduleForSlot
-                          ? 'Otomatis dari Matriks Jadwal Dokter'
-                          : 'Default Dokter Unit (Belum Diatur Administrator di Matriks Jadwal)'}
-                      </span>
-                    </div>
-                    <p className="mt-0.5 text-xs text-slate-500 leading-relaxed">
-                      Pilihan dokter ini otomatis menyesuaikan Matriks Jadwal Bulanan Shift {activeShift} dan terdistribusi pada seluruh pasien yang diinput shift ini, pelaporan komplikasi intra-HD (Poin 4.3), serta lembar cetak logbook resmi.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                  {/* Left Doctor Box: DPJP */}
-                  <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 space-y-2.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-bold text-slate-800">
-                        Dokter DPJP Unit Hemodialisis
-                      </span>
-                      <span className="rounded border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-bold tracking-wider text-[#0B5A8E] uppercase whitespace-nowrap">
-                        KONSULEN NEFROLOGI
-                      </span>
-                    </div>
-                    <select
-                      value={resolvedDpjpId}
-                      onChange={(e) => setDpjpOverride(e.target.value)}
-                      aria-label="Dokter DPJP Unit Hemodialisis"
-                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-xs font-bold text-slate-900 focus:border-[#0B5A8E] focus:outline-none"
-                    >
-                      {dpjpDoctors.length === 0 ? (
-                        <option value="">-- Belum ada data Dokter DPJP aktif --</option>
-                      ) : (
-                        dpjpDoctors.map((d) => (
-                          <option key={d.id} value={d.id}>
-                            {d.fullName}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                    <p className="text-[11px] text-slate-500">
-                      Penanggung jawab medis instruksi resep HD, target UF Goal &amp; persetujuan klinis.
-                    </p>
-                  </div>
-
-                  {/* Right Doctor Box: Duty Doctor */}
-                  <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 space-y-2.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-bold text-slate-800">
-                        Dokter Jaga Ruangan (Duty Doctor)
-                      </span>
-                      <span className="rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold tracking-wider text-emerald-700 uppercase whitespace-nowrap">
-                        STANDBY SHIFT {activeShift.toUpperCase()}
-                      </span>
-                    </div>
-                    <select
-                      value={resolvedDutyDoctorId}
-                      onChange={(e) => setDutyDoctorOverride(e.target.value)}
-                      aria-label="Dokter Jaga Ruangan"
-                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-xs font-bold text-slate-900 focus:border-[#0B5A8E] focus:outline-none"
-                    >
-                      {dutyDoctors.length === 0 ? (
-                        <option value="">-- Belum ada data Dokter Umum aktif --</option>
-                      ) : (
-                        dutyDoctors.map((d) => (
-                          <option key={d.id} value={d.id}>
-                            {d.fullName}
-                          </option>
-                        ))
-                      )}
-                      <option value="__manual__">Input Manual Nama Dokter Jaga...</option>
-                    </select>
-                    {resolvedDutyDoctorId === '__manual__' && (
-                      <input
-                        type="text"
-                        value={manualDutyDoctorName}
-                        onChange={(e) => setManualDutyDoctorName(e.target.value)}
-                        placeholder="Ketik nama Dokter Jaga..."
-                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 focus:border-[#0B5A8E] focus:outline-none"
-                      />
+              {/* Real-Time Shift Progress Strip */}
+              <section className="rounded-xl border border-slate-200/90 bg-white px-4 py-3 shadow-xs space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                    <span className="font-bold text-slate-900">
+                      Progres Shift {activeShift}
+                    </span>
+                    <span className="text-slate-300" aria-hidden="true">·</span>
+                    <span className="font-mono font-semibold text-teal-700 tabular-nums">
+                      {nurseShiftProgress.scheduledTotal > 0
+                        ? `${nurseShiftProgress.scheduledCoveredCount}/${nurseShiftProgress.scheduledTotal} Pasien Terjadwal Terinput`
+                        : `${nurseShiftProgress.totalSubmitted} Pasien Terinput`}
+                    </span>
+                    {nurseShiftProgress.remainingScheduledCount > 0 && (
+                      <>
+                        <span className="text-slate-300" aria-hidden="true">·</span>
+                        <span className="font-mono text-amber-700 tabular-nums">
+                          Sisa {nurseShiftProgress.remainingScheduledCount} belum diinput
+                        </span>
+                      </>
                     )}
-                    <p className="text-[11px] text-slate-500">
-                      Dokter siaga onsite untuk penanganan kegawatdaruratan, hipotensi &amp; metode TBAK intra-HD.
-                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[11px] text-slate-600 tabular-nums">
+                    <span className="text-emerald-700">
+                      Approved: <strong>{nurseShiftProgress.approved}</strong>
+                    </span>
+                    <span className="text-amber-700">
+                      Pending: <strong>{nurseShiftProgress.pending}</strong>
+                    </span>
+                    {nurseShiftProgress.draftOrRevision > 0 && (
+                      <span className="text-slate-600">
+                        Draft/Revisi: <strong>{nurseShiftProgress.draftOrRevision}</strong>
+                      </span>
+                    )}
+                    <strong className="text-slate-900">{nurseShiftProgress.pct}%</strong>
                   </div>
                 </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+                  <div
+                    className="h-full rounded-full bg-teal-600 transition-all duration-300"
+                    style={{ width: `${nurseShiftProgress.pct}%` }}
+                  />
+                </div>
+              </section>
+
+              {/* CARD 1: Tim Medis Berdinas Shift {activeShift} (Collapsible) */}
+              <section className="rounded-xl border border-slate-200/90 bg-white/95 p-4 shadow-sm space-y-3.5">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sky-50 border border-sky-100 text-[#0B5A8E]">
+                      <Stethoscope className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                        <h3 className="font-display text-xs sm:text-sm font-bold text-slate-900">
+                          Tim Medis Shift {activeShift}
+                        </h3>
+                        <span className="text-[11px] font-medium text-[#0B5A8E]">
+                          ·{' '}
+                          {doctorScheduleForSlot
+                            ? 'Otomatis dari Jadwal Dokter'
+                            : 'Default Dokter Unit'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 truncate">
+                        DPJP:{' '}
+                        <strong className="font-semibold text-slate-900">
+                          {resolvedDpjpName}
+                        </strong>
+                        <span className="mx-1.5 text-slate-300" aria-hidden="true">·</span>
+                        Dokter Jaga:{' '}
+                        <strong className="font-semibold text-slate-900">
+                          {resolvedDutyDoctorName || 'Belum diatur'}
+                        </strong>
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowMedicalTeamEditor((v) => !v)}
+                    className="inline-flex items-center gap-1.5 self-start sm:self-center rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap shrink-0"
+                  >
+                    <Pencil className="h-3 w-3" />
+                    {showMedicalTeamEditor ? 'Tutup Pengaturan' : 'Ubah Tim Medis'}
+                  </button>
+                </div>
+
+                {showMedicalTeamEditor && (
+                  <div className="grid grid-cols-1 gap-4 border-t border-slate-100 pt-3.5 md:grid-cols-2">
+                    {/* Left Doctor Box: DPJP */}
+                    <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-3.5 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-slate-800">
+                          Dokter DPJP Unit Hemodialisis
+                        </span>
+                        <span className="text-[10px] font-bold tracking-wider text-[#0B5A8E] uppercase whitespace-nowrap">
+                          KONSULEN NEFROLOGI
+                        </span>
+                      </div>
+                      <select
+                        value={resolvedDpjpId}
+                        onChange={(e) => setDpjpOverride(e.target.value)}
+                        aria-label="Dokter DPJP Unit Hemodialisis"
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-900 focus:border-[#0B5A8E] focus:outline-none"
+                      >
+                        {dpjpDoctors.length === 0 ? (
+                          <option value="">-- Belum ada data Dokter DPJP aktif --</option>
+                        ) : (
+                          dpjpDoctors.map((d) => (
+                            <option key={d.id} value={d.id}>
+                              {d.fullName}
+                            </option>
+                          ))
+                        )}
+                      </select>
+                      <p className="text-[11px] text-slate-500">
+                        Penanggung jawab medis resep HD, target UF Goal, dan advis klinis.
+                      </p>
+                    </div>
+
+                    {/* Right Doctor Box: Duty Doctor */}
+                    <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-3.5 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-slate-800">
+                          Dokter Jaga Ruangan (Duty Doctor)
+                        </span>
+                        <span className="text-[10px] font-bold tracking-wider text-emerald-700 uppercase whitespace-nowrap">
+                          STANDBY SHIFT {activeShift.toUpperCase()}
+                        </span>
+                      </div>
+                      <select
+                        value={resolvedDutyDoctorId}
+                        onChange={(e) => setDutyDoctorOverride(e.target.value)}
+                        aria-label="Dokter Jaga Ruangan"
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-900 focus:border-[#0B5A8E] focus:outline-none"
+                      >
+                        {dutyDoctors.length === 0 ? (
+                          <option value="">-- Belum ada data Dokter Umum aktif --</option>
+                        ) : (
+                          dutyDoctors.map((d) => (
+                            <option key={d.id} value={d.id}>
+                              {d.fullName}
+                            </option>
+                          ))
+                        )}
+                        <option value="__manual__">Input Manual Nama Dokter Jaga...</option>
+                      </select>
+                      {resolvedDutyDoctorId === '__manual__' && (
+                        <input
+                          type="text"
+                          value={manualDutyDoctorName}
+                          onChange={(e) => setManualDutyDoctorName(e.target.value)}
+                          placeholder="Ketik nama Dokter Jaga..."
+                          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 focus:border-[#0B5A8E] focus:outline-none"
+                        />
+                      )}
+                      <p className="text-[11px] text-slate-500">
+                        Dokter siaga onsite untuk kegawatdaruratan dan komunikasi TBAK intra-HD.
+                      </p>
+                    </div>
+                  </div>
+                )}
               </section>
 
               {/* CARD 2: Input Pasien ke Logbook Shift {activeShift} */}
@@ -1843,7 +2003,7 @@ export function LogbookPage({
                       Daftar Pasien Tanggal {formatDateId(inputDate)} · Shift {activeShift}
                     </h3>
                     <p className="text-xs text-slate-500">
-                      Klik nama pasien di bawah ini untuk membuka halaman pengisian Logbook Bagian I sampai Bagian VIII khusus untuk pasien tersebut.
+                      Klik nama pasien untuk mengisi atau meninjau Logbook Bagian I–VIII.
                     </p>
                   </div>
                   <span className="text-xs font-medium text-slate-600 tabular-nums shrink-0">
@@ -1874,10 +2034,10 @@ export function LogbookPage({
                       <Users className="h-5 w-5" />
                     </div>
                     <h4 className="mt-3 text-sm font-bold text-slate-900">
-                      Halaman Logbook Masih Kosong ({formatDateId(inputDate)})
+                      Daftar Pasien Shift {activeShift} Masih Kosong ({formatDateId(inputDate)})
                     </h4>
-                    <p className="mx-auto mt-1 max-w-xl text-xs text-slate-500 leading-relaxed">
-                      Belum ada pasien yang diinput pada tanggal {formatDateId(inputDate)} Shift {activeShift}. Silakan input pasien terlebih dahulu pada formulir di atas, lalu klik nama pasien yang muncul di daftar ini untuk mengisi formulir Bagian I – Bagian VIII.
+                    <p className="mx-auto mt-1 max-w-md text-xs text-slate-500 leading-relaxed">
+                      Tambahkan pasien melalui formulir di atas untuk mulai mengisi Logbook Bagian I–VIII.
                     </p>
                   </div>
                 ) : (
@@ -1885,14 +2045,21 @@ export function LogbookPage({
                     {shiftPatientList.map((item, idx) => {
                       const pat = item.patient;
                       const own = item.ownEntry;
+                      const ownSubAccess = own
+                        ? getLogbookSubmissionAccess(own.date, own.shift, own, nowMs)
+                        : null;
+                      const revisionExpired =
+                        own?.verificationStatus === 'Revision' &&
+                        Boolean(ownSubAccess?.revisionExpired);
                       const canContinueOwn =
                         own &&
                         (own.verificationStatus === 'Draft' ||
-                          own.verificationStatus === 'Revision');
+                          (own.verificationStatus === 'Revision' && !revisionExpired));
                       const isPendingOrApproved =
                         own &&
                         (own.verificationStatus === 'Pending' ||
-                          own.verificationStatus === 'Approved');
+                          own.verificationStatus === 'Approved' ||
+                          revisionExpired);
                       const isChangingMachine = changingMachinePatientId === pat.id;
                       const hasCurrentInOptions = availableMachineOptions.some(
                         (m) => m.id === item.machineId
@@ -1958,6 +2125,20 @@ export function LogbookPage({
                                 ) : (
                                   <span className="rounded border border-slate-200 bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">
                                     Siap Diinput (Bagian I–VIII)
+                                  </span>
+                                )}
+                                {own?.verificationStatus === 'Revision' &&
+                                  ownSubAccess?.isRevisionGrace && (
+                                    <span className="inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10.5px] font-semibold text-amber-800">
+                                      <Clock className="h-3 w-3 shrink-0" />
+                                      Sisa Revisi {ownSubAccess.remainingRevisionMinutes} mnt (s.d.{' '}
+                                      {ownSubAccess.deadlineWibLabel})
+                                    </span>
+                                  )}
+                                {revisionExpired && (
+                                  <span className="inline-flex items-center gap-1 rounded border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10.5px] font-semibold text-rose-700">
+                                    <Lock className="h-3 w-3 shrink-0" />
+                                    Batas Revisi 1 Jam Berakhir
                                   </span>
                                 )}
                               </div>
@@ -2203,7 +2384,7 @@ export function LogbookPage({
                     <option value="ALL">Semua Shift</option>
                     <option value="Pagi">Shift Pagi</option>
                     <option value="Siang">Shift Siang</option>
-                    <option value="Malam">Shift Malam</option>
+                    {hasHistoricalMalam && <option value="Malam">Shift Malam</option>}
                   </select>
                   <select
                     value={statusFilter}
@@ -2244,14 +2425,19 @@ export function LogbookPage({
                       <tbody className="divide-y divide-slate-100">
                         {filteredLogbooks.map((item) => {
                           const isOwner = item.nurseId === userProfile?.uid;
+                          const itemRevExpired =
+                            item.verificationStatus === 'Revision' &&
+                            getLogbookSubmissionAccess(item.date, item.shift, item, nowMs)
+                              .revisionExpired;
                           const canNurseEdit =
                             isOwner &&
                             (item.verificationStatus === 'Draft' ||
-                              item.verificationStatus === 'Revision');
+                              (item.verificationStatus === 'Revision' && !itemRevExpired));
                           const isLocked =
                             isOwner &&
                             (item.verificationStatus === 'Pending' ||
-                              item.verificationStatus === 'Approved');
+                              item.verificationStatus === 'Approved' ||
+                              itemRevExpired);
                           const canDelete =
                             isAdminMaster ||
                             (isOwner && item.verificationStatus === 'Draft');

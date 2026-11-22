@@ -140,6 +140,32 @@ export function handleFirestoreError(
   throw new Error(formatFirestoreError(error, operationType, path));
 }
 
+export function getUserFriendlyFirestoreError(
+  error: unknown,
+  fallbackMessage: string
+): string {
+  const code =
+    error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
+      ? (error as { code: string }).code.replace(/^firestore\//, '').toLowerCase()
+      : '';
+  const rawMessage = error instanceof Error ? error.message : String(error ?? '');
+  const lower = rawMessage.toLowerCase();
+
+  if (code === 'permission-denied' || lower.includes('missing or insufficient permissions')) {
+    return 'Akses penyimpanan ditolak (permission-denied). Pastikan akun Anda aktif dan memiliki peran yang sesuai.';
+  }
+  if (isTransientFirestoreError(error)) {
+    return 'Koneksi ke server Firestore sedang terganggu. Periksa jaringan internet Anda lalu coba simpan kembali.';
+  }
+  if (code === 'not-found') {
+    return 'Data tujuan tidak ditemukan di server. Muat ulang halaman lalu coba simpan kembali.';
+  }
+  if (code === 'invalid-argument') {
+    return 'Format data tidak valid. Periksa kembali isian formulir Anda.';
+  }
+  return fallbackMessage;
+}
+
 const TRANSIENT_FIRESTORE_CODES = new Set([
   'unavailable',
   'aborted',

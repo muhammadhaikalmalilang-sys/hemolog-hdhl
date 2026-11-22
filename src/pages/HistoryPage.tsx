@@ -106,8 +106,8 @@ export function HistoryPage({
         </h2>
         <p className="text-xs text-slate-500">
           {isPjShift
-            ? 'Pantau riwayat logbook tindakan kelolaan Anda sendiri serta laporan PJ Shift yang telah Anda buat.'
-            : 'Pantau status verifikasi (Draft / Pending / Approved / Revisi) dan catatan verifikator untuk logbook kelolaan Anda sendiri.'}
+            ? 'Riwayat logbook tindakan kelolaan Anda serta laporan PJ Shift yang telah dibuat.'
+            : 'Pantau status verifikasi dan catatan verifikator untuk logbook kelolaan Anda.'}
         </p>
       </div>
 

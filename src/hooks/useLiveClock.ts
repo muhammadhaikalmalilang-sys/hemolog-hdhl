@@ -1,5 +1,10 @@
 import { useEffect, useState } from 'react';
-import { getCurrentMonthKey, getCurrentShiftLabel, getTodayDateStr } from '../lib/formatters';
+import {
+  getCurrentMonthKey,
+  getCurrentShiftLabel,
+  getTodayDateStr,
+  getWibDateAndMinutes,
+} from '../lib/formatters';
 import type { ShiftType } from '../types';
 
 export interface LiveClockSnapshot {
@@ -7,9 +12,14 @@ export interface LiveClockSnapshot {
   currentMonthKey: string;
   currentShift: ShiftType;
   currentShiftLabel: 'Shift Pagi' | 'Shift Siang' | 'Shift Malam';
+  nowMs: number;
+  wibMinutes: number;
+  wibTimeLabel: string;
 }
 
 function readClockSnapshot(): LiveClockSnapshot {
+  const nowMs = Date.now();
+  const wib = getWibDateAndMinutes(nowMs);
   const todayDate = getTodayDateStr();
   const currentMonthKey = getCurrentMonthKey();
   const currentShiftLabel = getCurrentShiftLabel();
@@ -25,12 +35,15 @@ function readClockSnapshot(): LiveClockSnapshot {
     currentMonthKey,
     currentShift,
     currentShiftLabel,
+    nowMs,
+    wibMinutes: wib.minutes,
+    wibTimeLabel: wib.timeLabel,
   };
 }
 
 /**
- * Provides reactive calendar date, month key, and current shift that stay synchronized
- * across midnight rollovers, tab switches, window focus, and device wakeups without reloading.
+ * Provides reactive calendar date, month key, current shift, and WIB clock snapshot
+ * that stay synchronized across midnight rollovers, tab switches, window focus, and device wakeups.
  */
 export function useLiveClock(): LiveClockSnapshot {
   const [clock, setClock] = useState<LiveClockSnapshot>(() => readClockSnapshot());
@@ -42,7 +55,8 @@ export function useLiveClock(): LiveClockSnapshot {
         if (
           prev.todayDate === next.todayDate &&
           prev.currentMonthKey === next.currentMonthKey &&
-          prev.currentShift === next.currentShift
+          prev.currentShift === next.currentShift &&
+          prev.wibMinutes === next.wibMinutes
         ) {
           return prev;
         }
@@ -69,3 +83,4 @@ export function useLiveClock(): LiveClockSnapshot {
 
   return clock;
 }
+

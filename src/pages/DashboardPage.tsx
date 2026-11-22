@@ -13,11 +13,14 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import { useLiveClock } from '../hooks/useLiveClock';
 import {
   formatDateId,
   formatMonthLabel,
+  getDayNameId,
   isLogbookAssignedToVerifier,
+  isPatientScheduledOnDay,
   MONTH_NAMES_ID,
 } from '../lib/formatters';
 import { seedInitialMasterData, seedSampleLogbookForUser } from '../lib/seedData';
@@ -54,7 +57,12 @@ export function DashboardPage({
   onNavigate,
 }: DashboardPageProps) {
   const { userProfile } = useAuth();
-  const { currentMonthKey: realCurrentMonthKey } = useLiveClock();
+  const { showToast } = useToast();
+  const {
+    todayDate: liveTodayDate,
+    currentMonthKey: realCurrentMonthKey,
+    currentShift: liveCurrentShift,
+  } = useLiveClock();
   const [trackedMonthKey, setTrackedMonthKey] = useState(realCurrentMonthKey);
   const [realYearStr, realMonthStr] = realCurrentMonthKey.split('-');
   const realYear = Number(realYearStr);
@@ -172,6 +180,46 @@ export function DashboardPage({
     return Array.from(counts.values()).sort((a, b) => b.count - a.count).slice(0, 5);
   }, [monthlyApprovedUnit]);
 
+  const shiftProgress = useMemo(() => {
+    const dayName = getDayNameId(liveTodayDate);
+    const scheduled = patients.filter(
+      (p) => p.status === 'Aktif' && isPatientScheduledOnDay(p.routineSchedule, dayName, liveCurrentShift)
+    );
+    const scheduledIds = new Set(scheduled.map((p) => p.id));
+    const slotLogs = logbooks.filter(
+      (l) => l.date === liveTodayDate && l.shift === liveCurrentShift
+    );
+    const coveredScheduledIds = new Set(
+      slotLogs.filter((l) => scheduledIds.has(l.patientId)).map((l) => l.patientId)
+    );
+    const approvedCount = slotLogs.filter((l) => l.verificationStatus === 'Approved').length;
+    const pendingVerifyCount = slotLogs.filter((l) => l.verificationStatus === 'Pending').length;
+    const draftCount = slotLogs.filter(
+      (l) => l.verificationStatus === 'Draft' || l.verificationStatus === 'Revision'
+    ).length;
+    const totalScheduled = scheduled.length;
+    const inputtedScheduled = coveredScheduledIds.size;
+    const remainingScheduled = Math.max(0, totalScheduled - inputtedScheduled);
+    const pct =
+      totalScheduled > 0
+        ? Math.min(100, Math.round((inputtedScheduled / totalScheduled) * 100))
+        : slotLogs.length > 0
+        ? 100
+        : 0;
+
+    return {
+      dayName,
+      totalScheduled,
+      inputtedScheduled,
+      remainingScheduled,
+      totalSlotLogs: slotLogs.length,
+      approvedCount,
+      pendingVerifyCount,
+      draftCount,
+      pct,
+    };
+  }, [patients, logbooks, liveTodayDate, liveCurrentShift]);
+
   const handleSeedMaster = async () => {
     setSeeding(true);
     setSeedFeedback(null);
@@ -182,11 +230,14 @@ export function DashboardPage({
         fullName: userProfile.fullName,
         nip: userProfile.nip,
       });
-      setSeedFeedback(
-        'Data master awal (dokter, mesin HD, kategori tindakan, pasien & 1 contoh logbook) berhasil disimpan ke Cloud Firestore.'
-      );
+      const msg =
+        'Data master awal (dokter, mesin HD, kategori tindakan, pasien & 1 contoh logbook) berhasil disimpan.';
+      setSeedFeedback(msg);
+      showToast(msg, 'success');
     } catch (err) {
-      setSeedFeedback(err instanceof Error ? err.message : 'Gagal menyimpan data awal.');
+      const errMsg = err instanceof Error ? err.message : 'Gagal menyimpan data awal.';
+      setSeedFeedback(errMsg);
+      showToast(errMsg, 'error');
     } finally {
       setSeeding(false);
     }
@@ -204,7 +255,7 @@ export function DashboardPage({
         </h2>
 
         <div className="flex flex-wrap items-center gap-2.5">
-          {isAdmin && (
+          {needsInitialMasterSeed && (
             <button
               type="button"
               disabled={seeding}
@@ -287,6 +338,71 @@ export function DashboardPage({
           >
             {seeding ? 'Memproses...' : 'Inisialisasi Data Master'}
           </button>
+        </div>
+      )}
+
+      {(isClinical || isAdmin) && (
+        <div className="rounded-2xl border border-slate-200/80 bg-white/95 backdrop-blur-sm p-4 shadow-sm space-y-2.5">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+              <span className="font-bold text-slate-900">
+                Progres Shift {liveCurrentShift} Hari Ini ({shiftProgress.dayName},{' '}
+                {formatDateId(liveTodayDate)})
+              </span>
+              <span className="text-slate-300" aria-hidden="true">
+                ·
+              </span>
+              <span className="text-slate-700 font-mono tabular-nums">
+                {shiftProgress.totalScheduled > 0 ? (
+                  <>
+                    <strong className="text-[#0B5A8E]">
+                      {shiftProgress.inputtedScheduled}/{shiftProgress.totalScheduled}
+                    </strong>{' '}
+                    pasien terjadwal terinput
+                    {shiftProgress.remainingScheduled > 0 && (
+                      <span className="text-amber-700 font-semibold">
+                        {' '}
+                        ({shiftProgress.remainingScheduled} belum)
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <strong className="text-[#0B5A8E]">{shiftProgress.totalSlotLogs}</strong>{' '}
+                    logbook terinput
+                  </>
+                )}
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono tabular-nums text-slate-600">
+              <span className="text-emerald-700 font-semibold">
+                Approved: {shiftProgress.approvedCount}
+              </span>
+              <span className="text-amber-700 font-semibold">
+                Pending: {shiftProgress.pendingVerifyCount}
+              </span>
+              {shiftProgress.draftCount > 0 && (
+                <span className="text-slate-600">Draft/Revisi: {shiftProgress.draftCount}</span>
+              )}
+              {isClinical && shiftProgress.remainingScheduled > 0 && (
+                <button
+                  type="button"
+                  onClick={() => onNavigate('logbook')}
+                  className="font-sans font-semibold text-[#0B5A8E] hover:underline"
+                >
+                  Lanjut Input &rarr;
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+            <div
+              className="h-full rounded-full bg-[#0B5A8E] transition-all duration-300"
+              style={{ width: `${shiftProgress.pct}%` }}
+            />
+          </div>
         </div>
       )}
 

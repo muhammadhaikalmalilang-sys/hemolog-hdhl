@@ -10,6 +10,7 @@ import {
   formatMonthLabel,
 } from '../lib/formatters';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import { useLiveClock } from '../hooks/useLiveClock';
 import { useF4OnePagePrint } from '../hooks/useF4OnePagePrint';
 import { LogbookDetailModal } from '../components/logbook/LogbookDetailModal';
@@ -59,11 +60,10 @@ function formatIntId(val: number | null | undefined): string {
   return Math.round(val).toLocaleString('id-ID');
 }
 
-function getShiftRangeLabel(shift: 'ALL' | ShiftType): string {
+function getShiftRangeLabel(shift: ShiftType): string {
   if (shift === 'Pagi') return 'Pagi (07.00 - 14.00 WIB)';
   if (shift === 'Siang') return 'Siang (12.00 - 19.00 WIB)';
-  if (shift === 'Malam') return 'Malam (21.00 - 07.00 WIB)';
-  return 'Semua Shift (Pagi / Siang / Malam)';
+  return 'Malam (21.00 - 07.00 WIB)';
 }
 
 const SHIFT_SORT_ORDER: Record<ShiftType, number> = {
@@ -82,17 +82,19 @@ export function PatientReportsPage({
   formTemplate,
 }: PatientReportsPageProps) {
   const { userProfile } = useAuth();
+  const { showToast } = useToast();
   const sheetRef = useRef<HTMLDivElement>(null);
   const { handlePrint } = useF4OnePagePrint({
     orientation: 'landscape',
     sheetRef,
   });
-  const { todayDate: liveTodayDate } = useLiveClock();
+  const { todayDate: liveTodayDate, currentShift: liveCurrentShift } = useLiveClock();
   const [todayDate, setTodayDate] = useState(liveTodayDate);
   const [selectedPatientId, setSelectedPatientId] = useState('ALL');
   const [monthFilter, setMonthFilter] = useState(liveTodayDate.slice(0, 7));
   const [dateFilter, setDateFilter] = useState(liveTodayDate);
-  const [shiftFilter, setShiftFilter] = useState<'ALL' | ShiftType>('ALL');
+  const [shiftFilter, setShiftFilter] = useState<ShiftType>(liveCurrentShift);
+  const [hasManualShift, setHasManualShift] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [activeTab, setActiveTab] = useState<'services' | 'soap'>('services');
 
@@ -106,6 +108,12 @@ export function PatientReportsPage({
       setSoapDate((prev) => (prev === todayDate ? liveTodayDate : prev));
     }
   }, [liveTodayDate, todayDate]);
+
+  useEffect(() => {
+    if (!hasManualShift) {
+      setShiftFilter(liveCurrentShift);
+    }
+  }, [liveCurrentShift, hasManualShift]);
 
   const [detailEntryId, setDetailEntryId] = useState<string | null>(null);
   const detailEntry = useMemo(
@@ -152,7 +160,7 @@ export function PatientReportsPage({
   }, [logbooks, selectedPatientId, dateFilter, monthFilter, searchTerm]);
 
   const shiftCounts = useMemo(() => {
-    const counts = { ALL: periodServices.length, Pagi: 0, Siang: 0, Malam: 0 };
+    const counts = { Pagi: 0, Siang: 0, Malam: 0 };
     for (const item of periodServices) {
       if (item.shift === 'Pagi' || item.shift === 'Siang' || item.shift === 'Malam') {
         counts[item.shift] += 1;
@@ -161,8 +169,86 @@ export function PatientReportsPage({
     return counts;
   }, [periodServices]);
 
+  const hasHistoricalMalam = useMemo(
+    () => shiftCounts.Malam > 0 || shiftFilter === 'Malam' || liveCurrentShift === 'Malam',
+    [shiftCounts.Malam, shiftFilter, liveCurrentShift]
+  );
+
+  const selectedPatientObj = useMemo(
+    () => (selectedPatientId !== 'ALL' ? patientMap.get(selectedPatientId) || null : null),
+    [selectedPatientId, patientMap]
+  );
+
+  const patientTrendSummary = useMemo(() => {
+    if (selectedPatientId === 'ALL' || periodServices.length === 0) return null;
+
+    const idwgValues: number[] = [];
+    const ufGoals: number[] = [];
+    const ufAchieveds: number[] = [];
+    const durations: number[] = [];
+    const ktvs: number[] = [];
+    let complicationCount = 0;
+    let lastComplication = '';
+    let transfusionCount = 0;
+    let epoCount = 0;
+
+    const sortedPeriod = [...periodServices].sort((a, b) => a.date.localeCompare(b.date));
+    for (const s of sortedPeriod) {
+      const sec3 = s.wizardDetails?.section3;
+      const sec4 = s.wizardDetails?.section4;
+      const sec6 = s.wizardDetails?.section6;
+      const sec7 = s.wizardDetails?.section7;
+
+      if (sec3?.dryWeight && sec3.dryWeight > 0 && s.preWeight > 0) {
+        idwgValues.push(s.preWeight - sec3.dryWeight);
+      }
+      if (s.ufGoal > 0) ufGoals.push(Number(s.ufGoal));
+      if (s.ufAchieved >= 0) ufAchieveds.push(Number(s.ufAchieved));
+
+      const parsedDur = sec3?.dialysisDurationHours
+        ? Number(String(sec3.dialysisDurationHours).replace(',', '.'))
+        : NaN;
+      const dur =
+        !Number.isNaN(parsedDur) && parsedDur > 0
+          ? parsedDur
+          : calcDurationHours(s.startTime, s.endTime);
+      if (dur !== null) durations.push(dur);
+
+      const parsedKtv = sec6?.ktv ? Number(String(sec6.ktv).replace(',', '.')) : NaN;
+      if (!Number.isNaN(parsedKtv) && parsedKtv > 0) ktvs.push(parsedKtv);
+
+      const hasComp =
+        (sec4?.complicationIncidents?.length || 0) > 0 ||
+        (Boolean(s.complications) &&
+          !/^tidak ada\b/i.test(s.complications.trim()) &&
+          s.complications.trim() !== '-');
+      if (hasComp) {
+        complicationCount += 1;
+        lastComplication =
+          sec4?.complicationIncidents?.[0]?.type || s.complications || 'Komplikasi Intra-HD';
+      }
+      if (sec7?.transfusionGiven) transfusionCount += 1;
+      if (sec7?.epoGiven) epoCount += 1;
+    }
+
+    const avgOf = (arr: number[]) =>
+      arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+
+    return {
+      sessionsCount: sortedPeriod.length,
+      avgIdwg: avgOf(idwgValues),
+      avgUfGoal: avgOf(ufGoals),
+      avgUfAchieved: avgOf(ufAchieveds),
+      avgDuration: avgOf(durations),
+      avgKtv: avgOf(ktvs),
+      complicationCount,
+      lastComplication,
+      transfusionCount,
+      epoCount,
+    };
+  }, [selectedPatientId, periodServices]);
+
   const shiftFilteredServices = useMemo(() => {
-    if (shiftFilter === 'ALL') return periodServices;
     return periodServices.filter((item) => item.shift === shiftFilter);
   }, [periodServices, shiftFilter]);
 
@@ -483,14 +569,8 @@ export function PatientReportsPage({
       staffDirectory.find((s) => s.isActive && s.role === 'Kepala Ruang')?.fullName ||
       'Kepala Ruang HD';
     const assignedPjBanner = dateFilter
-      ? shiftFilter === 'ALL'
-        ? pjShiftAssignments
-            .filter((a) => a.date === dateFilter)
-            .sort((a, b) => a.shift.localeCompare(b.shift))
-            .map((a) => `${a.shift}: ${a.pjNurseName}`)
-            .join(', ')
-        : pjShiftAssignments.find((a) => a.date === dateFilter && a.shift === shiftFilter)
-            ?.pjNurseName || ''
+      ? pjShiftAssignments.find((a) => a.date === dateFilter && a.shift === shiftFilter)
+          ?.pjNurseName || ''
       : '';
     const pjFromEntries = filteredServices.find((s) => s.targetVerifierRole === 'PJ Shift')
       ?.targetVerifierName;
@@ -570,7 +650,9 @@ export function PatientReportsPage({
         updatedAt: serverTimestamp(),
       });
       setShowSoapModal(false);
+      showToast(`Catatan SOAP ${pat.fullName} berhasil disimpan.`, 'success');
     } catch (err) {
+      showToast('Gagal menyimpan catatan SOAP pasien.', 'error');
       handleFirestoreError(err, OperationType.CREATE, 'reports');
     } finally {
       setSaving(false);
@@ -639,6 +721,7 @@ export function PatientReportsPage({
         r.entry.verificationStatus,
       ])
     );
+    showToast(`Laporan detail pasien (${tableRows.length} baris) diekspor ke CSV.`, 'success');
   };
 
   return (
@@ -652,7 +735,7 @@ export function PatientReportsPage({
               : 'Laporan Pasien: Detail Pelayanan Asuhan Keperawatan & Medis'}
           </h2>
           <p className="text-xs text-slate-500">
-            Menampilkan seluruh logbook (termasuk status Draft secara read-only) yang diinput oleh semua perawat sesuai tanggal dan shift yang dipilih.
+            Rekapitulasi detail asuhan keperawatan dan medis pasien per shift, lengkap dengan ekspor tabel dan catatan SOAP.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -660,7 +743,7 @@ export function PatientReportsPage({
             type="button"
             onClick={handlePrint}
             title="Cetak / Simpan PDF (F4 Landscape - 1 Halaman Penuh)"
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
           >
             <Printer className="h-4 w-4" />
             Cetak / PDF
@@ -668,7 +751,7 @@ export function PatientReportsPage({
           <button
             type="button"
             onClick={handleExportCsv}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
           >
             <Download className="h-4 w-4" />
             Ekspor CSV
@@ -677,7 +760,7 @@ export function PatientReportsPage({
             <button
               type="button"
               onClick={handleOpenSoapModal}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-[#0B5A8E] px-4 py-2 text-xs font-semibold text-white hover:bg-[#094a75]"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-[#0B5A8E] px-4 py-2 text-xs font-semibold text-white hover:bg-[#094a75] whitespace-nowrap"
             >
               <Plus className="h-4 w-4" />
               Tambah Catatan SOAP
@@ -687,91 +770,217 @@ export function PatientReportsPage({
       </div>
 
       {/* Filters */}
-      <div className="no-print rounded-xl border border-slate-200 bg-white/95 backdrop-blur-sm p-3.5 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-5">
-        <select
-          aria-label="Filter Pasien"
-          value={selectedPatientId}
-          onChange={(e) => setSelectedPatientId(e.target.value)}
-          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 focus:border-[#0B5A8E] focus:outline-none"
-        >
-          <option value="ALL">Semua Pasien Hemodialisa</option>
-          {patients.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.fullName} ({p.mrn})
-            </option>
-          ))}
-        </select>
+      <div className="no-print rounded-xl border border-slate-200 bg-white p-3.5 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
+        <div>
+          <label
+            htmlFor="patient-report-patient"
+            className="block text-[11px] font-semibold text-slate-600 mb-1"
+          >
+            Pasien
+          </label>
+          <select
+            id="patient-report-patient"
+            aria-label="Filter Pasien"
+            value={selectedPatientId}
+            onChange={(e) => setSelectedPatientId(e.target.value)}
+            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 focus:border-[#0B5A8E] focus:outline-none"
+          >
+            <option value="ALL">Semua Pasien Hemodialisa</option>
+            {patients.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.fullName} ({p.mrn})
+              </option>
+            ))}
+          </select>
+        </div>
 
-        <input
-          type="month"
-          aria-label="Filter Bulan"
-          value={monthFilter}
-          onChange={(e) => {
-            setMonthFilter(e.target.value);
-            setDateFilter('');
-          }}
-          className="rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-700 focus:border-[#0B5A8E] focus:outline-none"
-        />
-
-        <div className="flex items-center gap-1.5">
+        <div>
+          <label
+            htmlFor="patient-report-month"
+            className="block text-[11px] font-semibold text-slate-600 mb-1"
+          >
+            Bulan
+          </label>
           <input
-            type="date"
-            aria-label="Filter Tanggal Spesifik"
-            value={dateFilter}
+            id="patient-report-month"
+            type="month"
+            aria-label="Filter Bulan"
+            value={monthFilter}
             onChange={(e) => {
-              const val = e.target.value;
-              setDateFilter(val);
-              if (val) setMonthFilter(val.slice(0, 7));
+              setMonthFilter(e.target.value);
+              setDateFilter('');
             }}
             className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-700 focus:border-[#0B5A8E] focus:outline-none"
           />
-          {dateFilter ? (
-            <button
-              type="button"
-              onClick={() => setDateFilter('')}
-              className="rounded-lg border border-slate-300 px-2.5 py-2 text-[11px] font-semibold text-slate-600 hover:bg-slate-50 shrink-0"
-              title="Tampilkan seluruh bulan"
-            >
-              Sebulan
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => {
-                setDateFilter(todayDate);
-                setMonthFilter(todayDate.slice(0, 7));
-              }}
-              className="rounded-lg border border-slate-300 px-2.5 py-2 text-[11px] font-semibold text-[#0B5A8E] hover:bg-sky-50 shrink-0"
-              title="Kembali ke hari aktif"
-            >
-              Hari Ini
-            </button>
-          )}
         </div>
 
-        <select
-          aria-label="Filter Shift"
-          value={shiftFilter}
-          onChange={(e) => setShiftFilter(e.target.value as 'ALL' | ShiftType)}
-          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 focus:border-[#0B5A8E] focus:outline-none"
-        >
-          <option value="ALL">Semua Shift ({shiftCounts.ALL})</option>
-          <option value="Pagi">Shift Pagi ({shiftCounts.Pagi})</option>
-          <option value="Siang">Shift Siang ({shiftCounts.Siang})</option>
-          <option value="Malam">Shift Malam ({shiftCounts.Malam})</option>
-        </select>
+        <div>
+          <label
+            htmlFor="patient-report-date"
+            className="block text-[11px] font-semibold text-slate-600 mb-1"
+          >
+            Tanggal Dinas
+          </label>
+          <div className="flex items-center gap-1.5">
+            <input
+              id="patient-report-date"
+              type="date"
+              aria-label="Filter Tanggal Spesifik"
+              value={dateFilter}
+              onChange={(e) => {
+                const val = e.target.value;
+                setDateFilter(val);
+                if (val) setMonthFilter(val.slice(0, 7));
+              }}
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-700 focus:border-[#0B5A8E] focus:outline-none"
+            />
+            {dateFilter ? (
+              <button
+                type="button"
+                onClick={() => setDateFilter('')}
+                className="rounded-lg border border-slate-300 px-2.5 py-2 text-[11px] font-semibold text-slate-600 hover:bg-slate-50 shrink-0"
+                title="Tampilkan seluruh bulan"
+              >
+                Sebulan
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setDateFilter(todayDate);
+                  setMonthFilter(todayDate.slice(0, 7));
+                }}
+                className="rounded-lg border border-slate-300 px-2.5 py-2 text-[11px] font-semibold text-[#0B5A8E] hover:bg-sky-50 shrink-0"
+                title="Kembali ke hari aktif"
+              >
+                Hari Ini
+              </button>
+            )}
+          </div>
+        </div>
 
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          <input
-            type="text"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Cari pasien, RM, perawat, mesin..."
-            className="w-full rounded-lg border border-slate-300 bg-white pl-9 pr-3 py-2 text-xs focus:border-[#0B5A8E] focus:outline-none"
-          />
+        <div>
+          <label
+            htmlFor="patient-report-search"
+            className="block text-[11px] font-semibold text-slate-600 mb-1"
+          >
+            Pencarian
+          </label>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input
+              id="patient-report-search"
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Cari pasien, RM, perawat, mesin..."
+              className="w-full rounded-lg border border-slate-300 bg-white pl-9 pr-3 py-2 text-xs focus:border-[#0B5A8E] focus:outline-none"
+            />
+          </div>
         </div>
       </div>
+
+      {/* Patient Clinical Trend Summary Card (shown when filtering 1 patient) */}
+      {selectedPatientObj && (
+        <div className="no-print rounded-xl border border-slate-200 bg-white p-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+            <div>
+              <h3 className="text-xs font-bold text-slate-900">
+                Ringkasan Tren Klinis: {selectedPatientObj.fullName}{' '}
+                <span className="font-mono font-normal text-slate-500">
+                  ({selectedPatientObj.mrn})
+                </span>
+              </h3>
+              <p className="text-[11px] text-slate-500">
+                Periode{' '}
+                {dateFilter
+                  ? formatDateId(dateFilter)
+                  : monthFilter
+                  ? formatMonthLabel(monthFilter)
+                  : 'Semua Waktu'}{' '}
+                · Akses: {selectedPatientObj.vascularAccess} · Jadwal:{' '}
+                {selectedPatientObj.routineSchedule}
+              </p>
+            </div>
+            {dateFilter && (
+              <button
+                type="button"
+                onClick={() => setDateFilter('')}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-semibold text-[#0B5A8E] hover:bg-sky-50"
+              >
+                Lihat Tren 1 Bulan ({formatMonthLabel(monthFilter)})
+              </button>
+            )}
+          </div>
+
+          {!patientTrendSummary ? (
+            <p className="text-xs text-slate-500">
+              Belum ada sesi dialisis tercatat untuk {selectedPatientObj.fullName} pada periode ini.
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6 text-xs">
+              <div>
+                <p className="text-[11px] text-slate-500">Jumlah Sesi</p>
+                <p className="mt-0.5 font-mono font-bold text-slate-900 tabular-nums">
+                  {patientTrendSummary.sessionsCount} Sesi
+                </p>
+              </div>
+              <div>
+                <p className="text-[11px] text-slate-500">Rata-rata IDWG</p>
+                <p className="mt-0.5 font-mono font-bold text-slate-900 tabular-nums">
+                  {patientTrendSummary.avgIdwg !== null
+                    ? `${patientTrendSummary.avgIdwg >= 0 ? '+' : ''}${formatNumId(
+                        patientTrendSummary.avgIdwg,
+                        1
+                      )} kg`
+                    : '-'}
+                </p>
+              </div>
+              <div>
+                <p className="text-[11px] text-slate-500">Rata-rata UF / Target</p>
+                <p className="mt-0.5 font-mono font-bold text-slate-900 tabular-nums">
+                  {patientTrendSummary.avgUfAchieved !== null
+                    ? `${formatIntId(patientTrendSummary.avgUfAchieved)} / ${formatIntId(
+                        patientTrendSummary.avgUfGoal
+                      )} ml`
+                    : '-'}
+                </p>
+              </div>
+              <div>
+                <p className="text-[11px] text-slate-500">Durasi &amp; Kt/V</p>
+                <p className="mt-0.5 font-mono font-bold text-slate-900 tabular-nums">
+                  {patientTrendSummary.avgDuration !== null
+                    ? `${formatNumId(patientTrendSummary.avgDuration, 1)} jam`
+                    : '-'}{' '}
+                  ·{' '}
+                  {patientTrendSummary.avgKtv !== null
+                    ? formatNumId(patientTrendSummary.avgKtv, 2)
+                    : '-'}
+                </p>
+              </div>
+              <div>
+                <p className="text-[11px] text-slate-500">Komplikasi Intra-HD</p>
+                <p
+                  className={`mt-0.5 font-mono font-bold tabular-nums ${
+                    patientTrendSummary.complicationCount > 0 ? 'text-rose-700' : 'text-emerald-700'
+                  }`}
+                >
+                  {patientTrendSummary.complicationCount > 0
+                    ? `${patientTrendSummary.complicationCount}x (${patientTrendSummary.lastComplication})`
+                    : 'Nihil'}
+                </p>
+              </div>
+              <div>
+                <p className="text-[11px] text-slate-500">Transfusi &amp; EPO</p>
+                <p className="mt-0.5 font-mono font-bold text-slate-900 tabular-nums">
+                  {patientTrendSummary.transfusionCount} Transfusi · {patientTrendSummary.epoCount}{' '}
+                  EPO
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Quick Shift Switcher & Contributing Nurses Summary */}
       {activeTab === 'services' && (
@@ -782,7 +991,9 @@ export function PatientReportsPage({
                 [
                   { id: 'Pagi', label: 'Shift Pagi', count: shiftCounts.Pagi },
                   { id: 'Siang', label: 'Shift Siang', count: shiftCounts.Siang },
-                  { id: 'Malam', label: 'Shift Malam', count: shiftCounts.Malam },
+                  ...(hasHistoricalMalam
+                    ? [{ id: 'Malam' as const, label: 'Shift Malam', count: shiftCounts.Malam }]
+                    : []),
                 ] as const
               ).map((opt) => {
                 const active = shiftFilter === opt.id;
@@ -790,7 +1001,10 @@ export function PatientReportsPage({
                   <button
                     key={opt.id}
                     type="button"
-                    onClick={() => setShiftFilter(opt.id)}
+                    onClick={() => {
+                      setHasManualShift(true);
+                      setShiftFilter(opt.id);
+                    }}
                     className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
                       active
                         ? 'bg-white text-slate-900 shadow-sm'
@@ -884,22 +1098,28 @@ export function PatientReportsPage({
               Belum ada logbook yang diinput perawat untuk tanggal dan shift yang dipilih.
             </div>
           ) : (
-            <div className="f4-scroll-wrap overflow-x-auto">
+            <div className="f4-scroll-wrap max-h-[70vh] overflow-auto">
               <table className="w-full table-auto border-collapse text-[11px] text-slate-800">
-                <thead>
+                <thead className="sticky top-0 z-20">
                   {/* Row 1: Grouped Category Headers */}
                   <tr className="bg-[#1b4f6e] text-white text-[10px] uppercase tracking-wider leading-tight">
                     <th
                       rowSpan={2}
-                      className="border border-[#2d6687] px-2 py-2 text-center font-bold whitespace-normal"
+                      className="w-[72px] min-w-[72px] max-w-[72px] md:sticky md:left-0 z-30 bg-[#1b4f6e] border border-[#2d6687] px-2 py-2 text-center font-bold whitespace-normal"
                     >
                       NO. BED / MESIN
                     </th>
                     <th
-                      colSpan={3}
+                      rowSpan={2}
+                      className="w-[172px] min-w-[172px] max-w-[192px] md:sticky md:left-[72px] z-30 bg-[#1b4f6e] md:shadow-[2px_0_4px_-2px_rgba(0,0,0,0.25)] border border-[#2d6687] px-2 py-2 text-left font-bold whitespace-normal"
+                    >
+                      NAMA PASIEN / NO. RM
+                    </th>
+                    <th
+                      colSpan={2}
                       className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-normal"
                     >
-                      DATA IDENTITAS &amp; STATUS PASIEN
+                      STATUS &amp; RUANG
                     </th>
                     <th
                       colSpan={2}
@@ -959,9 +1179,6 @@ export function PatientReportsPage({
 
                   {/* Row 2: Specific Sub-Columns */}
                   <tr className="bg-[#236084] text-white text-[9.5px] uppercase tracking-wide leading-tight">
-                    <th className="border border-[#34759b] px-2 py-1.5 text-left font-semibold whitespace-normal">
-                      NAMA PASIEN / NO. RM
-                    </th>
                     <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
                       Status
                     </th>
@@ -1032,22 +1249,27 @@ export function PatientReportsPage({
                 </thead>
 
                 <tbody>
-                  {tableRows.map((row) => {
+                  {tableRows.map((row, rowIdx) => {
                     const s = row.entry;
                     const isIsolasi = /isolasi|hep/i.test(row.roomCategory);
+                    const stickyBg = rowIdx % 2 === 0 ? 'bg-white' : 'bg-slate-50';
 
                     return (
                       <tr
                         key={s.id}
-                        className="odd:bg-white even:bg-slate-50/70 hover:bg-sky-50/60 transition-colors"
+                        className={`${stickyBg} hover:bg-sky-50/60 transition-colors`}
                       >
                         {/* NO. BED / MESIN (Kolom Paling Kiri) */}
-                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono font-semibold whitespace-nowrap">
+                        <td
+                          className={`f4-col-fit w-[72px] min-w-[72px] max-w-[72px] md:sticky md:left-0 z-10 ${stickyBg} border border-slate-200 px-2 py-2 text-center font-mono font-semibold whitespace-nowrap`}
+                        >
                           {row.bedMachine}
                         </td>
 
                         {/* DATA IDENTITAS & STATUS PASIEN */}
-                        <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 whitespace-nowrap">
+                        <td
+                          className={`f4-col-fit w-[172px] min-w-[172px] max-w-[192px] md:sticky md:left-[72px] z-10 ${stickyBg} md:shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)] border border-slate-200 px-2 py-2 whitespace-normal break-words`}
+                        >
                           <div className="font-medium text-slate-900">{s.patientName}</div>
                           <div className="f4-patient-sub font-mono text-[10px] text-slate-500 tabular-nums">
                             {s.patientRm}
@@ -1256,10 +1478,16 @@ export function PatientReportsPage({
                   <tfoot>
                     <tr className="bg-slate-100 font-bold text-slate-900">
                       <td
-                        colSpan={5}
-                        className="f4-col-fit border border-slate-300 px-2 py-2 text-center uppercase tracking-wide whitespace-nowrap"
+                        colSpan={2}
+                        className="md:sticky md:left-0 z-10 bg-slate-100 md:shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)] border border-slate-300 px-2 py-2 text-center uppercase tracking-wide whitespace-nowrap"
                       >
                         TOTAL &amp; RATA-RATA
+                      </td>
+                      <td
+                        colSpan={3}
+                        className="f4-col-fit border border-slate-300 px-2 py-2 text-center text-[10px] font-semibold text-slate-500 whitespace-nowrap"
+                      >
+                        Ringkasan Shift
                       </td>
                       <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                         {formatNumId(summaryStats.avgDurasi, 1)}

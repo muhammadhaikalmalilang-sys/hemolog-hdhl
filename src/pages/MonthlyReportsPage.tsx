@@ -1,8 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { doc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
-import { CheckCircle2, Clock, Download, Eye, Lock, Printer, ShieldCheck, UserCheck } from 'lucide-react';
+import {
+  Activity,
+  ArrowLeft,
+  BarChart3,
+  CheckCircle2,
+  Clock,
+  Download,
+  Eye,
+  Lock,
+  Printer,
+  ShieldCheck,
+  UserCheck,
+} from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import { useLiveClock } from '../hooks/useLiveClock';
 import { useF4OnePagePrint } from '../hooks/useF4OnePagePrint';
 import {
@@ -245,6 +258,7 @@ export function MonthlyReportsPage({
   formTemplate,
 }: MonthlyReportsPageProps) {
   const { userProfile } = useAuth();
+  const { showToast } = useToast();
   const resolvedTemplate = useMemo(
     () => mergeWithDefaultTemplate(formTemplate || DEFAULT_LOGBOOK_TEMPLATE),
     [formTemplate]
@@ -285,6 +299,7 @@ export function MonthlyReportsPage({
   const [trackedMonthKey, setTrackedMonthKey] = useState(liveMonthKey);
   const [monthKey, setMonthKey] = useState(liveMonthKey);
   const [selectedNurseId, setSelectedNurseId] = useState<string>('');
+  const [viewMode, setViewMode] = useState<'matrix' | 'recap'>('matrix');
   const [detailEntryId, setDetailEntryId] = useState<string | null>(null);
   const [signingSlot, setSigningSlot] = useState<'nurse' | 'karu' | null>(null);
   const [signFeedback, setSignFeedback] = useState<{
@@ -804,6 +819,122 @@ export function MonthlyReportsPage({
     return rows;
   }, [resolvedTemplate, daysInMonth, logsByDate, verifiedLogs.length]);
 
+  // Recapitulation of monthly SPO achievement percentage across all nurses
+  const allNursesRecap = useMemo(() => {
+    const rolePriority: Record<string, number> = {
+      'Kepala Ruang': 1,
+      'PJ Shift': 2,
+      'Perawat Pelaksana': 3,
+      Managerial: 4,
+      Administrator: 5,
+    };
+
+    const sortedNurses = [...nurseOptions].sort((a, b) => {
+      const rpA = rolePriority[String(a.role)] ?? 9;
+      const rpB = rolePriority[String(b.role)] ?? 9;
+      if (rpA !== rpB) return rpA - rpB;
+      const nipA = a.nip && a.nip !== '-' ? a.nip : 'zzzz';
+      const nipB = b.nip && b.nip !== '-' ? b.nip : 'zzzz';
+      const nipCmp = nipA.localeCompare(nipB, 'id', { numeric: true });
+      if (nipCmp !== 0) return nipCmp;
+      return a.fullName.localeCompare(b.fullName);
+    });
+
+    return sortedNurses.map((nurse) => {
+      const nurseVerified = allApprovedMonthLogs.filter((l) => l.nurseId === nurse.uid);
+      const nurseLogsByDate = new Map<string, LogbookEntry[]>();
+      const nurseVascByDate = new Map<string, LogbookEntry[]>();
+      for (const d of daysInMonth) {
+        nurseLogsByDate.set(d, []);
+        nurseVascByDate.set(d, []);
+      }
+      for (const lb of nurseVerified) {
+        nurseLogsByDate.get(lb.date)?.push(lb);
+      }
+      for (const lb of allApprovedMonthLogs) {
+        if (!isSpoPointDone(lb, '3.6')) continue;
+        if (getVascularPerformerId(lb, staffByNameMap) !== nurse.uid) continue;
+        nurseVascByDate.get(lb.date)?.push(lb);
+      }
+
+      let activeDays = 0;
+      for (const d of daysInMonth) {
+        if ((nurseLogsByDate.get(d)?.length || 0) > 0) activeDays += 1;
+      }
+
+      let grandTotal = 0;
+      let maxGrandTotal = 0;
+
+      for (const section of monthlySpoSections) {
+        for (const item of section.items) {
+          let itemTotal = 0;
+          for (const dateStr of daysInMonth) {
+            if (item.id === '3.6') {
+              const vascLogs = nurseVascByDate.get(dateStr) || [];
+              itemTotal += new Set(vascLogs.map((e) => e.patientId || e.id)).size;
+            } else {
+              const dayLogs = nurseLogsByDate.get(dateStr) || [];
+              if (dayLogs.length === 0) continue;
+              if (section.maxMode === 'daily_cap_1') {
+                itemTotal += dayLogs.some((e) => isSpoPointDone(e, item.id)) ? 1 : 0;
+              } else {
+                itemTotal += dayLogs.filter((e) => isSpoPointDone(e, item.id)).length;
+              }
+            }
+          }
+          grandTotal += itemTotal;
+          if (item.id === '3.6') {
+            maxGrandTotal += Math.max(nurseVerified.length, itemTotal);
+          } else if (section.maxMode === 'daily_cap_1') {
+            maxGrandTotal += activeDays;
+          } else {
+            maxGrandTotal += nurseVerified.length;
+          }
+        }
+      }
+
+      const pct =
+        maxGrandTotal > 0 ? Math.min(100, Math.round((grandTotal / maxGrandTotal) * 100)) : 0;
+
+      const deterministicReportId = `monthly_${monthKey}_${nurse.uid}`;
+      const matchedReport =
+        reports.find((r) => r.id === deterministicReportId) ||
+        reports.find(
+          (r) =>
+            r.reportType === 'monthly_unit' &&
+            r.monthKey === monthKey &&
+            r.targetNurseId === nurse.uid
+        ) ||
+        null;
+      const approvalStatus: 'Sah Final' | 'Menunggu Ka. Ruang' | 'Belum Disahkan' =
+        matchedReport?.karuSignedBy
+          ? 'Sah Final'
+          : matchedReport?.nurseSignedBy
+          ? 'Menunggu Ka. Ruang'
+          : 'Belum Disahkan';
+
+      return {
+        ...nurse,
+        roleLabel:
+          nurse.role === 'Kepala Ruang' ? 'Kepala Ruangan' : String(nurse.role || 'Perawat'),
+        activeDays,
+        patientCount: nurseVerified.length,
+        grandTotal,
+        maxGrandTotal,
+        pct,
+        approvalStatus,
+      };
+    });
+  }, [
+    nurseOptions,
+    allApprovedMonthLogs,
+    daysInMonth,
+    staffByNameMap,
+    monthlySpoSections,
+    reports,
+    monthKey,
+  ]);
+
   const activeMonthlyReport = useMemo(() => {
     if (!effectiveNurseId) return null;
     const deterministicId = `monthly_${monthKey}_${effectiveNurseId}`;
@@ -900,11 +1031,13 @@ export function MonthlyReportsPage({
         type: 'success',
         message: 'Pengesahan digital perawat berhasil dicatat.',
       });
+      showToast('Pengesahan digital perawat berhasil dicatat.', 'success');
     } catch (err) {
       setSignFeedback({
         type: 'error',
         message: 'Gagal menyimpan pengesahan digital perawat.',
       });
+      showToast('Gagal menyimpan pengesahan digital perawat.', 'error');
       handleFirestoreError(err, OperationType.UPDATE, `reports/${reportDocId}`);
     } finally {
       setSigningSlot(null);
@@ -953,11 +1086,16 @@ export function MonthlyReportsPage({
         type: 'success',
         message: `Laporan bulanan ${selectedNurse.fullName} resmi disahkan Kepala Ruang.`,
       });
+      showToast(
+        `Laporan bulanan ${selectedNurse.fullName} resmi disahkan Kepala Ruang.`,
+        'success'
+      );
     } catch (err) {
       setSignFeedback({
         type: 'error',
         message: 'Gagal menyimpan pengesahan digital Kepala Ruang.',
       });
+      showToast('Gagal menyimpan pengesahan digital Kepala Ruang.', 'error');
       handleFirestoreError(err, OperationType.UPDATE, `reports/${reportDocId}`);
     } finally {
       setSigningSlot(null);
@@ -1058,14 +1196,47 @@ export function MonthlyReportsPage({
       `${verifiedLogs.length} Pasien Terverifikasi`,
     ]);
 
+    if (viewMode === 'recap') {
+      exportToCsv(
+        `Rekap_Persentase_Capaian_Bulanan_${monthKey}.csv`,
+        [
+          'NO',
+          'NAMA PERAWAT',
+          'NIP',
+          'JABATAN',
+          'HARI DISAHKAN',
+          'PASIEN KELOLAAN',
+          'NILAI SPO',
+          'MAKS SPO',
+          '% CAPAIAN',
+          'STATUS PENGESAHAN',
+        ],
+        allNursesRecap.map((item, idx) => [
+          idx + 1,
+          item.fullName,
+          item.nip || '-',
+          item.roleLabel,
+          `${item.activeDays} Hari`,
+          `${item.patientCount} Pasien`,
+          item.maxGrandTotal > 0 ? item.grandTotal : '-',
+          item.maxGrandTotal > 0 ? item.maxGrandTotal : '-',
+          item.maxGrandTotal > 0 ? `${item.pct}%` : '-',
+          item.approvalStatus,
+        ])
+      );
+      showToast(`Rekap capaian bulanan ${formatMonthLabel(monthKey)} diekspor ke CSV.`, 'success');
+      return;
+    }
+
     const safeName = selectedNurse.fullName.replace(/[^a-zA-Z0-9]+/g, '_');
     exportToCsv(`Logbook_Bulanan_${safeName}_${monthKey}.csv`, headers, rows);
+    showToast(`Matriks bulanan ${selectedNurse.fullName} diekspor ke CSV.`, 'success');
   };
 
   const totalColumns = 4 + daysInMonth.length + 3;
 
   return (
-    <div className="space-y-5 print:space-y-0">
+    <div className="space-y-4 print:space-y-0">
       {/* Page Header & Controls (Hidden in Print) */}
       <div className="no-print flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
@@ -1073,21 +1244,16 @@ export function MonthlyReportsPage({
             Laporan Bulanan Logbook Pasien Kelolaan Perawat
           </h2>
           <p className="text-xs text-slate-500">
-            Periode {formatMonthLabel(monthKey)} · Dihitung dari logbook pasien yang{' '}
-            <span className="font-semibold text-teal-700">sudah diverifikasi (Approved)</span> oleh
-            PJ Shift atau Kepala Ruang.{' '}
-            <span className="font-semibold text-slate-700">
-              Pengesahan Laporan Bulanan hanya oleh Kepala Ruang.
-            </span>
+            Rekap matriks {formatMonthLabel(monthKey)} dari logbook berstatus Approved dengan pengesahan akhir oleh Kepala Ruang.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
-          {!isNurseOnly && (
+        <div className="flex flex-wrap items-center gap-2">
+          {!isNurseOnly && viewMode === 'matrix' && (
             <div className="flex items-center gap-2">
               <label
                 htmlFor="monthly-nurse-select"
-                className="text-xs font-semibold text-slate-700 whitespace-nowrap"
+                className="text-[11px] font-semibold text-slate-600 whitespace-nowrap"
               >
                 Perawat:
               </label>
@@ -1095,7 +1261,7 @@ export function MonthlyReportsPage({
                 id="monthly-nurse-select"
                 value={effectiveNurseId}
                 onChange={(e) => setSelectedNurseId(e.target.value)}
-                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 focus:border-[#0B5A8E] focus:outline-none min-w-[230px]"
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 focus:border-[#0B5A8E] focus:outline-none min-w-[220px]"
               >
                 {nurseOptions.map((n) => (
                   <option key={n.uid} value={n.uid}>
@@ -1108,6 +1274,7 @@ export function MonthlyReportsPage({
 
           <input
             type="month"
+            aria-label="Filter Bulan Laporan Bulanan"
             value={monthKey}
             onChange={(e) => setMonthKey(e.target.value)}
             className="rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-700 focus:border-[#0B5A8E] focus:outline-none"
@@ -1115,8 +1282,18 @@ export function MonthlyReportsPage({
 
           <button
             type="button"
+            onClick={handlePrint}
+            title="Cetak / Simpan PDF (F4 Landscape - 1 Halaman Penuh)"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+          >
+            <Printer className="h-4 w-4" />
+            Cetak / PDF
+          </button>
+
+          <button
+            type="button"
             onClick={handleExportCsv}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
           >
             <Download className="h-4 w-4" />
             Ekspor CSV
@@ -1124,16 +1301,184 @@ export function MonthlyReportsPage({
 
           <button
             type="button"
-            onClick={handlePrint}
-            title="Cetak / Simpan PDF (F4 Landscape - 1 Halaman Penuh)"
-            className="inline-flex items-center gap-1.5 rounded-lg bg-[#0B5A8E] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#094a75]"
+            onClick={() => setViewMode((prev) => (prev === 'recap' ? 'matrix' : 'recap'))}
+            className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition-colors whitespace-nowrap ${
+              viewMode === 'recap'
+                ? 'bg-[#164b75] text-white hover:bg-[#103a5c]'
+                : 'bg-[#0B5A8E] text-white hover:bg-[#094a75]'
+            }`}
           >
-            <Printer className="h-4 w-4" />
-            Cetak / PDF
+            {viewMode === 'recap' ? (
+              <>
+                <ArrowLeft className="h-4 w-4" />
+                Kembali ke Matriks 1–{daysInMonth.length}
+              </>
+            ) : (
+              <>
+                <BarChart3 className="h-4 w-4" />
+                Persentase Capaian Bulanan
+              </>
+            )}
           </button>
         </div>
       </div>
 
+      {viewMode === 'recap' ? (
+        <div
+          ref={sheetRef}
+          className="f4-print-sheet rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden"
+        >
+          <div className="px-5 py-4 border-b border-slate-200">
+            <h3 className="inline-flex items-center gap-2 font-display text-sm sm:text-base font-bold text-slate-900">
+              <Activity className="h-4 w-4 text-[#0B5A8E]" />
+              <span>
+                Daftar Rekapitulasi Capaian Logbook Seluruh Perawat ({monthSlashLabel})
+              </span>
+            </h3>
+            <p className="mt-1 text-xs text-slate-500">
+              Klik tombol <span className="font-semibold text-slate-700">Buka Matriks</span> pada
+              baris perawat untuk membuka tabel matriks 1–{daysInMonth.length} horizontal (
+              {allSpoItemIds.length} Poin SPO).
+            </p>
+          </div>
+
+          <div className="f4-scroll-wrap max-h-[70vh] overflow-auto">
+            <table className="w-full border-collapse text-xs text-slate-800">
+              <thead className="sticky top-0 z-10">
+                <tr className="bg-[#164b75] text-white text-[11px] uppercase tracking-wider">
+                  <th className="border-r border-[#27608d] px-3 py-3 text-center font-bold w-12">
+                    NO
+                  </th>
+                  <th className="border-r border-[#27608d] px-4 py-3 text-left font-bold min-w-[220px]">
+                    NAMA PERAWAT &amp; NIP
+                  </th>
+                  <th className="border-r border-[#27608d] px-4 py-3 text-center font-bold min-w-[140px]">
+                    JABATAN
+                  </th>
+                  <th className="border-r border-[#27608d] px-3 py-3 text-center font-bold w-24">
+                    HARI
+                    <br />
+                    DISAHKAN
+                  </th>
+                  <th className="border-r border-[#27608d] px-3 py-3 text-center font-bold w-28">
+                    PASIEN
+                    <br />
+                    KELOLAAN
+                  </th>
+                  <th className="border-r border-[#27608d] px-3 py-3 text-center font-bold w-28">
+                    NILAI SPO /
+                    <br />
+                    MAKS
+                  </th>
+                  <th className="border-r border-[#27608d] px-3 py-3 text-center font-bold w-24">
+                    % CAPAIAN
+                  </th>
+                  <th className="border-r border-[#27608d] px-3 py-3 text-center font-bold min-w-[155px]">
+                    STATUS PENGESAHAN
+                  </th>
+                  <th className="no-print px-4 py-3 text-center font-bold w-32">AKSI</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {allNursesRecap.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="px-4 py-10 text-center text-xs text-slate-500">
+                      Belum ada data perawat pada direktori unit.
+                    </td>
+                  </tr>
+                ) : (
+                  allNursesRecap.map((nurse, idx) => {
+                    const hasScore = nurse.maxGrandTotal > 0;
+                    const canOpenNurseMatrix = !isNurseOnly || nurse.uid === userProfile.uid;
+                    return (
+                      <tr key={nurse.uid} className="hover:bg-slate-50/80 transition-colors">
+                        <td className="border-r border-slate-200 px-3 py-3 text-center font-mono text-xs text-slate-500 tabular-nums">
+                          {idx + 1}
+                        </td>
+                        <td className="border-r border-slate-200 px-4 py-3">
+                          <div className="font-bold uppercase text-slate-900">
+                            {nurse.fullName}
+                          </div>
+                          <div className="font-mono text-[11px] text-slate-500 mt-0.5">
+                            NIP: {nurse.nip || '-'}
+                          </div>
+                        </td>
+                        <td className="border-r border-slate-200 px-4 py-3 text-center text-slate-700">
+                          {nurse.roleLabel}
+                        </td>
+                        <td className="border-r border-slate-200 px-3 py-3 text-center font-mono font-semibold text-slate-800 tabular-nums">
+                          {nurse.activeDays} Hari
+                        </td>
+                        <td className="border-r border-slate-200 px-3 py-3 text-center font-mono font-semibold text-slate-800 tabular-nums">
+                          {nurse.patientCount} Pasien
+                        </td>
+                        <td className="border-r border-slate-200 px-3 py-3 text-center font-mono text-slate-700 tabular-nums">
+                          {hasScore ? `${nurse.grandTotal} / ${nurse.maxGrandTotal}` : '-'}
+                        </td>
+                        <td className="border-r border-slate-200 px-3 py-3 text-center font-mono font-bold tabular-nums">
+                          {hasScore ? (
+                            <span
+                              className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-bold ${
+                                nurse.pct >= 90
+                                  ? 'bg-emerald-50 text-emerald-700'
+                                  : nurse.pct >= 75
+                                  ? 'bg-sky-50 text-[#0B5A8E]'
+                                  : 'bg-amber-50 text-amber-700'
+                              }`}
+                            >
+                              {nurse.pct}%
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">-</span>
+                          )}
+                        </td>
+                        <td className="border-r border-slate-200 px-3 py-3 text-center">
+                          {nurse.approvalStatus === 'Sah Final' ? (
+                            <span className="inline-flex items-center gap-1 rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 whitespace-nowrap">
+                              <ShieldCheck className="h-3 w-3" />
+                              Sah Final
+                            </span>
+                          ) : nurse.approvalStatus === 'Menunggu Ka. Ruang' ? (
+                            <span className="inline-flex items-center gap-1 rounded border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-[#0B5A8E] whitespace-nowrap">
+                              <Clock className="h-3 w-3" />
+                              Menunggu Ka. Ruang
+                            </span>
+                          ) : (
+                            <span className="text-[11px] font-medium text-slate-400 whitespace-nowrap">
+                              Belum Disahkan
+                            </span>
+                          )}
+                        </td>
+                        <td className="no-print px-4 py-3 text-center">
+                          {canOpenNurseMatrix ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedNurseId(nurse.uid);
+                                setViewMode('matrix');
+                              }}
+                              className="inline-flex items-center gap-1.5 rounded-lg bg-[#164b75] px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-[#0f3858] transition-colors whitespace-nowrap"
+                            >
+                              <Eye className="h-3.5 w-3.5" />
+                              Buka Matriks
+                            </button>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
+                              <Lock className="h-3 w-3" />
+                              Terkunci
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
+        <>
       {/* Verification Status Notice (Hidden in Print) */}
       <div className="no-print flex flex-col gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1235,25 +1580,25 @@ export function MonthlyReportsPage({
         </div>
 
         {/* Main Matrix Table */}
-        <div className="f4-scroll-wrap overflow-x-auto">
+        <div className="f4-scroll-wrap max-h-[70vh] overflow-auto">
           <table className="w-full border-collapse border border-slate-400 text-[10px] leading-tight text-slate-900">
-            <thead>
+            <thead className="sticky top-0 z-20">
               <tr className="bg-[#1e3a5f] text-white">
                 <th
                   rowSpan={2}
-                  className="monthly-col-no border border-slate-500 px-1.5 py-2 text-center font-bold w-9"
+                  className="monthly-col-no w-[42px] min-w-[42px] max-w-[42px] md:sticky md:left-0 z-30 bg-[#1e3a5f] border border-slate-500 px-1.5 py-2 text-center font-bold"
                 >
                   NO
                 </th>
                 <th
                   rowSpan={2}
-                  className="monthly-col-cat border border-slate-500 px-2 py-2 text-left font-bold min-w-[130px] max-w-[160px]"
+                  className="monthly-col-cat w-[140px] min-w-[140px] max-w-[140px] md:sticky md:left-[42px] z-30 bg-[#1e3a5f] border border-slate-500 px-2 py-2 text-left font-bold"
                 >
                   KATEGORI FASE ASUHAN
                 </th>
                 <th
                   rowSpan={2}
-                  className="monthly-col-desc border border-slate-500 px-2 py-2 text-left font-bold min-w-[230px]"
+                  className="monthly-col-desc w-[228px] min-w-[228px] max-w-[228px] md:sticky md:left-[182px] z-30 bg-[#1e3a5f] md:shadow-[2px_0_4px_-2px_rgba(0,0,0,0.25)] border border-slate-500 px-2 py-2 text-left font-bold"
                 >
                   URAIAN KEGIATAN SPESIFIK PERAWAT HEMODIALISIS
                 </th>
@@ -1309,10 +1654,13 @@ export function MonthlyReportsPage({
               {/* Summary Sub-header Row: Verified Patients Per Day */}
               <tr className="bg-[#eef4fb] text-[#1e3a5f] font-bold">
                 <td
-                  colSpan={4}
-                  className="border border-slate-400 px-2 py-1.5 text-right uppercase tracking-wide"
+                  colSpan={3}
+                  className="md:sticky md:left-0 z-30 bg-[#eef4fb] md:shadow-[2px_0_4px_-2px_rgba(0,0,0,0.12)] border border-slate-400 px-2 py-1.5 text-right uppercase tracking-wide"
                 >
                   JUMLAH PASIEN KELOLAAN TERVERIFIKASI PER HARI
+                </td>
+                <td className="border border-slate-400 bg-[#eef4fb] px-2 py-1.5 text-center text-[9.5px] font-semibold text-slate-500">
+                  Harian
                 </td>
                 {daysInMonth.map((dateStr) => {
                   const count = logsByDate.get(dateStr)?.length || 0;
@@ -1355,18 +1703,20 @@ export function MonthlyReportsPage({
                       colSpan={totalColumns}
                       className="monthly-section-title border border-slate-400 px-2 py-1.5 font-bold tracking-wide uppercase"
                     >
-                      REKAPITULASI PENGINPUTAN TTV &amp; KOLOM TAMBAHAN (SESUAI TEMPLATE LOGBOOK)
+                      <span className="md:sticky md:left-2 inline-block">
+                        REKAPITULASI PENGINPUTAN TTV &amp; KOLOM TAMBAHAN (SESUAI TEMPLATE LOGBOOK)
+                      </span>
                     </td>
                   </tr>
                   {customMonthlyRows.map((crow) => (
-                    <tr key={crow.key} className="hover:bg-slate-50/70">
-                      <td className="border border-slate-300 px-1.5 py-1.5 text-center font-mono font-bold text-slate-800 align-top">
+                    <tr key={crow.key} className="bg-white hover:bg-slate-50/70">
+                      <td className="w-[42px] min-w-[42px] max-w-[42px] md:sticky md:left-0 z-10 bg-white border border-slate-300 px-1.5 py-1.5 text-center font-mono font-bold text-slate-800 align-top">
                         {crow.no}
                       </td>
-                      <td className="border border-slate-300 px-2 py-1.5 font-semibold text-slate-900 align-top">
+                      <td className="w-[140px] min-w-[140px] max-w-[140px] md:sticky md:left-[42px] z-10 bg-white border border-slate-300 px-2 py-1.5 font-semibold text-slate-900 align-top">
                         {crow.category}
                       </td>
-                      <td className="border border-slate-300 px-2 py-1.5 text-slate-700 align-top">
+                      <td className="w-[228px] min-w-[228px] max-w-[228px] md:sticky md:left-[182px] z-10 bg-white md:shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)] border border-slate-300 px-2 py-1.5 text-slate-700 align-top">
                         {crow.description}
                       </td>
                       <td className="border border-slate-300 px-2 py-1.5 italic text-slate-500 align-top">
@@ -1406,10 +1756,13 @@ export function MonthlyReportsPage({
               {/* Total Nilai Kegiatan Per Hari */}
               <tr className="bg-[#eef4fb] font-bold text-[#0f2942]">
                 <td
-                  colSpan={4}
-                  className="border border-slate-400 px-2 py-1.5 text-right uppercase tracking-wide"
+                  colSpan={3}
+                  className="md:sticky md:left-0 z-10 bg-[#eef4fb] md:shadow-[2px_0_4px_-2px_rgba(0,0,0,0.12)] border border-slate-400 px-2 py-1.5 text-right uppercase tracking-wide"
                 >
                   TOTAL NILAI KEGIATAN TERVERIFIKASI PER HARI
+                </td>
+                <td className="border border-slate-400 bg-[#eef4fb] px-2 py-1.5 text-center text-[9.5px] font-semibold text-slate-500">
+                  Akumulasi
                 </td>
                 {daysInMonth.map((dateStr, idx) => {
                   const dayVal = matrixData.dailyGrandTotals[idx] || 0;
@@ -1438,10 +1791,13 @@ export function MonthlyReportsPage({
               {/* Pasien Kelolaan (Nama Pasien) */}
               <tr className="bg-[#fffaf0] text-slate-900">
                 <td
-                  colSpan={4}
-                  className="border border-slate-400 px-2 py-2 text-right font-bold uppercase tracking-wide text-[#1e3a5f]"
+                  colSpan={3}
+                  className="md:sticky md:left-0 z-10 bg-[#fffaf0] md:shadow-[2px_0_4px_-2px_rgba(0,0,0,0.12)] border border-slate-400 px-2 py-2 text-right font-bold uppercase tracking-wide text-[#1e3a5f]"
                 >
                   PASIEN KELOLAAN (NAMA PASIEN)
+                </td>
+                <td className="border border-slate-400 bg-[#fffaf0] px-2 py-2 text-center text-[9.5px] text-slate-500">
+                  Daftar Pasien
                 </td>
                 {daysInMonth.map((dateStr) => {
                   const dayLogs = logsByDate.get(dateStr) || [];
@@ -1734,6 +2090,8 @@ export function MonthlyReportsPage({
           </div>
         )}
       </div>
+        </>
+      )}
 
       {detailEntry && (
         <LogbookDetailModal
@@ -1774,20 +2132,20 @@ function FragmentSection({
           colSpan={totalColumns}
           className="monthly-section-title border border-slate-400 px-2 py-1.5 font-bold tracking-wide uppercase"
         >
-          {section.title}
+          <span className="md:sticky md:left-2 inline-block">{section.title}</span>
         </td>
       </tr>
       {section.items.map((item) => {
         const res = rowResults.get(item.id);
         return (
-          <tr key={item.id} className="hover:bg-slate-50/70">
-            <td className="border border-slate-300 px-1.5 py-1.5 text-center font-mono font-bold text-slate-800 align-top">
+          <tr key={item.id} className="bg-white hover:bg-slate-50/70">
+            <td className="w-[42px] min-w-[42px] max-w-[42px] md:sticky md:left-0 z-10 bg-white border border-slate-300 px-1.5 py-1.5 text-center font-mono font-bold text-slate-800 align-top">
               {item.id}
             </td>
-            <td className="border border-slate-300 px-2 py-1.5 font-semibold text-slate-900 align-top">
+            <td className="w-[140px] min-w-[140px] max-w-[140px] md:sticky md:left-[42px] z-10 bg-white border border-slate-300 px-2 py-1.5 font-semibold text-slate-900 align-top">
               {item.category}
             </td>
-            <td className="border border-slate-300 px-2 py-1.5 text-slate-700 align-top">
+            <td className="w-[228px] min-w-[228px] max-w-[228px] md:sticky md:left-[182px] z-10 bg-white md:shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)] border border-slate-300 px-2 py-1.5 text-slate-700 align-top">
               {item.description}
             </td>
             <td className="border border-slate-300 px-2 py-1.5 italic text-slate-500 align-top">

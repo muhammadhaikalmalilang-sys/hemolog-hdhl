@@ -11,7 +11,12 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
+import {
+  db,
+  formatFirestoreError,
+  getUserFriendlyFirestoreError,
+  OperationType,
+} from '../../lib/firebase';
 import { clampString, exportToCsv } from '../../lib/formatters';
 import type { Patient, PatientStatus } from '../../types';
 
@@ -666,8 +671,13 @@ export function BulkAddPatientsModal({
 
       onSuccess(validEntries.length);
     } catch (err) {
-      setSubmitError('Gagal menyimpan data pasien massal. Periksa koneksi atau kelengkapan data.');
-      handleFirestoreError(err, OperationType.CREATE, 'patients');
+      formatFirestoreError(err, OperationType.CREATE, 'patients');
+      setSubmitError(
+        getUserFriendlyFirestoreError(
+          err,
+          'Gagal menyimpan data pasien massal. Periksa koneksi atau kelengkapan data.'
+        )
+      );
     } finally {
       setSaving(false);
     }

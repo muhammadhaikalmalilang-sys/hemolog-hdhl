@@ -1,5 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { deleteDoc, doc, serverTimestamp, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
+import {
+  deleteDoc,
+  deleteField,
+  doc,
+  getDoc,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  writeBatch,
+} from 'firebase/firestore';
 import {
   CalendarPlus,
   FileSpreadsheet,
@@ -9,7 +18,12 @@ import {
   UserCheck,
   Users,
 } from 'lucide-react';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import {
+  db,
+  formatFirestoreError,
+  getUserFriendlyFirestoreError,
+  OperationType,
+} from '../lib/firebase';
 import {
   clampString,
   formatDateId,
@@ -18,6 +32,7 @@ import {
   getDaysInMonth,
 } from '../lib/formatters';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import { useLiveClock } from '../hooks/useLiveClock';
 import { ShiftBadge, ValidationBadge } from '../components/ui/StatusBadge';
 import { ImportScheduleSpreadsheetModal } from '../components/schedules/ImportScheduleSpreadsheetModal';
@@ -40,6 +55,13 @@ interface SchedulesPageProps {
   staffDirectory: StaffDirectoryEntry[];
 }
 
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function ensureMinName(value: string | undefined, maxLen: number, fallback: string): string {
+  const cleaned = clampString(value || '', maxLen);
+  return cleaned.length >= 2 ? cleaned : fallback;
+}
+
 export function SchedulesPage({
   schedules,
   pjShiftAssignments = [],
@@ -48,6 +70,7 @@ export function SchedulesPage({
   staffDirectory,
 }: SchedulesPageProps) {
   const { userProfile } = useAuth();
+  const { showToast } = useToast();
   const { todayDate: liveTodayDate, currentMonthKey: liveMonthKey } = useLiveClock();
   const [trackedTodayDate, setTrackedTodayDate] = useState(liveTodayDate);
   const [activeTab, setActiveTab] = useState<'nurses' | 'pj_shift' | 'doctors'>('nurses');
@@ -60,8 +83,10 @@ export function SchedulesPage({
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
   const [validatingAll, setValidatingAll] = useState(false);
+  const [busyScheduleCell, setBusyScheduleCell] = useState<string | null>(null);
   const [showImportModal, setShowImportModal] = useState(false);
   const [scheduleFeedback, setScheduleFeedback] = useState<string | null>(null);
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
 
   // Admin doctor schedule assignment form
   const activeDoctors = useMemo(() => doctors.filter((d) => d.status === 'Aktif'), [doctors]);
@@ -72,6 +97,8 @@ export function SchedulesPage({
   const [docNotes, setDocNotes] = useState('');
   const [savingDoc, setSavingDoc] = useState(false);
   const [batchSavingDoc, setBatchSavingDoc] = useState(false);
+  const [docFeedback, setDocFeedback] = useState<string | null>(null);
+  const [docError, setDocError] = useState<string | null>(null);
 
   // PJ Shift single-assignee per shift/date form
   const pjStaffList = useMemo(
@@ -89,6 +116,7 @@ export function SchedulesPage({
   const [batchSavingPj, setBatchSavingPj] = useState(false);
   const [deletingPjId, setDeletingPjId] = useState<string | null>(null);
   const [pjFeedback, setPjFeedback] = useState<string | null>(null);
+  const [pjError, setPjError] = useState<string | null>(null);
 
   useEffect(() => {
     if (liveTodayDate !== trackedTodayDate) {
@@ -101,12 +129,11 @@ export function SchedulesPage({
     }
   }, [liveTodayDate, liveMonthKey, trackedTodayDate]);
 
-  if (!userProfile) return null;
-
-  const isAdmin = userProfile.role === 'Administrator';
-  const isKepalaRuang = userProfile.role === 'Kepala Ruang';
+  const userUid = userProfile?.uid || '';
+  const isAdmin = userProfile?.role === 'Administrator';
+  const isKepalaRuang = userProfile?.role === 'Kepala Ruang';
   const canManagePjAssignment = isAdmin || isKepalaRuang;
-  const isNurseOnly = userProfile.role === 'Perawat Pelaksana';
+  const isNurseOnly = userProfile?.role === 'Perawat Pelaksana';
 
   const days = useMemo(() => getDaysInMonth(monthKey), [monthKey]);
 
@@ -122,10 +149,10 @@ export function SchedulesPage({
 
   const clinicalStaff = useMemo(() => {
     if (isNurseOnly) {
-      return sortedActiveStaff.filter((s) => s.uid === userProfile.uid);
+      return sortedActiveStaff.filter((s) => s.uid === userUid);
     }
     return sortedActiveStaff;
-  }, [sortedActiveStaff, isNurseOnly, userProfile.uid]);
+  }, [sortedActiveStaff, isNurseOnly, userUid]);
 
   const scheduleMap = useMemo(() => {
     const map = new Map<string, ScheduleEntry>();
@@ -205,28 +232,77 @@ export function SchedulesPage({
   const resolvedDocDpjpId = docDpjpId || defaultDpjp?.id || '';
   const resolvedDocDutyId = docDutyId || defaultDuty?.id || '';
 
+  if (!userProfile) return null;
+
   const handleAssignShift = async (e: React.FormEvent) => {
     e.preventDefault();
+    setScheduleError(null);
+    setScheduleFeedback(null);
+
     const nurse = staffDirectory.find((s) => s.uid === targetNurseId);
-    if (!nurse || !targetDate) return;
+    if (!nurse) {
+      setScheduleError('Pilih perawat/staf terlebih dahulu sebelum menyimpan jadwal.');
+      return;
+    }
+    if (!ISO_DATE_RE.test(targetDate)) {
+      setScheduleError('Format tanggal jadwal tidak valid.');
+      return;
+    }
 
     setSaving(true);
     const docId = `${nurse.uid}_${targetDate}`;
+    const scheduleRef = doc(db, 'schedules', docId);
+    const targetMonthKey = targetDate.slice(0, 7);
+    const safeNurseName = ensureMinName(nurse.fullName, 120, 'Staf HD');
+    const cleanNotes = clampString(notes || '', 300);
+
     try {
-      await setDoc(doc(db, 'schedules', docId), {
-        nurseId: nurse.uid,
-        nurseName: clampString(nurse.fullName, 120),
-        date: targetDate,
-        monthKey: targetDate.slice(0, 7),
-        shift: targetShift,
-        validationStatus: 'Draft',
-        notes: clampString(notes || '', 300),
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      const existingSnap = await getDoc(scheduleRef);
+      if (existingSnap.exists()) {
+        const existingData = existingSnap.data();
+        const clearValidator =
+          existingData?.validatedBy !== undefined || existingData?.validatedByName !== undefined
+            ? {
+                validatedBy: deleteField(),
+                validatedByName: deleteField(),
+              }
+            : {};
+        await updateDoc(scheduleRef, {
+          nurseName: safeNurseName,
+          date: targetDate,
+          monthKey: targetMonthKey,
+          shift: targetShift,
+          validationStatus: 'Draft',
+          ...clearValidator,
+          notes: cleanNotes,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await setDoc(scheduleRef, {
+          nurseId: nurse.uid,
+          nurseName: safeNurseName,
+          date: targetDate,
+          monthKey: targetMonthKey,
+          shift: targetShift,
+          validationStatus: 'Draft',
+          notes: cleanNotes,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      if (targetMonthKey !== monthKey) {
+        setMonthKey(targetMonthKey);
+      }
       setNotes('');
+      const msg = `Jadwal ${nurse.fullName} tanggal ${formatDateId(targetDate)} disimpan sebagai Shift ${targetShift}.`;
+      setScheduleFeedback(msg);
+      showToast(msg, 'success');
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `schedules/${docId}`);
+      formatFirestoreError(err, OperationType.WRITE, `schedules/${docId}`);
+      const errMsg = getUserFriendlyFirestoreError(err, 'Gagal menyimpan jadwal shift perawat.');
+      setScheduleError(errMsg);
+      showToast(errMsg, 'error');
     } finally {
       setSaving(false);
     }
@@ -234,41 +310,68 @@ export function SchedulesPage({
 
   const handleAssignDoctorSchedule = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!docDate) return;
+    setDocError(null);
+    setDocFeedback(null);
+
+    if (!ISO_DATE_RE.test(docDate)) {
+      setDocError('Format tanggal jadwal dokter tidak valid.');
+      return;
+    }
     const dpjpObj = activeDoctors.find((d) => d.id === resolvedDocDpjpId);
     const dutyObj = activeDoctors.find((d) => d.id === resolvedDocDutyId);
-    if (!dpjpObj || !dutyObj) return;
+    if (!dpjpObj || !dutyObj) {
+      setDocError('Pilih Dokter DPJP dan Dokter Jaga terlebih dahulu.');
+      return;
+    }
 
     setSavingDoc(true);
     const docId = `${docDate}_${docShift}`;
-    const existing = doctorScheduleMap.get(docId);
+    const docRef = doc(db, 'doctor_schedules', docId);
+    const targetMonthKey = docDate.slice(0, 7);
+    const safeDpjpName = ensureMinName(dpjpObj.fullName, 120, 'Dokter DPJP');
+    const safeDutyName = ensureMinName(dutyObj.fullName, 120, 'Dokter Jaga');
+    const cleanDocNotes = clampString(docNotes || '', 300);
+
     try {
-      if (existing) {
-        await updateDoc(doc(db, 'doctor_schedules', docId), {
+      const existingSnap = await getDoc(docRef);
+      if (existingSnap.exists()) {
+        await updateDoc(docRef, {
           dpjpDoctorId: dpjpObj.id,
-          dpjpDoctorName: clampString(dpjpObj.fullName, 120),
+          dpjpDoctorName: safeDpjpName,
           dutyDoctorId: dutyObj.id,
-          dutyDoctorName: clampString(dutyObj.fullName, 120),
-          notes: clampString(docNotes || '', 300),
+          dutyDoctorName: safeDutyName,
+          notes: cleanDocNotes,
           updatedAt: serverTimestamp(),
         });
       } else {
-        await setDoc(doc(db, 'doctor_schedules', docId), {
+        await setDoc(docRef, {
           date: docDate,
-          monthKey: docDate.slice(0, 7),
+          monthKey: targetMonthKey,
           shift: docShift,
           dpjpDoctorId: dpjpObj.id,
-          dpjpDoctorName: clampString(dpjpObj.fullName, 120),
+          dpjpDoctorName: safeDpjpName,
           dutyDoctorId: dutyObj.id,
-          dutyDoctorName: clampString(dutyObj.fullName, 120),
-          notes: clampString(docNotes || '', 300),
+          dutyDoctorName: safeDutyName,
+          notes: cleanDocNotes,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
       }
+
+      if (targetMonthKey !== monthKey) {
+        setMonthKey(targetMonthKey);
+      }
       setDocNotes('');
+      const msg = `Jadwal dokter Shift ${docShift} tanggal ${formatDateId(docDate)} disimpan.`;
+      setDocFeedback(
+        `Jadwal dokter Shift ${docShift} tanggal ${formatDateId(docDate)} disimpan (${dpjpObj.fullName} · ${dutyObj.fullName}).`
+      );
+      showToast(msg, 'success');
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `doctor_schedules/${docId}`);
+      formatFirestoreError(err, OperationType.WRITE, `doctor_schedules/${docId}`);
+      const errMsg = getUserFriendlyFirestoreError(err, 'Gagal menyimpan jadwal dokter.');
+      setDocError(errMsg);
+      showToast(errMsg, 'error');
     } finally {
       setSavingDoc(false);
     }
@@ -276,43 +379,71 @@ export function SchedulesPage({
 
   const handleApplyDoctorMonthTemplate = async () => {
     if (!isAdmin) return;
+    setDocError(null);
+    setDocFeedback(null);
+
     const dpjpObj = activeDoctors.find((d) => d.id === resolvedDocDpjpId);
     const dutyObj = activeDoctors.find((d) => d.id === resolvedDocDutyId);
-    if (!dpjpObj || !dutyObj || days.length === 0) return;
+    if (!dpjpObj || !dutyObj || days.length === 0) {
+      setDocError('Pilih bulan, Dokter DPJP, dan Dokter Jaga terlebih dahulu.');
+      return;
+    }
 
     setBatchSavingDoc(true);
+    const safeDpjpName = ensureMinName(dpjpObj.fullName, 120, 'Dokter DPJP');
+    const safeDutyName = ensureMinName(dutyObj.fullName, 120, 'Dokter Jaga');
+    const cleanDocNotes = clampString(docNotes || '', 300);
+
     try {
+      const snaps = await Promise.all(
+        days.map((d) =>
+          getDoc(doc(db, 'doctor_schedules', `${d}_${docShift}`)).catch(() => null)
+        )
+      );
+
       const batch = writeBatch(db);
-      for (const d of days) {
+      days.forEach((d, idx) => {
         const docId = `${d}_${docShift}`;
-        const existing = doctorScheduleMap.get(docId);
-        if (existing) {
-          batch.update(doc(db, 'doctor_schedules', docId), {
+        const ref = doc(db, 'doctor_schedules', docId);
+        const snap = snaps[idx];
+        const exists = snap ? snap.exists() : doctorScheduleMap.has(docId);
+
+        if (exists) {
+          batch.update(ref, {
             dpjpDoctorId: dpjpObj.id,
-            dpjpDoctorName: clampString(dpjpObj.fullName, 120),
+            dpjpDoctorName: safeDpjpName,
             dutyDoctorId: dutyObj.id,
-            dutyDoctorName: clampString(dutyObj.fullName, 120),
-            notes: clampString(docNotes || '', 300),
+            dutyDoctorName: safeDutyName,
+            notes: cleanDocNotes,
             updatedAt: serverTimestamp(),
           });
         } else {
-          batch.set(doc(db, 'doctor_schedules', docId), {
+          batch.set(ref, {
             date: d,
             monthKey: d.slice(0, 7),
             shift: docShift,
             dpjpDoctorId: dpjpObj.id,
-            dpjpDoctorName: clampString(dpjpObj.fullName, 120),
+            dpjpDoctorName: safeDpjpName,
             dutyDoctorId: dutyObj.id,
-            dutyDoctorName: clampString(dutyObj.fullName, 120),
-            notes: clampString(docNotes || '', 300),
+            dutyDoctorName: safeDutyName,
+            notes: cleanDocNotes,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
         }
-      }
+      });
       await batch.commit();
+      const msg = `Jadwal dokter Shift ${docShift} untuk ${days.length} tanggal di ${formatMonthLabel(monthKey)} berhasil disimpan.`;
+      setDocFeedback(msg);
+      showToast(msg, 'success');
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'doctor_schedules');
+      formatFirestoreError(err, OperationType.WRITE, 'doctor_schedules');
+      const errMsg = getUserFriendlyFirestoreError(
+        err,
+        'Gagal menerapkan jadwal dokter untuk satu bulan.'
+      );
+      setDocError(errMsg);
+      showToast(errMsg, 'error');
     } finally {
       setBatchSavingDoc(false);
     }
@@ -320,46 +451,68 @@ export function SchedulesPage({
 
   const handleAssignPjShift = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canManagePjAssignment || !pjDate) return;
+    if (!canManagePjAssignment) return;
+    setPjError(null);
+    setPjFeedback(null);
+
+    if (!ISO_DATE_RE.test(pjDate)) {
+      setPjError('Format tanggal penugasan PJ Shift tidak valid.');
+      return;
+    }
     const selectedPj = pjStaffList.find((s) => s.uid === resolvedPjNurseId);
-    if (!selectedPj) return;
+    if (!selectedPj) {
+      setPjError('Pilih akun PJ Shift yang aktif terlebih dahulu.');
+      return;
+    }
 
     setSavingPj(true);
-    setPjFeedback(null);
     const docId = `${pjDate}_${pjShift}`;
-    const existing = pjShiftAssignments.find((a) => a.id === docId);
+    const docRef = doc(db, 'pj_shift_assignments', docId);
+    const targetMonthKey = pjDate.slice(0, 7);
+    const safePjName = ensureMinName(selectedPj.fullName, 120, 'PJ Shift');
+    const safeAssignedByName = ensureMinName(userProfile.fullName, 120, 'Supervisor');
+    const cleanPjNotes = clampString(pjNotes || '', 300);
+
     try {
-      if (existing) {
-        await updateDoc(doc(db, 'pj_shift_assignments', docId), {
+      const existingSnap = await getDoc(docRef);
+      if (existingSnap.exists()) {
+        await updateDoc(docRef, {
           pjNurseId: selectedPj.uid,
-          pjNurseName: clampString(selectedPj.fullName, 120),
+          pjNurseName: safePjName,
           pjNurseRole: 'PJ Shift',
-          notes: clampString(pjNotes || '', 300),
+          notes: cleanPjNotes,
           assignedBy: userProfile.uid,
-          assignedByName: clampString(userProfile.fullName, 120),
+          assignedByName: safeAssignedByName,
           updatedAt: serverTimestamp(),
         });
       } else {
-        await setDoc(doc(db, 'pj_shift_assignments', docId), {
+        await setDoc(docRef, {
           date: pjDate,
-          monthKey: pjDate.slice(0, 7),
+          monthKey: targetMonthKey,
           shift: pjShift,
           pjNurseId: selectedPj.uid,
-          pjNurseName: clampString(selectedPj.fullName, 120),
+          pjNurseName: safePjName,
           pjNurseRole: 'PJ Shift',
-          notes: clampString(pjNotes || '', 300),
+          notes: cleanPjNotes,
           assignedBy: userProfile.uid,
-          assignedByName: clampString(userProfile.fullName, 120),
+          assignedByName: safeAssignedByName,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
       }
-      setPjFeedback(
-        `Penugasan PJ Shift ${pjShift} tanggal ${formatDateId(pjDate)} ditetapkan kepada ${selectedPj.fullName}.`
-      );
+
+      if (targetMonthKey !== monthKey) {
+        setMonthKey(targetMonthKey);
+      }
+      const msg = `Penugasan PJ Shift ${pjShift} tanggal ${formatDateId(pjDate)} ditetapkan kepada ${selectedPj.fullName}.`;
+      setPjFeedback(msg);
+      showToast(msg, 'success');
       setPjNotes('');
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `pj_shift_assignments/${docId}`);
+      formatFirestoreError(err, OperationType.WRITE, `pj_shift_assignments/${docId}`);
+      const errMsg = getUserFriendlyFirestoreError(err, 'Gagal menyimpan penugasan PJ Shift.');
+      setPjError(errMsg);
+      showToast(errMsg, 'error');
     } finally {
       setSavingPj(false);
     }
@@ -367,48 +520,74 @@ export function SchedulesPage({
 
   const handleApplyPjMonthTemplate = async () => {
     if (!canManagePjAssignment || days.length === 0) return;
+    setPjError(null);
+    setPjFeedback(null);
+
     const selectedPj = pjStaffList.find((s) => s.uid === resolvedPjNurseId);
-    if (!selectedPj) return;
+    if (!selectedPj) {
+      setPjError('Pilih akun PJ Shift yang aktif terlebih dahulu.');
+      return;
+    }
 
     setBatchSavingPj(true);
-    setPjFeedback(null);
+    const safePjName = ensureMinName(selectedPj.fullName, 120, 'PJ Shift');
+    const safeAssignedByName = ensureMinName(userProfile.fullName, 120, 'Supervisor');
+    const cleanPjNotes = clampString(pjNotes || '', 300);
+
     try {
+      const snaps = await Promise.all(
+        days.map((d) =>
+          getDoc(doc(db, 'pj_shift_assignments', `${d}_${pjShift}`)).catch(() => null)
+        )
+      );
+
       const batch = writeBatch(db);
-      for (const d of days) {
+      days.forEach((d, idx) => {
         const docId = `${d}_${pjShift}`;
-        const existing = pjShiftAssignments.find((a) => a.id === docId);
-        if (existing) {
-          batch.update(doc(db, 'pj_shift_assignments', docId), {
+        const ref = doc(db, 'pj_shift_assignments', docId);
+        const snap = snaps[idx];
+        const exists = snap
+          ? snap.exists()
+          : pjShiftAssignments.some((a) => a.id === docId);
+
+        if (exists) {
+          batch.update(ref, {
             pjNurseId: selectedPj.uid,
-            pjNurseName: clampString(selectedPj.fullName, 120),
+            pjNurseName: safePjName,
             pjNurseRole: 'PJ Shift',
-            notes: clampString(pjNotes || '', 300),
+            notes: cleanPjNotes,
             assignedBy: userProfile.uid,
-            assignedByName: clampString(userProfile.fullName, 120),
+            assignedByName: safeAssignedByName,
             updatedAt: serverTimestamp(),
           });
         } else {
-          batch.set(doc(db, 'pj_shift_assignments', docId), {
+          batch.set(ref, {
             date: d,
             monthKey: d.slice(0, 7),
             shift: pjShift,
             pjNurseId: selectedPj.uid,
-            pjNurseName: clampString(selectedPj.fullName, 120),
+            pjNurseName: safePjName,
             pjNurseRole: 'PJ Shift',
-            notes: clampString(pjNotes || '', 300),
+            notes: cleanPjNotes,
             assignedBy: userProfile.uid,
-            assignedByName: clampString(userProfile.fullName, 120),
+            assignedByName: safeAssignedByName,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
         }
-      }
+      });
       await batch.commit();
-      setPjFeedback(
-        `Penugasan PJ Shift ${pjShift} untuk seluruh tanggal di ${formatMonthLabel(monthKey)} diterapkan kepada ${selectedPj.fullName}.`
-      );
+      const msg = `Penugasan PJ Shift ${pjShift} bulan ${formatMonthLabel(monthKey)} diterapkan kepada ${selectedPj.fullName}.`;
+      setPjFeedback(msg);
+      showToast(msg, 'success');
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'pj_shift_assignments');
+      formatFirestoreError(err, OperationType.WRITE, 'pj_shift_assignments');
+      const errMsg = getUserFriendlyFirestoreError(
+        err,
+        'Gagal menerapkan penugasan PJ Shift satu bulan.'
+      );
+      setPjError(errMsg);
+      showToast(errMsg, 'error');
     } finally {
       setBatchSavingPj(false);
     }
@@ -418,13 +597,17 @@ export function SchedulesPage({
     if (!canManagePjAssignment) return;
     setDeletingPjId(entry.id);
     setPjFeedback(null);
+    setPjError(null);
     try {
       await deleteDoc(doc(db, 'pj_shift_assignments', entry.id));
-      setPjFeedback(
-        `Penugasan PJ Shift ${entry.shift} tanggal ${formatDateId(entry.date)} (${entry.pjNurseName}) dihapus.`
-      );
+      const msg = `Penugasan PJ Shift ${entry.shift} tanggal ${formatDateId(entry.date)} (${entry.pjNurseName}) dihapus.`;
+      setPjFeedback(msg);
+      showToast(msg, 'info');
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `pj_shift_assignments/${entry.id}`);
+      formatFirestoreError(err, OperationType.DELETE, `pj_shift_assignments/${entry.id}`);
+      const errMsg = getUserFriendlyFirestoreError(err, 'Gagal menghapus penugasan PJ Shift.');
+      setPjError(errMsg);
+      showToast(errMsg, 'error');
     } finally {
       setDeletingPjId(null);
     }
@@ -434,22 +617,44 @@ export function SchedulesPage({
     if (!isAdmin) return;
     const order: ScheduleShiftType[] = ['Pagi', 'Siang', 'Malam', 'Libur', 'Cuti'];
     const docId = `${nurse.uid}_${date}`;
-    const current = scheduleMap.get(docId);
-    const nextShift = current
-      ? order[(order.indexOf(current.shift) + 1) % order.length]
-      : 'Pagi';
+    if (busyScheduleCell === docId) return;
+
+    setBusyScheduleCell(docId);
+    setScheduleError(null);
+
+    const scheduleRef = doc(db, 'schedules', docId);
+    const safeNurseName = ensureMinName(nurse.fullName, 120, 'Staf HD');
 
     try {
-      if (current) {
-        await updateDoc(doc(db, 'schedules', docId), {
+      const existingSnap = await getDoc(scheduleRef);
+      const currentShift = existingSnap.exists()
+        ? (existingSnap.data()?.shift as ScheduleShiftType | undefined)
+        : scheduleMap.get(docId)?.shift;
+      const nextShift =
+        currentShift && order.includes(currentShift)
+          ? order[(order.indexOf(currentShift) + 1) % order.length]
+          : 'Pagi';
+
+      if (existingSnap.exists()) {
+        const existingData = existingSnap.data();
+        const clearValidator =
+          existingData?.validatedBy !== undefined || existingData?.validatedByName !== undefined
+            ? {
+                validatedBy: deleteField(),
+                validatedByName: deleteField(),
+              }
+            : {};
+        await updateDoc(scheduleRef, {
+          nurseName: safeNurseName,
           shift: nextShift,
           validationStatus: 'Draft',
+          ...clearValidator,
           updatedAt: serverTimestamp(),
         });
       } else {
-        await setDoc(doc(db, 'schedules', docId), {
+        await setDoc(scheduleRef, {
           nurseId: nurse.uid,
-          nurseName: clampString(nurse.fullName, 120),
+          nurseName: safeNurseName,
           date,
           monthKey: date.slice(0, 7),
           shift: nextShift,
@@ -460,25 +665,48 @@ export function SchedulesPage({
         });
       }
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `schedules/${docId}`);
+      formatFirestoreError(err, OperationType.WRITE, `schedules/${docId}`);
+      setScheduleError(
+        getUserFriendlyFirestoreError(err, 'Gagal memperbarui sel jadwal perawat.')
+      );
+    } finally {
+      setBusyScheduleCell((prev) => (prev === docId ? null : prev));
     }
   };
 
   const handleValidateMonth = async () => {
     if (!isKepalaRuang || draftCount === 0) return;
     setValidatingAll(true);
+    setScheduleError(null);
+    setScheduleFeedback(null);
+
     try {
       const drafts = monthSchedules.filter((s) => s.validationStatus === 'Draft');
-      for (const d of drafts) {
-        await updateDoc(doc(db, 'schedules', d.id), {
-          validationStatus: 'Validated',
-          validatedBy: userProfile.uid,
-          validatedByName: clampString(userProfile.fullName, 120),
-          updatedAt: serverTimestamp(),
-        });
+      const safeValidatorName = ensureMinName(userProfile.fullName, 120, 'Kepala Ruang');
+      const CHUNK_SIZE = 400;
+
+      for (let i = 0; i < drafts.length; i += CHUNK_SIZE) {
+        const chunk = drafts.slice(i, i + CHUNK_SIZE);
+        const batch = writeBatch(db);
+        for (const d of chunk) {
+          batch.update(doc(db, 'schedules', d.id), {
+            validationStatus: 'Validated',
+            validatedBy: userProfile.uid,
+            validatedByName: safeValidatorName,
+            updatedAt: serverTimestamp(),
+          });
+        }
+        await batch.commit();
       }
+
+      const msg = `${drafts.length} jadwal dinas bulan ${formatMonthLabel(monthKey)} berhasil divalidasi.`;
+      setScheduleFeedback(msg);
+      showToast(msg, 'success');
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, 'schedules');
+      formatFirestoreError(err, OperationType.UPDATE, 'schedules');
+      const errMsg = getUserFriendlyFirestoreError(err, 'Gagal memvalidasi jadwal bulan ini.');
+      setScheduleError(errMsg);
+      showToast(errMsg, 'error');
     } finally {
       setValidatingAll(false);
     }
@@ -501,10 +729,10 @@ export function SchedulesPage({
           </h2>
           <p className="text-xs text-slate-500">
             {isAdmin
-              ? 'Atur jadwal shift perawat dan matriks jadwal Dokter DPJP serta Dokter Jaga Ruangan per tanggal dan shift.'
+              ? 'Kelola jadwal shift perawat, penugasan PJ Shift, dan matriks Dokter DPJP serta Dokter Jaga.'
               : isKepalaRuang
-              ? 'Tinjau susunan jadwal dinas ruangan, lakukan validasi jadwal bulanan, dan pantau matriks jadwal dokter.'
-              : 'Matrix jadwal dinas Pagi, Siang, Malam, dan jadwal Dokter DPJP / Dokter Jaga periode berjalan.'}
+              ? 'Tinjau dan validasi jadwal dinas ruangan serta pantau penugasan PJ Shift dan dokter.'
+              : 'Matriks jadwal dinas shift, PJ Shift, dan Dokter DPJP / Dokter Jaga periode berjalan.'}
           </p>
         </div>
 
@@ -541,6 +769,12 @@ export function SchedulesPage({
           )}
         </div>
       </div>
+
+      {scheduleError && (
+        <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-medium text-rose-700">
+          {scheduleError}
+        </div>
+      )}
 
       {scheduleFeedback && (
         <div className="rounded-lg border border-teal-200 bg-teal-50 px-4 py-3 text-xs font-medium text-teal-800">
@@ -594,6 +828,12 @@ export function SchedulesPage({
             <strong>Aturan Penugasan PJ Shift (1 Orang per Shift):</strong> Karena terdapat beberapa akun dengan role{' '}
             <em>PJ Shift</em>, tetapkan tepat <strong>1 (satu) orang PJ Shift</strong> penanggung jawab utama untuk setiap shift (Pagi, Siang, Malam) per tanggal. Penetapan ini mengunci hak <strong>Pengesahan Digital</strong> pada Laporan PJ Shift (Bagian F) dan memprioritaskan tujuan verifikasi logbook.
           </div>
+
+          {pjError && (
+            <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-medium text-rose-700">
+              {pjError}
+            </div>
+          )}
 
           {pjFeedback && (
             <div className="rounded-lg border border-teal-200 bg-teal-50 px-4 py-3 text-xs font-medium text-teal-800">
@@ -810,6 +1050,18 @@ export function SchedulesPage({
         </div>
       ) : activeTab === 'doctors' ? (
         <div className="space-y-5">
+          {docError && (
+            <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-medium text-rose-700">
+              {docError}
+            </div>
+          )}
+
+          {docFeedback && (
+            <div className="rounded-lg border border-teal-200 bg-teal-50 px-4 py-3 text-xs font-medium text-teal-800">
+              {docFeedback}
+            </div>
+          )}
+
           {isAdmin && (
             <form
               onSubmit={handleAssignDoctorSchedule}
@@ -1161,6 +1413,8 @@ export function SchedulesPage({
                           const entry = scheduleMap.get(`${staff.uid}_${d}`);
                           const meta = entry ? shiftChipLetter[entry.shift] : null;
                           const assignedPjShifts = pjAssignmentByStaffDateMap.get(`${staff.uid}_${d}`);
+                          const cellDocId = `${staff.uid}_${d}`;
+                          const isBusyCell = busyScheduleCell === cellDocId;
                           const pjHint = assignedPjShifts?.length
                             ? ` · PJ Shift Bertugas (${assignedPjShifts.join('/')})`
                             : '';
@@ -1168,7 +1422,7 @@ export function SchedulesPage({
                             <td key={d} className="p-1 text-center">
                               <button
                                 type="button"
-                                disabled={!isAdmin}
+                                disabled={!isAdmin || isBusyCell}
                                 onClick={() => handleCycleCellShift(staff, d)}
                                 title={
                                   entry
@@ -1183,7 +1437,9 @@ export function SchedulesPage({
                                     : 'border-dashed border-slate-200 text-slate-300 hover:border-teal-400'
                                 } ${
                                   assignedPjShifts?.length ? 'ring-1 ring-teal-600 ring-offset-1' : ''
-                                } ${isAdmin ? 'cursor-pointer' : 'cursor-default'}`}
+                                } ${isAdmin ? 'cursor-pointer' : 'cursor-default'} ${
+                                  isBusyCell ? 'opacity-50' : ''
+                                }`}
                               >
                                 {meta ? meta.code : '·'}
                               </button>

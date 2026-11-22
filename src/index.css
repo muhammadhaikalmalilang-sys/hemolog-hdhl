@@ -63,6 +63,14 @@
 
   .f4-print-sheet .f4-scroll-wrap {
     overflow: visible !important;
+    max-height: none !important;
+  }
+
+  .f4-print-sheet thead,
+  .f4-print-sheet th,
+  .f4-print-sheet td {
+    position: static !important;
+    box-shadow: none !important;
   }
 }
 
@@ -82,6 +90,14 @@
 
 .f4-measuring .f4-scroll-wrap {
   overflow: visible !important;
+  max-height: none !important;
+}
+
+.f4-measuring thead,
+.f4-measuring th,
+.f4-measuring td {
+  position: static !important;
+  box-shadow: none !important;
 }
 
 /* Synchronized readable styles for Patient Report (F4 Landscape) */

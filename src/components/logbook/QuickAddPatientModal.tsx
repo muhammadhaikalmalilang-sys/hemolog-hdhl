@@ -1,7 +1,12 @@
 import React, { useState } from 'react';
 import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { AlertCircle, UserPlus, X } from 'lucide-react';
-import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
+import {
+  db,
+  formatFirestoreError,
+  getUserFriendlyFirestoreError,
+  OperationType,
+} from '../../lib/firebase';
 import { clampString } from '../../lib/formatters';
 import type { Patient, PatientStatus, ShiftType, VascularAccessType } from '../../types';
 
@@ -116,7 +121,10 @@ export function QuickAddPatientModal({
       });
       onClose();
     } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, 'patients');
+      formatFirestoreError(err, OperationType.CREATE, 'patients');
+      setErrorMsg(
+        getUserFriendlyFirestoreError(err, 'Gagal menyimpan pasien baru ke master data.')
+      );
     } finally {
       setSaving(false);
     }

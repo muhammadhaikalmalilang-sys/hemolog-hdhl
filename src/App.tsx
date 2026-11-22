@@ -1,6 +1,7 @@
 import React, { Component, Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
 import { Activity, AlertTriangle } from 'lucide-react';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { ToastProvider } from './context/ToastContext';
 import { useUnitData } from './hooks/useUnitData';
 import { useIdleTimeout } from './hooks/useIdleTimeout';
 import { RoleGuard } from './components/auth/RoleGuard';
@@ -410,10 +411,12 @@ function WorkspaceShell() {
 export default function App() {
   return (
     <ErrorBoundary>
-      <AuthProvider>
-        <WorkspaceShell />
-        <OfflineIndicator />
-      </AuthProvider>
+      <ToastProvider>
+        <AuthProvider>
+          <WorkspaceShell />
+          <OfflineIndicator />
+        </AuthProvider>
+      </ToastProvider>
     </ErrorBoundary>
   );
 }

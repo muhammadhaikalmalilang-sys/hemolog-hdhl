@@ -50,10 +50,13 @@ import {
   extractShiftFromSchedule,
   formatFullDayDateId,
   getDayNameId,
+  getLogbookSubmissionAccess,
+  getLogbookVerificationAccess,
   getTodayDateStr,
   isPatientScheduledOnDay,
 } from '../../lib/formatters';
 import { useAuth } from '../../context/AuthContext';
+import { useLiveClock } from '../../hooks/useLiveClock';
 import {
   DEFAULT_TTV_CONFIG,
   mergeWithDefaultTemplate,
@@ -649,7 +652,15 @@ export function LogbookWizardModal({
   onSaved,
 }: LogbookWizardModalProps) {
   const { userProfile } = useAuth();
-  const isVerifierEdit = Boolean(verifierEditMode && editingEntry && !readOnly);
+  const { nowMs, wibTimeLabel } = useLiveClock();
+  const isVerifierEdit = Boolean(
+    verifierEditMode &&
+      editingEntry &&
+      !readOnly &&
+      userProfile?.role !== 'Administrator'
+  );
+  const isSubmitterKaru =
+    !readOnly && !isVerifierEdit && userProfile?.role === 'Kepala Ruang';
   const resolvedTemplate = useMemo(
     () => mergeWithDefaultTemplate(formTemplate),
     [formTemplate]
@@ -1124,9 +1135,12 @@ export function LogbookWizardModal({
   );
 
   // Section 8: Submission Target
-  const [targetVerifierRole, setTargetVerifierRole] = useState<'PJ Shift' | 'Kepala Ruang'>(
-    editingEntry?.targetVerifierRole || 'Kepala Ruang'
-  );
+  const [targetVerifierRole, setTargetVerifierRole] = useState<'PJ Shift' | 'Kepala Ruang'>(() => {
+    if (!readOnly && !verifierEditMode && userProfile?.role === 'Kepala Ruang') {
+      return 'PJ Shift';
+    }
+    return editingEntry?.targetVerifierRole || 'Kepala Ruang';
+  });
   const [targetVerifierId, setTargetVerifierId] = useState(editingEntry?.targetVerifierId || '');
   const [submissionNote, setSubmissionNote] = useState(
     editingEntry ? initialDetails?.section6.handoverSummary || '' : ''
@@ -2559,7 +2573,52 @@ export function LogbookWizardModal({
       return 'error';
     }
 
+    if (isVerifierEdit) {
+      if (userProfile.role === 'Administrator') {
+        setErrorMsg('Administrator tidak memiliki wewenang untuk memverifikasi logbook.');
+        return 'error';
+      }
+      if (currentEntry) {
+        const verAccess = getLogbookVerificationAccess(currentEntry, userProfile, Date.now());
+        if (!verAccess.allowed) {
+          setErrorMsg(
+            verAccess.reason ||
+              'Di luar jam verifikasi logbook. Perubahan verifikator tidak dapat disimpan.'
+          );
+          return 'error';
+        }
+      }
+    }
+
+    const preCheckDate = /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : getTodayDateStr();
+    const preCheckShift: ShiftType =
+      shift === 'Siang' || shift === 'Malam' ? shift : 'Pagi';
+    const liveSubAccess = getLogbookSubmissionAccess(
+      preCheckDate,
+      preCheckShift,
+      currentEntry || editingEntry || null,
+      Date.now()
+    );
+
+    if (!isVerifierEdit && currentEntry?.verificationStatus === 'Revision' && !liveSubAccess.canEditRevision) {
+      if (!silentIfNotReady) {
+        setErrorMsg(
+          liveSubAccess.reason ||
+            'Batas waktu perbaikan revisi (1 jam) telah berakhir.'
+        );
+      }
+      return 'error';
+    }
+
     if (submitStatus === 'Pending' || isVerifierEdit) {
+      if (submitStatus === 'Pending' && !isVerifierEdit && !liveSubAccess.canSubmitPending) {
+        setStep(8);
+        setErrorMsg(
+          liveSubAccess.reason ||
+            'Pengajuan verifikasi tidak dapat dilakukan di luar jam operasional WIB.'
+        );
+        return 'error';
+      }
       for (const s of [1, 2, 3, 6, 7]) {
         const err = validateStep(s);
         if (err) {
@@ -2771,8 +2830,11 @@ export function LogbookWizardModal({
     const safeShift: ShiftType =
       shift === 'Siang' || shift === 'Malam' ? shift : 'Pagi';
     const safeDate = /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : getTodayDateStr();
-    const safeTargetVerifierRole: 'PJ Shift' | 'Kepala Ruang' =
-      targetVerifierRole === 'PJ Shift' ? 'PJ Shift' : 'Kepala Ruang';
+    const safeTargetVerifierRole: 'PJ Shift' | 'Kepala Ruang' = isSubmitterKaru
+      ? 'PJ Shift'
+      : targetVerifierRole === 'PJ Shift'
+      ? 'PJ Shift'
+      : 'Kepala Ruang';
 
     const payload = {
       patientId: pat.id,
@@ -2833,7 +2895,6 @@ export function LogbookWizardModal({
         : '';
       const isAdminRole = userProfile.role === 'Administrator';
       const isVerifierRole =
-        isAdminRole ||
         userProfile.role === 'Kepala Ruang' ||
         userProfile.role === 'PJ Shift';
       const safeLockPatientName = clampString(pat.fullName, 120) || 'Pasien HD';
@@ -3615,12 +3676,18 @@ export function LogbookWizardModal({
     }
 
     if (!readOnly && !isVerifierEdit) {
-      const result = await handleSave(getAutoDraftStatus(), {
-        keepOpen: true,
-        silentIfNotReady: true,
-      });
-      if (result === 'error') {
-        return;
+      const activeForAccess = editingEntry || autoSavedEntryRef.current;
+      const switchAccess = getLogbookSubmissionAccess(date, shift, activeForAccess, Date.now());
+      const revisionLocked =
+        activeForAccess?.verificationStatus === 'Revision' && !switchAccess.canEditRevision;
+      if (!revisionLocked) {
+        const result = await handleSave(getAutoDraftStatus(), {
+          keepOpen: true,
+          silentIfNotReady: true,
+        });
+        if (result === 'error') {
+          return;
+        }
       }
     }
 
@@ -4473,23 +4540,28 @@ export function LogbookWizardModal({
                 <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
                   Dosis Heparin
                 </label>
-                <input
-                  type="text"
-                  value={loadingDose}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setLoadingDose(val);
-                    if (/free|bebas/i.test(val)) {
-                      setAnticoagulantType('Bebas Heparin');
-                    } else if (/lmwh/i.test(val)) {
-                      setAnticoagulantType('LMWH');
-                    } else if (val.trim()) {
-                      setAnticoagulantType('Heparin');
-                    }
-                    syncPoint35Checklist(dialysisDurationHours, ufGoal, bfr, dfr, val);
-                  }}
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                />
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={loadingDose}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setLoadingDose(val);
+                      if (/free|bebas/i.test(val)) {
+                        setAnticoagulantType('Bebas Heparin');
+                      } else if (/lmwh/i.test(val)) {
+                        setAnticoagulantType('LMWH');
+                      } else if (val.trim()) {
+                        setAnticoagulantType('Heparin');
+                      }
+                      syncPoint35Checklist(dialysisDurationHours, ufGoal, bfr, dfr, val);
+                    }}
+                    className="w-full rounded-lg border border-slate-300 bg-white pl-3 pr-16 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                  />
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#0e4e78]">
+                    iu/jam
+                  </span>
+                </div>
               </div>
             </div>
             {!isPoint35Complete(dialysisDurationHours, ufGoal, bfr, dfr, loadingDose) && (
@@ -4533,7 +4605,7 @@ export function LogbookWizardModal({
                     : 'border-slate-200 bg-white'
                 }`}
               >
-                <label className="flex items-center justify-between gap-2 mb-2.5 cursor-pointer">
+                <label className="flex items-center justify-between gap-2 cursor-pointer">
                   <span className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-800">
                     <input
                       type="checkbox"
@@ -4551,17 +4623,6 @@ export function LogbookWizardModal({
                     AV Shunt / Fistula
                   </span>
                 </label>
-                <input
-                  type="text"
-                  value={ciminoNote}
-                  onChange={(e) => {
-                    setCiminoNote(e.target.value);
-                    if (e.target.value && selectedAccessOption !== 'CIMINO') {
-                      handleSelectVascularOption('CIMINO');
-                    }
-                  }}
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                />
               </div>
 
               <div
@@ -4571,7 +4632,7 @@ export function LogbookWizardModal({
                     : 'border-slate-200 bg-white'
                 }`}
               >
-                <label className="flex items-center justify-between gap-2 mb-2.5 cursor-pointer">
+                <label className="flex items-center justify-between gap-2 cursor-pointer">
                   <span className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-800">
                     <input
                       type="checkbox"
@@ -4587,17 +4648,6 @@ export function LogbookWizardModal({
                     Catheter Double Lumen
                   </span>
                 </label>
-                <input
-                  type="text"
-                  value={cdlNote}
-                  onChange={(e) => {
-                    setCdlNote(e.target.value);
-                    if (e.target.value && selectedAccessOption !== 'CDL') {
-                      handleSelectVascularOption('CDL');
-                    }
-                  }}
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                />
               </div>
 
               <div
@@ -4607,7 +4657,7 @@ export function LogbookWizardModal({
                     : 'border-slate-200 bg-white'
                 }`}
               >
-                <label className="flex items-center justify-between gap-2 mb-2.5 cursor-pointer">
+                <label className="flex items-center justify-between gap-2 cursor-pointer">
                   <span className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-800">
                     <input
                       type="checkbox"
@@ -4625,17 +4675,6 @@ export function LogbookWizardModal({
                     Akses Vena Femoralis
                   </span>
                 </label>
-                <input
-                  type="text"
-                  value={femoralNote}
-                  onChange={(e) => {
-                    setFemoralNote(e.target.value);
-                    if (e.target.value && selectedAccessOption !== 'FEMORAL') {
-                      handleSelectVascularOption('FEMORAL');
-                    }
-                  }}
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                />
               </div>
             </div>
             {!selectedAccessOption && (
@@ -6010,76 +6049,94 @@ export function LogbookWizardModal({
                     {selectedPatient ? selectedPatient.fullName.toUpperCase() : '-'})
                   </h4>
                   <p className="text-[11px] text-slate-500 mt-0.5">
-                    PJ Shift dapat mengajukan verifikasi logbook pasien ini kepada Kepala Ruang atau kepada PJ Shift lainnya. Setelah diverifikasi, data pasien ini tercatat pada halaman Riwayat &amp; Laporan Harian.
+                    {isSubmitterKaru
+                      ? 'Logbook yang diinputkan oleh Kepala Ruang diajukan untuk diverifikasi oleh PJ Shift yang bertugas.'
+                      : 'PJ Shift dan Perawat Pelaksana dapat mengajukan verifikasi logbook pasien ini kepada Kepala Ruang atau PJ Shift lainnya.'}
                   </p>
                 </div>
 
                 {/* Inner Box: Pilih Tujuan Pengajuan Verifikasi */}
-                <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 space-y-3">
-                  <p className="text-[11px] font-bold text-slate-800">
-                    Pilih Tujuan Pengajuan Verifikasi Logbook PJ Shift:
-                  </p>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setTargetVerifierRole('Kepala Ruang');
-                        setTargetVerifierId('');
-                      }}
-                      className={`flex items-start gap-2.5 rounded-lg border px-4 py-3 text-left transition-all ${
-                        targetVerifierRole === 'Kepala Ruang'
-                          ? 'border-[#0e4e78] bg-white ring-1 ring-[#0e4e78]'
-                          : 'border-slate-200 bg-white/80 hover:border-slate-300'
-                      }`}
-                    >
-                      <CheckCircle2
-                        className={`h-4 w-4 shrink-0 mt-0.5 ${
-                          targetVerifierRole === 'Kepala Ruang'
-                            ? 'text-[#0e4e78]'
-                            : 'text-slate-300'
-                        }`}
-                      />
+                {isSubmitterKaru ? (
+                  <div className="rounded-xl border border-sky-200 bg-sky-50/70 p-4">
+                    <div className="flex items-start gap-2.5">
+                      <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5 text-[#0e4e78]" />
                       <div>
                         <p className="text-xs font-bold text-slate-900">
-                          Ajukan kepada Kepala Ruang
+                          Tujuan Pengajuan Verifikasi: PJ Shift
                         </p>
-                        <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">
-                          Masuk ke halaman Verifikasi Kepala Ruang untuk diverifikasi oleh Kepala Ruang.
-                        </p>
-                      </div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setTargetVerifierRole('PJ Shift');
-                        setTargetVerifierId('');
-                      }}
-                      className={`flex items-start gap-2.5 rounded-lg border px-4 py-3 text-left transition-all ${
-                        targetVerifierRole === 'PJ Shift'
-                          ? 'border-[#0e4e78] bg-white ring-1 ring-[#0e4e78]'
-                          : 'border-slate-200 bg-white/80 hover:border-slate-300'
-                      }`}
-                    >
-                      <CheckCircle2
-                        className={`h-4 w-4 shrink-0 mt-0.5 ${
-                          targetVerifierRole === 'PJ Shift'
-                            ? 'text-[#0e4e78]'
-                            : 'text-slate-300'
-                        }`}
-                      />
-                      <div>
-                        <p className="text-xs font-bold text-slate-900">
-                          Ajukan kepada PJ Shift Lainnya
-                        </p>
-                        <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">
-                          Masuk ke halaman Verifikasi PJ Shift tujuan (rekan PJ Shift lain) untuk diverifikasi.
+                        <p className="text-[11px] text-slate-600 mt-0.5 leading-snug">
+                          Sebagai Kepala Ruang penginput logbook, pengajuan verifikasi otomatis diarahkan ke halaman Verifikasi PJ Shift tujuan.
                         </p>
                       </div>
-                    </button>
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 space-y-3">
+                    <p className="text-[11px] font-bold text-slate-800">
+                      Pilih Tujuan Pengajuan Verifikasi Logbook:
+                    </p>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTargetVerifierRole('Kepala Ruang');
+                          setTargetVerifierId('');
+                        }}
+                        className={`flex items-start gap-2.5 rounded-lg border px-4 py-3 text-left transition-all ${
+                          targetVerifierRole === 'Kepala Ruang'
+                            ? 'border-[#0e4e78] bg-white ring-1 ring-[#0e4e78]'
+                            : 'border-slate-200 bg-white/80 hover:border-slate-300'
+                        }`}
+                      >
+                        <CheckCircle2
+                          className={`h-4 w-4 shrink-0 mt-0.5 ${
+                            targetVerifierRole === 'Kepala Ruang'
+                              ? 'text-[#0e4e78]'
+                              : 'text-slate-300'
+                          }`}
+                        />
+                        <div>
+                          <p className="text-xs font-bold text-slate-900">
+                            Ajukan kepada Kepala Ruang
+                          </p>
+                          <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">
+                            Masuk ke halaman Verifikasi Kepala Ruang untuk diverifikasi oleh Kepala Ruang.
+                          </p>
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTargetVerifierRole('PJ Shift');
+                          setTargetVerifierId('');
+                        }}
+                        className={`flex items-start gap-2.5 rounded-lg border px-4 py-3 text-left transition-all ${
+                          targetVerifierRole === 'PJ Shift'
+                            ? 'border-[#0e4e78] bg-white ring-1 ring-[#0e4e78]'
+                            : 'border-slate-200 bg-white/80 hover:border-slate-300'
+                        }`}
+                      >
+                        <CheckCircle2
+                          className={`h-4 w-4 shrink-0 mt-0.5 ${
+                            targetVerifierRole === 'PJ Shift'
+                              ? 'text-[#0e4e78]'
+                              : 'text-slate-300'
+                          }`}
+                        />
+                        <div>
+                          <p className="text-xs font-bold text-slate-900">
+                            Ajukan kepada PJ Shift Lainnya
+                          </p>
+                          <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">
+                            Masuk ke halaman Verifikasi PJ Shift tujuan (rekan PJ Shift lain) untuk diverifikasi.
+                          </p>
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {/* Submitter & Target Verifier Dropdown */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -6183,6 +6240,46 @@ export function LogbookWizardModal({
                     {targetVerifierRole === 'Kepala Ruang' ? 'Kepala Ruang' : 'PJ Shift'}.
                   </span>
                 </label>
+
+                {!readOnly && !isVerifierEdit && (() => {
+                  const step8Access = getLogbookSubmissionAccess(
+                    date,
+                    shift,
+                    activeEntry || editingEntry || null,
+                    nowMs
+                  );
+                  if (step8Access.isRevisionGrace) {
+                    return (
+                      <div className="flex items-start gap-2.5 rounded-lg border border-amber-300 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900">
+                        <Clock className="h-4 w-4 shrink-0 mt-0.5 text-amber-600" />
+                        <span>
+                          <strong>Masa Perbaikan Revisi Ekstra (1 Jam):</strong> Di luar jam pengajuan Shift {shift}, Anda memiliki sisa waktu{' '}
+                          <strong>{step8Access.remainingRevisionMinutes} menit</strong> (hingga{' '}
+                          <strong>{step8Access.deadlineWibLabel}</strong>) untuk mengubah dan mengajukan ulang logbook ini.
+                        </span>
+                      </div>
+                    );
+                  }
+                  if (!step8Access.canSubmitPending && step8Access.reason) {
+                    return (
+                      <div className="flex items-start gap-2.5 rounded-lg border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs text-rose-800">
+                        <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-rose-600" />
+                        <span>
+                          <strong>Pengajuan Verifikasi Ditutup:</strong> {step8Access.reason}
+                          {!step8Access.revisionExpired && ' Anda masih dapat menyimpan isian sebagai Draft.'}
+                        </span>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50/70 px-3.5 py-2 text-[11px] text-emerald-900">
+                      <Clock className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                      <span>
+                        Jam pengajuan Shift {shift} aktif ({step8Access.windowLabel}) · Sekarang {wibTimeLabel}
+                      </span>
+                    </div>
+                  );
+                })()}
                 {readOnly && editingEntry && (editingEntry.verifiedByName || editingEntry.verificationNote) && (
                   <div className="rounded-lg border border-amber-200 bg-amber-50/80 p-3.5 text-xs text-amber-950 space-y-1">
                     {editingEntry.verifiedByName && (
@@ -6255,36 +6352,52 @@ export function LogbookWizardModal({
 
             {readOnly ? (
               verifierReview && editingEntry?.verificationStatus !== 'Approved' ? (
-                <>
-                  {step < 8 && (
-                    <button
-                      type="button"
-                      onClick={() => setStep((s) => Math.min(8, s + 1))}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-[#0e4e78] px-4 py-2 text-xs font-semibold text-white hover:bg-[#093b5c] transition-colors"
-                    >
-                      Bagian {step + 1}
-                      <ChevronRight className="h-4 w-4" />
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    disabled={verifierReview.processing}
-                    onClick={verifierReview.onRequestRevision}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-rose-300 bg-rose-50 px-3.5 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-60"
-                  >
-                    <AlertTriangle className="h-4 w-4" />
-                    Minta Revisi
-                  </button>
-                  <button
-                    type="button"
-                    disabled={verifierReview.processing}
-                    onClick={verifierReview.onApprove}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-xs font-semibold text-white hover:bg-teal-700 disabled:opacity-60"
-                  >
-                    <CheckCircle2 className="h-4 w-4" />
-                    Setujui &amp; Validasi
-                  </button>
-                </>
+                (() => {
+                  const verAccess = getLogbookVerificationAccess(
+                    editingEntry!,
+                    userProfile,
+                    nowMs
+                  );
+                  return (
+                    <>
+                      {!verAccess.allowed && verAccess.reason && (
+                        <span className="text-[11px] font-medium text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-2.5 py-1.5">
+                          {verAccess.reason}
+                        </span>
+                      )}
+                      {step < 8 && (
+                        <button
+                          type="button"
+                          onClick={() => setStep((s) => Math.min(8, s + 1))}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-[#0e4e78] px-4 py-2 text-xs font-semibold text-white hover:bg-[#093b5c] transition-colors"
+                        >
+                          Bagian {step + 1}
+                          <ChevronRight className="h-4 w-4" />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        disabled={verifierReview.processing || !verAccess.allowed}
+                        title={!verAccess.allowed ? verAccess.reason || undefined : undefined}
+                        onClick={verifierReview.onRequestRevision}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-rose-300 bg-rose-50 px-3.5 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <AlertTriangle className="h-4 w-4" />
+                        Minta Revisi
+                      </button>
+                      <button
+                        type="button"
+                        disabled={verifierReview.processing || !verAccess.allowed}
+                        title={!verAccess.allowed ? verAccess.reason || undefined : undefined}
+                        onClick={verifierReview.onApprove}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-xs font-semibold text-white hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <CheckCircle2 className="h-4 w-4" />
+                        Setujui &amp; Validasi
+                      </button>
+                    </>
+                  );
+                })()
               ) : step < 8 ? (
                 <button
                   type="button"
@@ -6304,75 +6417,112 @@ export function LogbookWizardModal({
                 </button>
               )
             ) : isVerifierEdit ? (
-              <>
-                <button
-                  type="button"
-                  disabled={saving}
-                  onClick={() =>
-                    handleSave(
-                      editingEntry?.verificationStatus === 'Revision' ? 'Revision' : 'Pending'
-                    )
-                  }
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-xs font-semibold text-white hover:bg-teal-700 disabled:opacity-60"
-                >
-                  <Save className="h-4 w-4" />
-                  {saving ? 'Menyimpan Perubahan...' : 'Simpan Perubahan Logbook'}
-                </button>
+              (() => {
+                const verAccess = editingEntry
+                  ? getLogbookVerificationAccess(editingEntry, userProfile, nowMs)
+                  : { allowed: false, reason: 'Data logbook tidak ditemukan.' };
+                return (
+                  <>
+                    <button
+                      type="button"
+                      disabled={saving || !verAccess.allowed}
+                      title={!verAccess.allowed ? verAccess.reason || undefined : undefined}
+                      onClick={() =>
+                        handleSave(
+                          editingEntry?.verificationStatus === 'Revision' ? 'Revision' : 'Pending'
+                        )
+                      }
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-xs font-semibold text-white hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Save className="h-4 w-4" />
+                      {saving ? 'Menyimpan Perubahan...' : 'Simpan Perubahan Logbook'}
+                    </button>
 
-                {step < 8 && (
-                  <button
-                    type="button"
-                    onClick={handleNextStep}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#0e4e78] px-4 py-2 text-xs font-semibold text-white hover:bg-[#093b5c] transition-colors"
-                  >
-                    Lanjut Bagian {step + 1}
-                    <ChevronRight className="h-4 w-4" />
-                  </button>
-                )}
-              </>
+                    {step < 8 && (
+                      <button
+                        type="button"
+                        onClick={handleNextStep}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-[#0e4e78] px-4 py-2 text-xs font-semibold text-white hover:bg-[#093b5c] transition-colors"
+                      >
+                        Lanjut Bagian {step + 1}
+                        <ChevronRight className="h-4 w-4" />
+                      </button>
+                    )}
+                  </>
+                );
+              })()
             ) : (
-              <>
-                <button
-                  type="button"
-                  disabled={saving}
-                  onClick={() => {
-                    void handleSave(getAutoDraftStatus());
-                  }}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
-                >
-                  <Save className="h-4 w-4 text-slate-500" />
-                  {saving
-                    ? 'Menyimpan...'
-                    : getAutoDraftStatus() === 'Revision'
-                    ? 'Simpan Revisi'
-                    : 'Simpan sebagai Draft'}
-                </button>
+              (() => {
+                const footerSubAccess = getLogbookSubmissionAccess(
+                  date,
+                  shift,
+                  activeEntry || editingEntry || null,
+                  nowMs
+                );
+                const isRevisionLocked =
+                  (activeEntry?.verificationStatus === 'Revision' ||
+                    editingEntry?.verificationStatus === 'Revision') &&
+                  !footerSubAccess.canEditRevision;
 
-                {step < 8 ? (
-                  <button
-                    type="button"
-                    disabled={saving}
-                    onClick={() => {
-                      void handleSwitchStep(Math.min(8, step + 1), { validateCurrent: true });
-                    }}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#0e4e78] px-4 py-2 text-xs font-semibold text-white hover:bg-[#093b5c] transition-colors disabled:opacity-60"
-                  >
-                    <Save className="h-3.5 w-3.5 opacity-80" />
-                    {saving ? 'Menyimpan...' : `Simpan & Lanjut Bagian ${step + 1}`}
-                    <ChevronRight className="h-4 w-4" />
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    disabled={saving}
-                    onClick={() => handleSave('Pending')}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-xs font-semibold text-white hover:bg-teal-700 disabled:opacity-60"
-                  >
-                    {step === 8 ? <Send className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
-                    {saving ? 'Mengajukan...' : 'Ajukan Verifikasi'}
-                  </button>
-                )}
-              </>
+                return (
+                  <>
+                    <button
+                      type="button"
+                      disabled={saving || isRevisionLocked}
+                      title={isRevisionLocked ? footerSubAccess.reason || undefined : undefined}
+                      onClick={() => {
+                        void handleSave(getAutoDraftStatus());
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Save className="h-4 w-4 text-slate-500" />
+                      {saving
+                        ? 'Menyimpan...'
+                        : getAutoDraftStatus() === 'Revision'
+                        ? 'Simpan Revisi'
+                        : 'Simpan sebagai Draft'}
+                    </button>
+
+                    {step < 8 ? (
+                      <button
+                        type="button"
+                        disabled={saving}
+                        onClick={() => {
+                          void handleSwitchStep(Math.min(8, step + 1), { validateCurrent: true });
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-[#0e4e78] px-4 py-2 text-xs font-semibold text-white hover:bg-[#093b5c] transition-colors disabled:opacity-60"
+                      >
+                        <Save className="h-3.5 w-3.5 opacity-80" />
+                        {saving
+                          ? 'Menyimpan...'
+                          : isRevisionLocked
+                          ? `Lanjut Bagian ${step + 1}`
+                          : `Simpan & Lanjut Bagian ${step + 1}`}
+                        <ChevronRight className="h-4 w-4" />
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={saving || !footerSubAccess.canSubmitPending}
+                        title={
+                          !footerSubAccess.canSubmitPending
+                            ? footerSubAccess.reason || undefined
+                            : undefined
+                        }
+                        onClick={() => handleSave('Pending')}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-xs font-semibold text-white hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {step === 8 ? (
+                          <Send className="h-4 w-4" />
+                        ) : (
+                          <CheckCircle2 className="h-4 w-4" />
+                        )}
+                        {saving ? 'Mengajukan...' : 'Ajukan Verifikasi'}
+                      </button>
+                    )}
+                  </>
+                );
+              })()
             )}
           </div>
         </div>

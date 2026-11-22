@@ -3,7 +3,7 @@ import { addDoc, collection, deleteDoc, doc, serverTimestamp, updateDoc } from '
 import { CheckCircle2, Pencil, Plus, Search, Trash2, Users, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { BulkAddPatientsModal } from '../components/patients/BulkAddPatientsModal';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { db, formatFirestoreError, getUserFriendlyFirestoreError, OperationType } from '../lib/firebase';
 import { clampString } from '../lib/formatters';
 import type { Patient, PatientStatus, VascularAccessType } from '../types';
 
@@ -49,6 +49,8 @@ export function PatientsPage({ patients }: PatientsPageProps) {
   const [status, setStatus] = useState<PatientStatus>('Aktif');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+  const [modalError, setModalError] = useState<string | null>(null);
+  const [pageError, setPageError] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     return patients.filter((p) => {
@@ -78,6 +80,7 @@ export function PatientsPage({ patients }: PatientsPageProps) {
     setRoutineSchedule('Senin & Kamis (Pagi)');
     setStatus('Aktif');
     setNotes('');
+    setModalError(null);
     setShowModal(true);
   };
 
@@ -92,16 +95,30 @@ export function PatientsPage({ patients }: PatientsPageProps) {
     setRoutineSchedule(p.routineSchedule);
     setStatus(p.status);
     setNotes(p.notes || '');
+    setModalError(null);
     setShowModal(true);
   };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    setModalError(null);
+
+    const cleanMrn = clampString(mrn, 40);
+    const cleanName = clampString(fullName, 120);
+    if (cleanMrn.length < 2) {
+      setModalError('Nomor Rekam Medis minimal 2 karakter.');
+      return;
+    }
+    if (cleanName.length < 2) {
+      setModalError('Nama lengkap pasien minimal 2 karakter.');
+      return;
+    }
+
     setSaving(true);
     try {
       const payload = {
-        mrn: clampString(mrn, 40),
-        fullName: clampString(fullName, 120),
+        mrn: cleanMrn,
+        fullName: cleanName,
         gender,
         birthYear: Math.min(2030, Math.max(1900, Number(birthYear) || 1970)),
         vascularAccess,
@@ -123,7 +140,8 @@ export function PatientsPage({ patients }: PatientsPageProps) {
       }
       setShowModal(false);
     } catch (err) {
-      handleFirestoreError(err, editing ? OperationType.UPDATE : OperationType.CREATE, 'patients');
+      formatFirestoreError(err, editing ? OperationType.UPDATE : OperationType.CREATE, 'patients');
+      setModalError(getUserFriendlyFirestoreError(err, 'Gagal menyimpan data pasien.'));
     } finally {
       setSaving(false);
     }
@@ -131,11 +149,14 @@ export function PatientsPage({ patients }: PatientsPageProps) {
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
+    setPageError(null);
     try {
       await deleteDoc(doc(db, 'patients', deleteTarget.id));
       setDeleteTargetId(null);
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `patients/${deleteTarget.id}`);
+      formatFirestoreError(err, OperationType.DELETE, `patients/${deleteTarget.id}`);
+      setDeleteTargetId(null);
+      setPageError(getUserFriendlyFirestoreError(err, 'Gagal menghapus data pasien.'));
     }
   };
 
@@ -172,6 +193,12 @@ export function PatientsPage({ patients }: PatientsPageProps) {
           </button>
         </div>
       </div>
+
+      {pageError && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-medium text-rose-700">
+          {pageError}
+        </div>
+      )}
 
       {bulkSuccessCount !== null && (
         <div className="flex items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-800">
@@ -307,6 +334,11 @@ export function PatientsPage({ patients }: PatientsPageProps) {
               </button>
             </div>
             <form onSubmit={handleSave} className="p-6 space-y-4 text-xs">
+              {modalError && (
+                <div className="rounded-lg border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs font-medium text-rose-700">
+                  {modalError}
+                </div>
+              )}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block font-medium text-slate-700 mb-1">Nomor Rekam Medis</label>

@@ -22,6 +22,7 @@ import {
   isPatientScheduledOnDay,
 } from '../lib/formatters';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import { useLiveClock } from '../hooks/useLiveClock';
 import { useF4OnePagePrint } from '../hooks/useF4OnePagePrint';
 import type {
@@ -203,6 +204,7 @@ export function PjShiftReportsPage({
   pjShiftAssignments = [],
 }: PjShiftReportsPageProps) {
   const { userProfile } = useAuth();
+  const { showToast } = useToast();
   const sheetRef = useRef<HTMLDivElement>(null);
   const { handlePrint } = useF4OnePagePrint({
     orientation: 'portrait',
@@ -1103,7 +1105,14 @@ export function PjShiftReportsPage({
         });
       }
       setShowModal(false);
+      showToast(
+        activeSavedReport && activeSavedReport.reviewStatus !== 'Reviewed'
+          ? `Laporan PJ Shift ${effectiveShift} diperbarui.`
+          : `Laporan PJ Shift ${effectiveShift} berhasil disimpan.`,
+        'success'
+      );
     } catch (err) {
+      showToast('Gagal menyimpan laporan PJ Shift.', 'error');
       handleFirestoreError(err, OperationType.CREATE, 'reports');
     } finally {
       setSaving(false);
@@ -1146,6 +1155,10 @@ export function PjShiftReportsPage({
         type: 'success',
         message: `Pengesahan Digital Kepala Ruang oleh ${userProfile.fullName} berhasil disimpan.`,
       });
+      showToast(
+        `Pengesahan Digital Kepala Ruang oleh ${userProfile.fullName} disimpan.`,
+        'success'
+      );
       setReviewTargetId(null);
       setNewReviewDraft(null);
       setReviewNote('');
@@ -1154,6 +1167,7 @@ export function PjShiftReportsPage({
         type: 'error',
         message: 'Gagal menyimpan pengesahan digital Kepala Ruang. Pastikan hak akses akun sesuai.',
       });
+      showToast('Gagal menyimpan pengesahan digital Kepala Ruang.', 'error');
       handleFirestoreError(err, OperationType.UPDATE, `reports/${reviewTarget.id}`);
     } finally {
       setReviewing(false);
@@ -1189,12 +1203,14 @@ export function PjShiftReportsPage({
         type: 'success',
         message: `Pengesahan Digital PJ Shift ${shiftFilter} oleh ${userProfile.fullName} berhasil tercatat.`,
       });
+      showToast(`Pengesahan PJ Shift ${shiftFilter} berhasil dicatat.`, 'success');
     } catch (err) {
       setSignFeedback({
         type: 'error',
         message:
           'Pengesahan ditolak oleh sistem keamanan. Pastikan akun Anda terjadwal pada shift ini di Jadwal Dinas.',
       });
+      showToast('Pengesahan PJ Shift gagal dicatat.', 'error');
       handleFirestoreError(err, OperationType.UPDATE, 'reports');
     } finally {
       setSigningSlot(null);
@@ -1232,12 +1248,14 @@ export function PjShiftReportsPage({
         type: 'success',
         message: `Pengesahan Digital Penerima (PJ Shift ${nextShiftName}) oleh ${userProfile.fullName} berhasil tercatat.`,
       });
+      showToast(`Pengesahan penerima PJ Shift ${nextShiftName} dicatat.`, 'success');
     } catch (err) {
       setSignFeedback({
         type: 'error',
         message:
           'Pengesahan penerima ditolak. Pastikan akun Anda terjadwal sebagai PJ Shift berikutnya di Jadwal Dinas.',
       });
+      showToast('Pengesahan penerima PJ Shift gagal dicatat.', 'error');
       handleFirestoreError(err, OperationType.UPDATE, 'reports');
     } finally {
       setSigningSlot(null);
@@ -1435,11 +1453,13 @@ export function PjShiftReportsPage({
         type: 'success',
         message: `Perubahan baris "${sectionDRows[idx].item}" pada Bagian D berhasil disimpan.`,
       });
+      showToast(`Baris "${sectionDRows[idx].item}" Bagian D disimpan.`, 'success');
     } catch (err) {
       setSignFeedback({
         type: 'error',
         message: 'Gagal menyimpan perubahan Bagian D.',
       });
+      showToast('Gagal menyimpan perubahan Bagian D.', 'error');
       handleFirestoreError(err, OperationType.UPDATE, 'reports');
     } finally {
       setSavingSectionD(false);
@@ -1460,7 +1480,9 @@ export function PjShiftReportsPage({
         type: 'success',
         message: 'Bagian D berhasil dikembalikan ke sinkronisasi otomatis logbook.',
       });
+      showToast('Bagian D dikembalikan ke sinkronisasi otomatis logbook.', 'info');
     } catch (err) {
+      showToast('Gagal mereset Bagian D.', 'error');
       handleFirestoreError(err, OperationType.UPDATE, `reports/${activeSavedReport.id}`);
     } finally {
       setSavingSectionD(false);
@@ -1509,11 +1531,13 @@ export function PjShiftReportsPage({
         type: 'success',
         message: `Bagian E (${key.toUpperCase()}) berhasil diperbarui.`,
       });
+      showToast(`SBAR Bagian E (${key.toUpperCase()}) diperbarui.`, 'success');
     } catch (err) {
       setSignFeedback({
         type: 'error',
         message: 'Gagal menyimpan perubahan SBAR.',
       });
+      showToast('Gagal menyimpan perubahan SBAR.', 'error');
       handleFirestoreError(err, OperationType.UPDATE, 'reports');
     } finally {
       setSavingSbar(false);
@@ -1756,6 +1780,7 @@ export function PjShiftReportsPage({
       ['Keterangan / Indikator', 'Nilai / Hasil Shift', 'Parameter / Target', 'Analisis / Rincian'],
       rows
     );
+    showToast(`Laporan PJ Shift (${selectedDate} · ${shiftFilter}) diekspor ke CSV.`, 'success');
   };
 
   return (
@@ -1767,8 +1792,7 @@ export function PjShiftReportsPage({
             Laporan Penanggung Jawab (PJ) Shift
           </h2>
           <p className="text-xs text-slate-500">
-            Format tabel komprehensif yang disinkronkan otomatis dari logbook pasien yang{' '}
-            <strong className="text-slate-700">sudah diverifikasi (Approved)</strong> oleh PJ Shift atau Kepala Ruang.
+            Laporan pertanggungjawaban shift yang disinkronkan otomatis dari logbook pasien berstatus Approved.
           </p>
         </div>
 
@@ -1804,7 +1828,7 @@ export function PjShiftReportsPage({
             <button
               type="button"
               onClick={handleOpenCreateModal}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-[#0e4e78] px-4 py-2 text-xs font-semibold text-white hover:bg-[#093b5c] whitespace-nowrap"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-[#0B5A8E] px-4 py-2 text-xs font-semibold text-white hover:bg-[#094a75] whitespace-nowrap"
             >
               <Plus className="h-4 w-4" />
               {activeSavedReport ? 'Perbarui SBAR / Pengesahan' : 'Simpan Laporan Shift'}
@@ -1827,7 +1851,7 @@ export function PjShiftReportsPage({
                 setHasManualPeriod(true);
                 setSelectedDate(e.target.value);
               }}
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-800 focus:border-[#0e4e78] focus:outline-none"
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-800 focus:border-[#0B5A8E] focus:outline-none"
             />
           </div>
 
@@ -1841,7 +1865,7 @@ export function PjShiftReportsPage({
                 setHasManualPeriod(true);
                 setShiftFilter(e.target.value as 'ALL' | ShiftType);
               }}
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 focus:border-[#0e4e78] focus:outline-none"
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 focus:border-[#0B5A8E] focus:outline-none"
             >
               <option value="Pagi">Shift Pagi (07.00 - 14.00 WIB)</option>
               <option value="Siang">Shift Siang (12.00 - 19.00 WIB)</option>
@@ -1861,7 +1885,7 @@ export function PjShiftReportsPage({
               onChange={(e) =>
                 setVerifierFilter(e.target.value as 'ALL' | 'PJ Shift' | 'Kepala Ruang')
               }
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 focus:border-[#0e4e78] focus:outline-none"
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 focus:border-[#0B5A8E] focus:outline-none"
             >
               <option value="ALL">Semua Terverifikasi (PJ Shift &amp; Kepala Ruang)</option>
               <option value="PJ Shift">Diverifikasi oleh PJ Shift</option>
@@ -1869,35 +1893,6 @@ export function PjShiftReportsPage({
             </select>
           </div>
         </div>
-
-        {availableVerifiedPeriods.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-slate-100 text-[11px]">
-            <span className="font-semibold text-slate-500 mr-1">
-              Shift dengan Logbook Terverifikasi:
-            </span>
-            {availableVerifiedPeriods.slice(0, 8).map((p) => {
-              const isSelected = p.date === selectedDate && p.shift === shiftFilter;
-              return (
-                <button
-                  key={`${p.date}_${p.shift}`}
-                  type="button"
-                  onClick={() => {
-                    setHasManualPeriod(true);
-                    setSelectedDate(p.date);
-                    setShiftFilter(p.shift);
-                  }}
-                  className={`rounded-md border px-2.5 py-1 font-medium transition-colors whitespace-nowrap ${
-                    isSelected
-                      ? 'border-[#0e4e78] bg-[#0e4e78] text-white'
-                      : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
-                  }`}
-                >
-                  {formatDateId(p.date)} · {p.shift} ({p.count})
-                </button>
-              );
-            })}
-          </div>
-        )}
       </div>
 
       {/* Main Institutional Report Sheet Matching PDF */}
