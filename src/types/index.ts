@@ -337,6 +337,7 @@ export interface MachineLock {
 }
 
 export type PatientStatus = 'Aktif' | 'Rujuk' | 'Meninggal' | 'Nonaktif';
+export type PatientType = 'Reguler' | 'Non-Reguler';
 
 export interface Patient {
   id: string;
@@ -350,6 +351,7 @@ export interface Patient {
   dpjpName?: string;
   routineSchedule: string;
   status: PatientStatus;
+  patientType?: PatientType;
   notes?: string;
   createdAt?: unknown;
   updatedAt?: unknown;

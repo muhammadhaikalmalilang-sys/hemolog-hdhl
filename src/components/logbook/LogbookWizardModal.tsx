@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   collection,
   deleteDoc,
@@ -54,6 +54,7 @@ import {
   getLogbookVerificationAccess,
   getTodayDateStr,
   isPatientScheduledOnDay,
+  isRegularPatient,
 } from '../../lib/formatters';
 import { useAuth } from '../../context/AuthContext';
 import { useLiveClock } from '../../hooks/useLiveClock';
@@ -686,6 +687,10 @@ export function LogbookWizardModal({
   );
   const section7CustomFields = resolvedTemplate.sectionCustomFields?.['7'] || [];
   const activePatients = useMemo(() => patients.filter((p) => p.status === 'Aktif'), [patients]);
+  const activeRegularPatients = useMemo(
+    () => activePatients.filter((p) => isRegularPatient(p)),
+    [activePatients]
+  );
   const activeDoctors = useMemo(() => doctors.filter((d) => d.status === 'Aktif'), [doctors]);
   const activeCategories = useMemo(
     () => actionCategories.filter((c) => c.isActive),
@@ -706,7 +711,7 @@ export function LogbookWizardModal({
     }
   }
 
-  const initialScheduledList = activePatients.filter((p) =>
+  const initialScheduledList = activeRegularPatients.filter((p) =>
     isPatientScheduledOnDay(p.routineSchedule, startDayName)
   );
   const initialUnlockedScheduled = initialScheduledList.filter((p) => !initialLockedIds.has(p.id));
@@ -719,15 +724,23 @@ export function LogbookWizardModal({
     : initialRequestedPatient || initialUnlockedScheduled[0] || initialUnlockedAll[0];
 
   const initialIsScheduled = resolvedInitialPatient
-    ? isPatientScheduledOnDay(resolvedInitialPatient.routineSchedule, startDayName)
+    ? isRegularPatient(resolvedInitialPatient) &&
+      isPatientScheduledOnDay(resolvedInitialPatient.routineSchedule, startDayName)
     : initialUnlockedScheduled.length > 0;
 
   const [step, setStep] = useState(1);
+  const bodyScrollRef = useRef<HTMLDivElement | null>(null);
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [onlyScheduledForDay, setOnlyScheduledForDay] = useState<boolean>(
     editingEntry ? false : initialIsScheduled
   );
+
+  useLayoutEffect(() => {
+    if (bodyScrollRef.current) {
+      bodyScrollRef.current.scrollTop = 0;
+    }
+  }, [step]);
 
   type TrackedWizardEntry = Pick<
     LogbookEntry,
@@ -2021,10 +2034,10 @@ export function LogbookWizardModal({
 
   const scheduledPatientsForDate = useMemo(
     () =>
-      activePatients.filter((p) =>
+      activeRegularPatients.filter((p) =>
         isPatientScheduledOnDay(p.routineSchedule, currentDayName)
       ),
-    [activePatients, currentDayName]
+    [activeRegularPatients, currentDayName]
   );
 
   const displayedPatientOptions = useMemo(() => {
@@ -2194,7 +2207,7 @@ export function LogbookWizardModal({
     }
     const nextDay = getDayNameId(nextDate);
     const pool = onlyScheduledForDay
-      ? activePatients.filter((p) => isPatientScheduledOnDay(p.routineSchedule, nextDay))
+      ? activeRegularPatients.filter((p) => isPatientScheduledOnDay(p.routineSchedule, nextDay))
       : activePatients;
     const nextUnlocked = pool.filter((p) => !nextLocked.has(p.id));
 
@@ -2228,7 +2241,10 @@ export function LogbookWizardModal({
         (p) => p.mrn.toLowerCase() === clean || p.fullName.toLowerCase().includes(clean)
       );
     if (exact) {
-      if (onlyScheduledForDay && !isPatientScheduledOnDay(exact.routineSchedule, currentDayName)) {
+      if (
+        onlyScheduledForDay &&
+        (!isRegularPatient(exact) || !isPatientScheduledOnDay(exact.routineSchedule, currentDayName))
+      ) {
         setOnlyScheduledForDay(false);
       }
       handleSelectPatient(exact.id);
@@ -5431,7 +5447,10 @@ export function LogbookWizardModal({
         </div>
 
         {/* Main Scrollable Body */}
-        <div className="flex-1 overflow-y-auto bg-slate-50/60 px-4 py-4 sm:px-6 sm:py-5 space-y-4">
+        <div
+          ref={bodyScrollRef}
+          className="flex-1 overflow-y-auto bg-slate-50/60 px-4 py-4 sm:px-6 sm:py-5 space-y-4"
+        >
           {/* Step Action Bar (Bagian 1 - 6) */}
           {step <= 6 && (
             <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">

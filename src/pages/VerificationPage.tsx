@@ -365,7 +365,7 @@ export function VerificationPage({
             }
             className="rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-700 focus:border-teal-600 focus:outline-none"
           >
-            <option value="Pending">Menunggu Verifikasi (Pending)</option>
+            <option value="Pending">Menunggu Verifikasi</option>
             <option value="Revision">Dalam Revisi</option>
             <option value="Approved">Terverifikasi (Sudah Diverifikasi)</option>
             <option value="ALL">Semua Belum Approved</option>
@@ -443,7 +443,7 @@ export function VerificationPage({
                 }}
                 className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-[#0B5A8E] px-4 py-2 text-xs font-semibold text-white hover:bg-[#094a75]"
               >
-                Tampilkan Semua Tanggal &amp; Shift ({totalAssignedPendingCount} Pending)
+                Tampilkan Semua Tanggal &amp; Shift ({totalAssignedPendingCount} Menunggu Verifikasi)
               </button>
             )}
           </div>

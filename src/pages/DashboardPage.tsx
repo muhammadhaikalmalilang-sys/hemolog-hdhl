@@ -21,6 +21,7 @@ import {
   getDayNameId,
   isLogbookAssignedToVerifier,
   isPatientScheduledOnDay,
+  isRegularPatient,
   MONTH_NAMES_ID,
 } from '../lib/formatters';
 import { seedInitialMasterData, seedSampleLogbookForUser } from '../lib/seedData';
@@ -143,9 +144,19 @@ export function DashboardPage({
     [logbooks, userProfile]
   );
 
-  const activePatientsCount = useMemo(
-    () => patients.filter((p) => p.status === 'Aktif').length,
+  const regularPatients = useMemo(
+    () => patients.filter((p) => isRegularPatient(p)),
     [patients]
+  );
+
+  const nonRegularPatientsCount = useMemo(
+    () => patients.filter((p) => !isRegularPatient(p)).length,
+    [patients]
+  );
+
+  const activePatientsCount = useMemo(
+    () => regularPatients.filter((p) => p.status === 'Aktif').length,
+    [regularPatients]
   );
 
   const activeStaffCount = useMemo(
@@ -182,7 +193,7 @@ export function DashboardPage({
 
   const shiftProgress = useMemo(() => {
     const dayName = getDayNameId(liveTodayDate);
-    const scheduled = patients.filter(
+    const scheduled = regularPatients.filter(
       (p) => p.status === 'Aktif' && isPatientScheduledOnDay(p.routineSchedule, dayName, liveCurrentShift)
     );
     const scheduledIds = new Set(scheduled.map((p) => p.id));
@@ -218,7 +229,7 @@ export function DashboardPage({
       draftCount,
       pct,
     };
-  }, [patients, logbooks, liveTodayDate, liveCurrentShift]);
+  }, [regularPatients, logbooks, liveTodayDate, liveCurrentShift]);
 
   const handleSeedMaster = async () => {
     setSeeding(true);
@@ -380,7 +391,7 @@ export function DashboardPage({
                 Approved: {shiftProgress.approvedCount}
               </span>
               <span className="text-amber-700 font-semibold">
-                Pending: {shiftProgress.pendingVerifyCount}
+                Menunggu Verifikasi: {shiftProgress.pendingVerifyCount}
               </span>
               {shiftProgress.draftCount > 0 && (
                 <span className="text-slate-600">Draft/Revisi: {shiftProgress.draftCount}</span>
@@ -510,13 +521,16 @@ export function DashboardPage({
 
           <div className="rounded-2xl border border-slate-200/80 bg-white/95 backdrop-blur-sm p-5 shadow-sm">
             <div className="flex items-center justify-between text-slate-500">
-              <span className="text-xs font-medium">Pasien HD Aktif</span>
+              <span className="text-xs font-medium">Pasien Reguler Aktif</span>
               <UserSquare2 className="h-4 w-4 text-emerald-600" />
             </div>
             <p className="mt-2 font-mono text-2xl font-bold text-slate-900 tabular-nums">
               {activePatientsCount}
             </p>
-            <p className="mt-1 text-xs text-slate-500">Dari {patients.length} total pasien</p>
+            <p className="mt-1 text-xs text-slate-500">
+              Dari {regularPatients.length} pasien reguler
+              {nonRegularPatientsCount > 0 ? ` · ${nonRegularPatientsCount} non-reguler` : ''}
+            </p>
           </div>
 
           <div className="rounded-2xl border border-slate-200/80 bg-white/95 backdrop-blur-sm p-5 shadow-sm">
@@ -528,7 +542,7 @@ export function DashboardPage({
               {monthlyAllUnit.length}
             </p>
             <p className="mt-1 text-xs text-slate-500">
-              {monthlyApprovedUnit.length} terverifikasi · {pendingCount} pending
+              {monthlyApprovedUnit.length} terverifikasi · {pendingCount} menunggu verifikasi
             </p>
           </div>
         </div>

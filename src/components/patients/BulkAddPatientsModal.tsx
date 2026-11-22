@@ -660,6 +660,7 @@ export function BulkAddPatientsModal({
             dpjpName: '-',
             routineSchedule: clampString(combinedSchedule, 80),
             status: row.status,
+            patientType: 'Reguler',
             notes: clampString(mergedNotes, 500),
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),

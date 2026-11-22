@@ -8,7 +8,13 @@ import {
   OperationType,
 } from '../../lib/firebase';
 import { clampString } from '../../lib/formatters';
-import type { Patient, PatientStatus, ShiftType, VascularAccessType } from '../../types';
+import type {
+  Patient,
+  PatientStatus,
+  PatientType,
+  ShiftType,
+  VascularAccessType,
+} from '../../types';
 
 interface QuickAddPatientModalProps {
   patients: Patient[];
@@ -23,25 +29,13 @@ interface QuickAddPatientModalProps {
     fullName: string;
     routineSchedule: string;
     status: PatientStatus;
+    patientType: PatientType;
   }) => void;
 }
 
-function getDefaultScheduleForDay(dayName?: string, shift: ShiftType = 'Pagi'): string {
-  switch (dayName) {
-    case 'Senin':
-    case 'Kamis':
-      return `Senin & Kamis (${shift})`;
-    case 'Selasa':
-    case 'Jumat':
-      return `Selasa & Jumat (${shift})`;
-    case 'Rabu':
-    case 'Sabtu':
-      return `Rabu & Sabtu (${shift})`;
-    case 'Minggu':
-      return `Minggu (${shift})`;
-    default:
-      return `Senin & Kamis (${shift})`;
-  }
+function getDefaultNonRegularLabel(dayName?: string, shift: ShiftType = 'Pagi'): string {
+  const dayLabel = dayName ? `${dayName} ` : '';
+  return `Non-Reguler · ${dayLabel}(Shift ${shift})`;
 }
 
 export function QuickAddPatientModal({
@@ -60,7 +54,7 @@ export function QuickAddPatientModal({
   const [vascularAccess, setVascularAccess] = useState<VascularAccessType>('AV Shunt');
   const [diagnosis, setDiagnosis] = useState('PGK Stage V');
   const [routineSchedule, setRoutineSchedule] = useState(
-    getDefaultScheduleForDay(defaultDayName, defaultShift || 'Pagi')
+    getDefaultNonRegularLabel(defaultDayName, defaultShift || 'Pagi')
   );
   const [status, setStatus] = useState<PatientStatus>('Aktif');
   const [notes, setNotes] = useState('');
@@ -105,8 +99,9 @@ export function QuickAddPatientModal({
         diagnosis: clampString(diagnosis || 'PGK Stage V', 200),
         dpjpId: '-',
         dpjpName: '-',
-        routineSchedule: cleanSchedule,
+        routineSchedule: cleanSchedule || 'Non-Reguler / Insidental',
         status,
+        patientType: 'Non-Reguler' as const,
         notes: clampString(notes, 500),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -116,8 +111,9 @@ export function QuickAddPatientModal({
         id: docRef.id,
         mrn: cleanMrn,
         fullName: cleanName,
-        routineSchedule: cleanSchedule,
+        routineSchedule: cleanSchedule || 'Non-Reguler / Insidental',
         status,
+        patientType: 'Non-Reguler',
       });
       onClose();
     } catch (err) {
@@ -140,10 +136,10 @@ export function QuickAddPatientModal({
             </div>
             <div>
               <h3 className="font-display text-base font-bold text-slate-900">
-                Penambahan Pasien Baru
+                Tambah Pasien Baru (Non-Reguler)
               </h3>
               <p className="text-[11px] text-slate-500">
-                Pasien baru akan langsung tersimpan ke master data dan dipilih di form Logbook.
+                Pasien langsung masuk ke daftar tindakan shift saat ini tanpa masuk ke daftar pasien reguler.
               </p>
             </div>
           </div>
@@ -225,24 +221,21 @@ export function QuickAddPatientModal({
               </select>
             </div>
             <div>
-              <label className="block font-medium text-slate-700 mb-1">Jadwal HD Rutin</label>
+              <label className="block font-medium text-slate-700 mb-1">Keterangan / Kategori Layanan</label>
               <input
                 type="text"
                 required
                 list="quick-add-hd-schedule-presets"
                 value={routineSchedule}
                 onChange={(e) => setRoutineSchedule(e.target.value)}
-                placeholder="Contoh: Selasa & Jumat (Pagi)"
+                placeholder="Contoh: Non-Reguler / Cito / Rawat Inap"
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-teal-600 focus:outline-none"
               />
               <datalist id="quick-add-hd-schedule-presets">
-                <option value="Senin & Kamis (Pagi)" />
-                <option value="Senin & Kamis (Siang)" />
-                <option value="Selasa & Jumat (Pagi)" />
-                <option value="Selasa & Jumat (Siang)" />
-                <option value="Rabu & Sabtu (Pagi)" />
-                <option value="Rabu & Sabtu (Siang)" />
-                <option value="Cito / Setiap Hari" />
+                <option value="Non-Reguler / Cito (Insidental)" />
+                <option value="Rawat Inap / Sementara" />
+                <option value="Traveling HD / Tamu" />
+                <option value="IGD / Cito HD" />
               </datalist>
             </div>
             <div>

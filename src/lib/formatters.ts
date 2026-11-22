@@ -201,6 +201,28 @@ export function isPatientScheduledOnDay(
   return true;
 }
 
+export function isRegularPatient(
+  patient: { patientType?: string } | null | undefined
+): boolean {
+  if (!patient) return false;
+  return patient.patientType !== 'Non-Reguler';
+}
+
+export function formatVerificationStatusLabel(status: VerificationStatus | string): string {
+  switch (status) {
+    case 'Pending':
+      return 'Menunggu Verifikasi';
+    case 'Revision':
+      return 'Revisi';
+    case 'Approved':
+      return 'Approved';
+    case 'Draft':
+      return 'Draft';
+    default:
+      return String(status || 'Menunggu Verifikasi');
+  }
+}
+
 export function extractShiftFromSchedule(
   routineSchedule: string | undefined
 ): 'Pagi' | 'Siang' | 'Malam' | null {

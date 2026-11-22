@@ -130,6 +130,7 @@
         "dpjpName": { "type": "string", "maxLength": 120 },
         "routineSchedule": { "type": "string", "maxLength": 80 },
         "status": { "type": "string", "enum": ["Aktif", "Rujuk", "Meninggal", "Nonaktif"] },
+        "patientType": { "type": "string", "enum": ["Reguler", "Non-Reguler"] },
         "notes": { "type": "string", "maxLength": 500 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }

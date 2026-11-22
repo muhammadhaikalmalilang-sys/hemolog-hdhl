@@ -306,7 +306,7 @@ service cloud.firestore {
 
     function isValidPatient(data) {
       return data.keys().hasAll(['mrn', 'fullName', 'gender', 'birthYear', 'vascularAccess', 'diagnosis', 'dpjpId', 'dpjpName', 'routineSchedule', 'status', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['mrn', 'fullName', 'gender', 'birthYear', 'vascularAccess', 'diagnosis', 'dpjpId', 'dpjpName', 'routineSchedule', 'status', 'notes', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['mrn', 'fullName', 'gender', 'birthYear', 'vascularAccess', 'diagnosis', 'dpjpId', 'dpjpName', 'routineSchedule', 'status', 'patientType', 'notes', 'createdAt', 'updatedAt'])
         && data.mrn is string && data.mrn.size() >= 2 && data.mrn.size() <= 40
         && data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 120
         && data.gender in ['L', 'P']
@@ -317,6 +317,7 @@ service cloud.firestore {
         && data.dpjpName is string && data.dpjpName.size() <= 120
         && data.routineSchedule is string && data.routineSchedule.size() <= 80
         && data.status in ['Aktif', 'Rujuk', 'Meninggal', 'Nonaktif']
+        && (!('patientType' in data) || data.patientType in ['Reguler', 'Non-Reguler'])
         && (!('notes' in data) || (data.notes is string && data.notes.size() <= 500))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
@@ -682,7 +683,14 @@ service cloud.firestore {
     match /patients/{patientId} {
       allow get: if isSignedIn() && isValidId(patientId) && isActiveStaff();
       allow list: if isSignedIn() && resource.data.status in ['Aktif', 'Rujuk', 'Meninggal', 'Nonaktif'] && isActiveStaff();
-      allow create: if (isAdmin() || isActiveWithRoles(['Kepala Ruang', 'PJ Shift', 'Perawat Pelaksana']))
+      allow create: if (
+          isAdmin() ||
+          (
+            isActiveWithRoles(['Kepala Ruang', 'PJ Shift', 'Perawat Pelaksana'])
+            && 'patientType' in incoming()
+            && incoming().patientType == 'Non-Reguler'
+          )
+        )
         && isValidId(patientId)
         && isValidPatient(incoming())
         && incoming().createdAt == request.time
@@ -694,7 +702,7 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'mrn', 'fullName', 'gender', 'birthYear', 'vascularAccess', 'diagnosis',
-          'dpjpId', 'dpjpName', 'routineSchedule', 'status', 'notes', 'updatedAt'
+          'dpjpId', 'dpjpName', 'routineSchedule', 'status', 'patientType', 'notes', 'updatedAt'
         ]);
       allow delete: if isAdmin() && isValidId(patientId);
     }

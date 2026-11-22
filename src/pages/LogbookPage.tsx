@@ -31,10 +31,12 @@ import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import {
   clampString,
   formatDateId,
+  formatVerificationStatusLabel,
   getCurrentMonthKey,
   getDayNameId,
   getLogbookSubmissionAccess,
   isPatientScheduledOnDay,
+  isRegularPatient,
   SUBMISSION_WINDOW_WIB,
 } from '../lib/formatters';
 import { useAuth } from '../context/AuthContext';
@@ -387,6 +389,11 @@ export function LogbookPage({
     [patients]
   );
 
+  const activeRegularPatients = useMemo(
+    () => activePatients.filter((p) => isRegularPatient(p)),
+    [activePatients]
+  );
+
   const lockedPatientsForInputDate = useMemo(() => {
     const map = new Map<
       string,
@@ -421,10 +428,10 @@ export function LogbookPage({
 
   const scheduledPatientsForSlot = useMemo(
     () =>
-      activePatients.filter((p) =>
+      activeRegularPatients.filter((p) =>
         isPatientScheduledOnDay(p.routineSchedule, inputDayName, activeShift)
       ),
-    [activePatients, inputDayName, activeShift]
+    [activeRegularPatients, inputDayName, activeShift]
   );
 
   const dropdownPatientPool = useMemo(() => {
@@ -946,7 +953,7 @@ export function LogbookPage({
     const own = item.ownEntry;
     if (own && own.verificationStatus !== 'Draft' && own.verificationStatus !== 'Revision') {
       setListFeedback(
-        `Logbook ${item.patient.fullName} sudah berstatus ${own.verificationStatus} sehingga Bed/Mesin tidak dapat diubah lagi.`
+        `Logbook ${item.patient.fullName} sudah berstatus ${formatVerificationStatusLabel(own.verificationStatus)} sehingga Bed/Mesin tidak dapat diubah lagi.`
       );
       return;
     }
@@ -1643,7 +1650,7 @@ export function LogbookPage({
                       Approved: <strong>{nurseShiftProgress.approved}</strong>
                     </span>
                     <span className="text-amber-700">
-                      Pending: <strong>{nurseShiftProgress.pending}</strong>
+                      Menunggu Verifikasi: <strong>{nurseShiftProgress.pending}</strong>
                     </span>
                     {nurseShiftProgress.draftOrRevision > 0 && (
                       <span className="text-slate-600">
@@ -1878,6 +1885,7 @@ export function LogbookPage({
                             disabled={isLockedByOther || isAlreadyQueued}
                           >
                             {pat.fullName} — RM {pat.mrn} · {pat.vascularAccess} ·{' '}
+                            {!isRegularPatient(pat) ? '[Non-Reguler] ' : ''}
                             {pat.routineSchedule}
                             {suffix}
                           </option>
@@ -2120,6 +2128,11 @@ export function LogbookPage({
                                 <span className="font-mono text-xs text-slate-500">
                                   ({pat.mrn})
                                 </span>
+                                {!isRegularPatient(pat) && (
+                                  <span className="rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">
+                                    Non-Reguler
+                                  </span>
+                                )}
                                 {own ? (
                                   <VerificationBadge status={own.verificationStatus} />
                                 ) : (
@@ -2393,7 +2406,7 @@ export function LogbookPage({
                   >
                     <option value="ALL">Semua Status Verifikasi</option>
                     <option value="Draft">Draft (Sementara)</option>
-                    <option value="Pending">Pending (Menunggu Verifikasi)</option>
+                    <option value="Pending">Menunggu Verifikasi</option>
                     <option value="Approved">Approved</option>
                     <option value="Revision">Revisi</option>
                   </select>
@@ -2600,14 +2613,6 @@ export function LogbookPage({
           onCreated={(created) => {
             setPickerFeedback(null);
             void claimMachineSlotAndQueue(created, resolvedDraftMachineId);
-            const matchesDayAndShift = isPatientScheduledOnDay(
-              created.routineSchedule,
-              inputDayName,
-              activeShift
-            );
-            if (!matchesDayAndShift) {
-              setIncludeOutsideShift(true);
-            }
           }}
         />
       )}

@@ -155,6 +155,7 @@ export async function seedInitialMasterData(): Promise<void> {
         dpjpName: p.dpjpName,
         routineSchedule: p.routineSchedule,
         status: p.status,
+        patientType: 'Reguler',
         notes: p.notes,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),

@@ -1496,7 +1496,7 @@ export function MonthlyReportsPage({
               <span className="inline-flex items-center gap-1.5 text-amber-700">
                 <Clock className="h-4 w-4" />
                 {pendingOrRevisionCount} entri bulan ini belum masuk rekap karena masih berstatus
-                Draft/Pending/Revisi.
+                Draft/Menunggu Verifikasi/Revisi.
               </span>
             )}
           </div>

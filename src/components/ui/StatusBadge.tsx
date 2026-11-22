@@ -47,7 +47,7 @@ export function VerificationBadge({ status }: { status: VerificationStatus }) {
   return (
     <span className="inline-flex items-center gap-1.5 rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700 whitespace-nowrap shrink-0">
       <Clock className="h-3.5 w-3.5 text-amber-600" />
-      Pending
+      Menunggu Verifikasi
     </span>
   );
 }

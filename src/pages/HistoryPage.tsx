@@ -183,7 +183,7 @@ export function HistoryPage({
               >
                 <option value="ALL">Semua Status Verifikasi</option>
                 <option value="Draft">Draft (Sementara)</option>
-                <option value="Pending">Pending</option>
+                <option value="Pending">Menunggu Verifikasi</option>
                 <option value="Approved">Approved</option>
                 <option value="Revision">Revisi</option>
               </select>

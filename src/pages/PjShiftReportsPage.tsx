@@ -20,6 +20,7 @@ import {
   formatFullDayDateId,
   getDayNameId,
   isPatientScheduledOnDay,
+  isRegularPatient,
 } from '../lib/formatters';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -402,9 +403,11 @@ export function PjShiftReportsPage({
     const totalVerified = verifiedEntries.length;
     const dayName = getDayNameId(selectedDate);
 
-    // Scheduled patients for this date & shift
-    const activePatients = patients.filter((p) => p.status === 'Aktif');
-    const scheduledPatientsCount = activePatients.filter((p) =>
+    // Scheduled regular patients for this date & shift
+    const activeRegularPatients = patients.filter(
+      (p) => p.status === 'Aktif' && isRegularPatient(p)
+    );
+    const scheduledPatientsCount = activeRegularPatients.filter((p) =>
       isPatientScheduledOnDay(p.routineSchedule, dayName, shiftFilter)
     ).length;
 
@@ -2143,7 +2146,7 @@ export function PjShiftReportsPage({
             <div className="no-print rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2 text-[11px] text-amber-900">
               <strong>Info Verifikasi Komplikasi:</strong> Terdapat{' '}
               <strong>{unverifiedComplicationEntries.length}</strong> logbook berstatus{' '}
-              <em>Pending/Revisi</em> pada shift ini yang mencatat komplikasi intra-HD (
+              <em>Menunggu Verifikasi/Revisi</em> pada shift ini yang mencatat komplikasi intra-HD (
               {unverifiedComplicationEntries.map((u) => u.patientName).join(', ')}). Verifikasi di
               menu <strong>Verifikasi</strong> agar otomatis terakumulasi ke tabel Section C.
             </div>

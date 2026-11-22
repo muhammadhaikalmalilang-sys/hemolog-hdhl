@@ -4,8 +4,8 @@ import { CheckCircle2, Pencil, Plus, Search, Trash2, Users, X } from 'lucide-rea
 import { useAuth } from '../context/AuthContext';
 import { BulkAddPatientsModal } from '../components/patients/BulkAddPatientsModal';
 import { db, formatFirestoreError, getUserFriendlyFirestoreError, OperationType } from '../lib/firebase';
-import { clampString } from '../lib/formatters';
-import type { Patient, PatientStatus, VascularAccessType } from '../types';
+import { clampString, isRegularPatient } from '../lib/formatters';
+import type { Patient, PatientStatus, PatientType, VascularAccessType } from '../types';
 
 interface PatientsPageProps {
   patients: Patient[];
@@ -15,6 +15,7 @@ export function PatientsPage({ patients }: PatientsPageProps) {
   const { userProfile } = useAuth();
   const isAdministrator = userProfile?.role === 'Administrator';
 
+  const [activePatientTab, setActivePatientTab] = useState<PatientType>('Reguler');
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [showModal, setShowModal] = useState(false);
@@ -47,13 +48,24 @@ export function PatientsPage({ patients }: PatientsPageProps) {
   const [diagnosis, setDiagnosis] = useState('');
   const [routineSchedule, setRoutineSchedule] = useState('Senin & Kamis (Pagi)');
   const [status, setStatus] = useState<PatientStatus>('Aktif');
+  const [patientType, setPatientType] = useState<PatientType>('Reguler');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
 
+  const regularPatients = useMemo(
+    () => patients.filter((p) => isRegularPatient(p)),
+    [patients]
+  );
+  const nonRegularPatients = useMemo(
+    () => patients.filter((p) => !isRegularPatient(p)),
+    [patients]
+  );
+
   const filtered = useMemo(() => {
-    return patients.filter((p) => {
+    const sourceList = activePatientTab === 'Reguler' ? regularPatients : nonRegularPatients;
+    return sourceList.filter((p) => {
       if (statusFilter !== 'ALL' && p.status !== statusFilter) return false;
       if (searchTerm.trim()) {
         const q = searchTerm.toLowerCase();
@@ -67,9 +79,10 @@ export function PatientsPage({ patients }: PatientsPageProps) {
       }
       return true;
     });
-  }, [patients, statusFilter, searchTerm]);
+  }, [activePatientTab, regularPatients, nonRegularPatients, statusFilter, searchTerm]);
 
   const openCreate = () => {
+    const defaultType = activePatientTab;
     setEditingId(null);
     setMrn('');
     setFullName('');
@@ -77,7 +90,10 @@ export function PatientsPage({ patients }: PatientsPageProps) {
     setBirthYear('1970');
     setVascularAccess('AV Shunt');
     setDiagnosis('PGK Stage V');
-    setRoutineSchedule('Senin & Kamis (Pagi)');
+    setPatientType(defaultType);
+    setRoutineSchedule(
+      defaultType === 'Non-Reguler' ? 'Non-Reguler / Cito (Insidental)' : 'Senin & Kamis (Pagi)'
+    );
     setStatus('Aktif');
     setNotes('');
     setModalError(null);
@@ -92,6 +108,7 @@ export function PatientsPage({ patients }: PatientsPageProps) {
     setBirthYear(String(p.birthYear));
     setVascularAccess(p.vascularAccess);
     setDiagnosis(p.diagnosis);
+    setPatientType(isRegularPatient(p) ? 'Reguler' : 'Non-Reguler');
     setRoutineSchedule(p.routineSchedule);
     setStatus(p.status);
     setNotes(p.notes || '');
@@ -127,6 +144,7 @@ export function PatientsPage({ patients }: PatientsPageProps) {
         dpjpName: '-',
         routineSchedule: clampString(routineSchedule, 80),
         status,
+        patientType,
         notes: clampString(notes, 500),
         updatedAt: serverTimestamp(),
       };
@@ -166,11 +184,11 @@ export function PatientsPage({ patients }: PatientsPageProps) {
         <div>
           <h2 className="font-display text-lg font-bold text-slate-900">Data Pasien Hemodialisa</h2>
           <p className="text-xs text-slate-500">
-            Master data pasien HD rutin, akses vaskular, diagnosa, dan jadwal rutin (DPJP mengikuti jadwal dokter saat tindakan).
+            Kelola daftar pasien HD reguler dan pantau pasien non-reguler (Cito / Rawat Inap / Tambahan dari Logbook).
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {isAdministrator && (
+          {isAdministrator && activePatientTab === 'Reguler' && (
             <button
               type="button"
               onClick={() => {
@@ -189,9 +207,48 @@ export function PatientsPage({ patients }: PatientsPageProps) {
             className="inline-flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-xs font-semibold text-white hover:bg-teal-700"
           >
             <Plus className="h-4 w-4" />
-            Tambah Pasien HD
+            {activePatientTab === 'Non-Reguler' ? 'Tambah Pasien Non-Reguler' : 'Tambah Pasien HD'}
           </button>
         </div>
+      </div>
+
+      {/* Tabs: Pasien Reguler vs Pasien Non-Reguler */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="inline-flex flex-wrap items-center gap-1 rounded-lg bg-slate-200/70 p-1">
+          <button
+            type="button"
+            onClick={() => setActivePatientTab('Reguler')}
+            className={`inline-flex items-center gap-2 rounded-md px-3.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+              activePatientTab === 'Reguler'
+                ? 'bg-white text-slate-900 shadow-sm'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            Pasien Reguler
+            <span className="rounded bg-teal-50 px-1.5 py-0.5 font-mono text-[11px] font-bold text-teal-700">
+              {regularPatients.length}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActivePatientTab('Non-Reguler')}
+            className={`inline-flex items-center gap-2 rounded-md px-3.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+              activePatientTab === 'Non-Reguler'
+                ? 'bg-white text-slate-900 shadow-sm'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            Pasien Non-Reguler
+            <span className="rounded bg-amber-50 px-1.5 py-0.5 font-mono text-[11px] font-bold text-amber-700">
+              {nonRegularPatients.length}
+            </span>
+          </button>
+        </div>
+        {activePatientTab === 'Non-Reguler' && (
+          <p className="text-[11px] text-slate-500">
+            Pasien di tab ini berasal dari tombol <strong>+ PASIEN BARU</strong> di Logbook dan tidak masuk daftar/hitungan pasien reguler.
+          </p>
+        )}
       </div>
 
       {pageError && (
@@ -265,7 +322,14 @@ export function PatientsPage({ patients }: PatientsPageProps) {
                   <tr key={p.id} className="hover:bg-slate-50">
                     <td className="px-4 py-3 font-mono font-semibold text-slate-900">{p.mrn}</td>
                     <td className="px-4 py-3">
-                      <div className="font-semibold text-slate-900">{p.fullName}</div>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="font-semibold text-slate-900">{p.fullName}</span>
+                        {!isRegularPatient(p) && (
+                          <span className="rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">
+                            Non-Reguler
+                          </span>
+                        )}
+                      </div>
                       <div className="text-[11px] text-slate-500">
                         {p.gender === 'L' ? 'Laki-laki' : 'Perempuan'} · Lahir {p.birthYear}
                       </div>
@@ -396,14 +460,39 @@ export function PatientsPage({ patients }: PatientsPageProps) {
                   </select>
                 </div>
                 <div>
-                  <label className="block font-medium text-slate-700 mb-1">Jadwal HD Rutin</label>
+                  <label className="block font-medium text-slate-700 mb-1">Kategori Pasien</label>
+                  <select
+                    value={patientType}
+                    onChange={(e) => {
+                      const nextType = e.target.value as PatientType;
+                      setPatientType(nextType);
+                      if (nextType === 'Non-Reguler' && routineSchedule.includes('Senin')) {
+                        setRoutineSchedule('Non-Reguler / Cito (Insidental)');
+                      } else if (nextType === 'Reguler' && routineSchedule.startsWith('Non-Reguler')) {
+                        setRoutineSchedule('Senin & Kamis (Pagi)');
+                      }
+                    }}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-teal-600 focus:outline-none"
+                  >
+                    <option value="Reguler">Pasien Reguler</option>
+                    <option value="Non-Reguler">Pasien Non-Reguler</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    {patientType === 'Non-Reguler' ? 'Keterangan Layanan' : 'Jadwal HD Rutin'}
+                  </label>
                   <input
                     type="text"
                     required
                     list="hd-routine-schedule-presets"
                     value={routineSchedule}
                     onChange={(e) => setRoutineSchedule(e.target.value)}
-                    placeholder="Contoh: Selasa & Jumat (Pagi)"
+                    placeholder={
+                      patientType === 'Non-Reguler'
+                        ? 'Contoh: Non-Reguler / Cito / Rawat Inap'
+                        : 'Contoh: Selasa & Jumat (Pagi)'
+                    }
                     className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-teal-600 focus:outline-none"
                   />
                   <datalist id="hd-routine-schedule-presets">
@@ -418,6 +507,7 @@ export function PatientsPage({ patients }: PatientsPageProps) {
                     <option value="Selasa & Jumat (Siang)" />
                     <option value="Rabu & Sabtu (Pagi)" />
                     <option value="Rabu & Sabtu (Siang)" />
+                    <option value="Non-Reguler / Cito (Insidental)" />
                   </datalist>
                 </div>
                 <div>

@@ -8,6 +8,7 @@ import {
   formatDateId,
   formatFullDayDateId,
   formatMonthLabel,
+  formatVerificationStatusLabel,
 } from '../lib/formatters';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -718,7 +719,7 @@ export function PatientReportsPage({
         r.epoDisplay,
         r.entry.nurseName,
         r.entry.doctorName,
-        r.entry.verificationStatus,
+        formatVerificationStatusLabel(r.entry.verificationStatus),
       ])
     );
     showToast(`Laporan detail pasien (${tableRows.length} baris) diekspor ke CSV.`, 'success');
@@ -788,7 +789,7 @@ export function PatientReportsPage({
             <option value="ALL">Semua Pasien Hemodialisa</option>
             {patients.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.fullName} ({p.mrn})
+                {p.fullName} ({p.mrn}){p.patientType === 'Non-Reguler' ? ' [Non-Reguler]' : ''}
               </option>
             ))}
           </select>
@@ -1033,7 +1034,7 @@ export function PatientReportsPage({
                 Approved: <strong>{statusBreakdown.approved}</strong>
               </span>
               <span className="text-amber-700">
-                Pending: <strong>{statusBreakdown.pending}</strong>
+                Menunggu Verifikasi: <strong>{statusBreakdown.pending}</strong>
               </span>
               {statusBreakdown.draft > 0 && (
                 <span className="text-slate-600">
