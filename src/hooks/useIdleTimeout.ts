@@ -10,7 +10,7 @@ const ACTIVE_ACTIVITY_THROTTLE_MS = 1000;
 export function stampLastActivity(timestamp = Date.now()): void {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.setItem(LAST_ACTIVITY_STORAGE_KEY, String(timestamp));
+    window.sessionStorage.setItem(LAST_ACTIVITY_STORAGE_KEY, String(timestamp));
   } catch {
     // Abaikan jika storage penuh/dibatasi
   }
@@ -19,7 +19,7 @@ export function stampLastActivity(timestamp = Date.now()): void {
 export function clearLastActivity(): void {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.removeItem(LAST_ACTIVITY_STORAGE_KEY);
+    window.sessionStorage.removeItem(LAST_ACTIVITY_STORAGE_KEY);
   } catch {
     // Abaikan error storage
   }
@@ -28,7 +28,7 @@ export function clearLastActivity(): void {
 function readStoredLastActivity(): number | null {
   if (typeof window === 'undefined') return null;
   try {
-    const raw = window.localStorage.getItem(LAST_ACTIVITY_STORAGE_KEY);
+    const raw = window.sessionStorage.getItem(LAST_ACTIVITY_STORAGE_KEY);
     if (!raw) return null;
     const parsed = Number(raw);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
@@ -165,18 +165,6 @@ export function useIdleTimeout({
       evaluateIdleState();
     };
 
-    const handleStorageSync = (event: StorageEvent) => {
-      if (event.key !== LAST_ACTIVITY_STORAGE_KEY || !event.newValue) return;
-      const parsed = Number(event.newValue);
-      if (Number.isFinite(parsed) && parsed > lastActivityRef.current) {
-        lastActivityRef.current = parsed;
-        if (showWarningRef.current && Date.now() - parsed < timeoutMs - warningMs) {
-          showWarningRef.current = false;
-          setShowWarning(false);
-        }
-      }
-    };
-
     const passiveEvents: Array<keyof WindowEventMap> = ['mousemove', 'scroll', 'wheel'];
     const activeEvents: Array<keyof WindowEventMap> = [
       'mousedown',
@@ -192,7 +180,6 @@ export function useIdleTimeout({
       window.addEventListener(evt, handleActiveInteraction, { passive: true })
     );
     window.addEventListener('focus', handleVisibilityOrFocus);
-    window.addEventListener('storage', handleStorageSync);
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
 
     evaluateIdleState();
@@ -203,7 +190,6 @@ export function useIdleTimeout({
       passiveEvents.forEach((evt) => window.removeEventListener(evt, handlePassiveActivity));
       activeEvents.forEach((evt) => window.removeEventListener(evt, handleActiveInteraction));
       window.removeEventListener('focus', handleVisibilityOrFocus);
-      window.removeEventListener('storage', handleStorageSync);
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
     };
   }, [enabled, timeoutMs, warningMs, showWarning, resetActivity]);

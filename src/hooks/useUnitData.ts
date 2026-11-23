@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { collection, deleteDoc, doc, getDoc, onSnapshot, query, where } from 'firebase/firestore';
 import {
+  auth,
   db,
   formatFirestoreError,
+  isPermissionDeniedError,
   isTransientFirestoreError,
   onFirestoreReconnect,
   OperationType,
@@ -62,6 +64,7 @@ export function useUnitData() {
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [resubscribeEpoch, setResubscribeEpoch] = useState(0);
   const hydratedSessionKeyRef = useRef<string | null>(null);
+  const authPermissionRetryRef = useRef(0);
   const prunedLockIdsRef = useRef<Set<string>>(new Set());
   const prunedMachineLockIdsRef = useRef<Set<string>>(new Set());
 
@@ -86,6 +89,7 @@ export function useUnitData() {
 
     setFatalError(null);
     if (isInitialSessionLoad) {
+      authPermissionRetryRef.current = 0;
       setLoading(true);
       setApprovedReady(false);
       setSupervisorReady(false);
@@ -102,6 +106,9 @@ export function useUnitData() {
 
     const handleSnapshotError = (err: unknown, path: string) => {
       if (cancelled) return;
+      if (!auth.currentUser || auth.currentUser.uid !== firebaseUser.uid) {
+        return;
+      }
       if (isTransientFirestoreError(err)) {
         needsResubscribe = true;
         setLoading(false);
@@ -113,6 +120,26 @@ export function useUnitData() {
             setResubscribeEpoch((e) => e + 1);
           }
         }, 3000);
+        return;
+      }
+      if (isPermissionDeniedError(err) && authPermissionRetryRef.current < 1) {
+        authPermissionRetryRef.current += 1;
+        needsResubscribe = true;
+        console.warn(`Menyinkronkan ulang token untuk ${path}...`);
+        void firebaseUser
+          .getIdToken(true)
+          .catch(() => undefined)
+          .finally(() => {
+            if (cancelled || !auth.currentUser || auth.currentUser.uid !== firebaseUser.uid) {
+              return;
+            }
+            if (retryTimer !== null) window.clearTimeout(retryTimer);
+            retryTimer = window.setTimeout(() => {
+              if (!cancelled && auth.currentUser?.uid === firebaseUser.uid) {
+                setResubscribeEpoch((e) => e + 1);
+              }
+            }, 350);
+          });
         return;
       }
       setFatalError(formatFirestoreError(err, OperationType.LIST, path));

@@ -1,10 +1,15 @@
 import { initializeApp, getApps, deleteApp, type FirebaseApp } from 'firebase/app';
-import { getAuth, type Auth } from 'firebase/auth';
+import {
+  browserPopupRedirectResolver,
+  browserSessionPersistence,
+  getAuth,
+  initializeAuth,
+  inMemoryPersistence,
+  type Auth,
+} from 'firebase/auth';
 import {
   initializeFirestore,
   getFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager,
   memoryLocalCache,
   enableNetwork,
   disableNetwork,
@@ -33,12 +38,12 @@ const activeDatabaseId = firebaseConfig.firestoreDatabaseId || '(default)';
 
 function createFirestoreInstance(targetApp: FirebaseApp, databaseId: string): Firestore {
   try {
+    // Use per-tab isolated in-memory cache so different accounts in separate tabs
+    // never share IndexedDB cache or proxy queries through another tab's auth session.
     return initializeFirestore(
       targetApp,
       {
-        localCache: persistentLocalCache({
-          tabManager: persistentMultipleTabManager(),
-        }),
+        localCache: memoryLocalCache(),
       },
       databaseId
     );
@@ -48,24 +53,30 @@ function createFirestoreInstance(targetApp: FirebaseApp, databaseId: string): Fi
     if (message.includes('already been called') || message.includes('already exists')) {
       return getFirestore(targetApp, databaseId);
     }
-    console.warn(
-      'persistentLocalCache tidak tersedia, beralih ke memoryLocalCache:',
-      error
-    );
-    try {
-      return initializeFirestore(
-        targetApp,
-        { localCache: memoryLocalCache() },
-        databaseId
-      );
-    } catch {
-      return getFirestore(targetApp, databaseId);
+    return getFirestore(targetApp, databaseId);
+  }
+}
+
+function createAuthInstance(targetApp: FirebaseApp): Auth {
+  try {
+    // Isolate Auth session per browser tab via sessionStorage so multiple accounts
+    // can stay logged in simultaneously across separate tabs without overwriting each other.
+    return initializeAuth(targetApp, {
+      persistence: browserSessionPersistence,
+      popupRedirectResolver: browserPopupRedirectResolver,
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+    if (message.includes('already-initialized') || message.includes('already exists')) {
+      return getAuth(targetApp);
     }
+    return getAuth(targetApp);
   }
 }
 
 export const db: Firestore = createFirestoreInstance(app, activeDatabaseId);
-export const auth: Auth = getAuth(app);
+export const auth: Auth = createAuthInstance(app);
 
 export const ACTIVE_FIREBASE_PROJECT_ID: string = firebaseConfig.projectId;
 export const BOOTSTRAP_ADMIN_EMAILS = [
@@ -196,6 +207,22 @@ export function isTransientFirestoreError(error: unknown): boolean {
     message.includes('deadline') ||
     message.includes('timeout')
   );
+}
+
+export function isPermissionDeniedError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === 'string') {
+    const normalized = code.replace(/^firestore\//, '').toLowerCase();
+    if (normalized === 'permission-denied') return true;
+  }
+  const message =
+    error instanceof Error
+      ? error.message.toLowerCase()
+      : typeof (error as { message?: unknown }).message === 'string'
+      ? String((error as { message?: string }).message).toLowerCase()
+      : '';
+  return message.includes('missing or insufficient permissions') || message.includes('permission-denied');
 }
 
 export async function testConnection(): Promise<boolean> {
@@ -380,7 +407,14 @@ void testConnection();
 export async function withSecondaryAuth<T>(fn: (secondaryAuth: Auth) => Promise<T>): Promise<T> {
   const secondaryAppName = `AdminProvisioner_${Date.now()}`;
   const secondaryApp = initializeApp(firebaseConfig, secondaryAppName);
-  const secondaryAuth = getAuth(secondaryApp);
+  let secondaryAuth: Auth;
+  try {
+    secondaryAuth = initializeAuth(secondaryApp, {
+      persistence: inMemoryPersistence,
+    });
+  } catch {
+    secondaryAuth = getAuth(secondaryApp);
+  }
   try {
     return await fn(secondaryAuth);
   } finally {

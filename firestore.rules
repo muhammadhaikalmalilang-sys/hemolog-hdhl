@@ -906,7 +906,7 @@ service cloud.firestore {
                   && isKepalaRuangUser()
                 )
             )
-            && isVerifier()
+            && (isVerifier() || isAdmin())
           ) ||
           (
             incoming().reportType == 'monthly_unit'
@@ -958,6 +958,8 @@ service cloud.firestore {
             existing().reportType == 'pj_shift'
             && incoming().date == existing().date
             && incoming().monthKey == existing().monthKey
+            && !('reviewedBy' in existing())
+            && (!('reviewStatus' in existing()) || existing().reviewStatus != 'Reviewed')
             && 'reviewStatus' in incoming()
             && incoming().reviewStatus == 'Reviewed'
             && 'reviewedBy' in incoming()
@@ -992,6 +994,12 @@ service cloud.firestore {
             ])
             && isPjShiftUser()
             && hasAuthorizedPjOnSlot(request.auth.uid, existing().date, existing().shift)
+            && (
+              exists(/databases/$(database)/documents/pj_shift_assignments/$(existing().date + '_' + existing().shift)) ||
+              !('authorRole' in existing()) ||
+              existing().authorRole != 'PJ Shift' ||
+              existing().authorId == request.auth.uid
+            )
           )
           ||
           (
@@ -1028,6 +1036,34 @@ service cloud.firestore {
             )
             && isValidPjShiftContentDelta(incoming(), incoming().diff(existing()).affectedKeys())
             && (existing().authorId == request.auth.uid || isVerifier())
+          )
+          ||
+          (
+            existing().reportType == 'pj_shift'
+            && incoming().date == existing().date
+            && incoming().monthKey == existing().monthKey
+            && !('handoverSignedBy' in incoming())
+            && !('handoverSignedByName' in incoming())
+            && !('handoverSignedShift' in incoming())
+            && !('handoverSignedAt' in incoming())
+            && !('receivedSignedBy' in incoming())
+            && !('receivedSignedByName' in incoming())
+            && !('receivedSignedShift' in incoming())
+            && !('receivedSignedDate' in incoming())
+            && !('receivedSignedAt' in incoming())
+            && !('reviewedBy' in incoming())
+            && !('reviewedByName' in incoming())
+            && !('reviewNote' in incoming())
+            && !('reviewedAt' in incoming())
+            && (!('reviewStatus' in incoming()) || incoming().reviewStatus == 'Submitted')
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'handoverSignedBy', 'handoverSignedByName', 'handoverSignedShift', 'handoverSignedAt',
+              'receivedSignedBy', 'receivedSignedByName', 'receivedSignedShift', 'receivedSignedDate', 'receivedSignedAt',
+              'reviewStatus', 'reviewedBy', 'reviewedByName', 'reviewNote', 'reviewedAt',
+              'updatedAt'
+            ])
+            && isValidPjShiftReport(incoming())
+            && isAdmin()
           )
           ||
           (

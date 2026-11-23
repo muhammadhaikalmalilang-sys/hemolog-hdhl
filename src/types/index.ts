@@ -47,6 +47,8 @@ export const ROLE_MENUS: Record<UserRole, MenuItemConfig[]> = {
   Administrator: [
     { id: 'dashboard', label: 'Dashboard', description: 'Statistik umum sistem unit HD' },
     { id: 'master_logbook', label: 'Master Logbook', description: 'Kelola semua logbook & kategori tindakan' },
+    { id: 'laporan_pj_shift', label: 'Laporan PJ Shift', description: 'Monitoring & manajemen pengesahan laporan shift' },
+    { id: 'laporan_bulanan', label: 'Laporan Bulanan', description: 'Rekap performa perawat & unit HD' },
     { id: 'data_dokter', label: 'Data Dokter', description: 'Kelola dokter penanggung jawab' },
     { id: 'data_akun', label: 'Data Akun', description: 'Manajemen akun, role & aktivasi staf' },
     { id: 'jadwal_dinas', label: 'Jadwal Dinas', description: 'Input & kelola jadwal shift perawat' },

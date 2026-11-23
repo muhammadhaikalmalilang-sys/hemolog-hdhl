@@ -386,7 +386,7 @@ export function LoginPage() {
                 onChange={(e) => setRememberMe(e.target.checked)}
                 className="h-4 w-4 rounded border-slate-300 text-[#0B5A8E] focus:ring-[#0B5A8E]/30"
               />
-              <span>Ingat Akun Saya</span>
+              <span>Ingat Username / Email</span>
             </label>
           )}
 

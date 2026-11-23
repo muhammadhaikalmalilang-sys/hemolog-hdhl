@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { addDoc, collection, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { addDoc, collection, deleteField, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import {
   CheckCircle2,
   Download,
@@ -218,52 +218,20 @@ export function PjShiftReportsPage({
     [logbooks]
   );
 
-  // Available date-shift combos with verified logbooks for quick navigation
-  const availableVerifiedPeriods = useMemo(() => {
-    const map = new Map<string, { date: string; shift: ShiftType; count: number }>();
-    for (const lb of allApprovedLogbooks) {
-      const key = `${lb.date}__${lb.shift}`;
-      const existing = map.get(key);
-      if (existing) {
-        existing.count += 1;
-      } else {
-        map.set(key, { date: lb.date, shift: lb.shift, count: 1 });
-      }
-    }
-    return Array.from(map.values()).sort((a, b) => {
-      const dCmp = b.date.localeCompare(a.date);
-      if (dCmp !== 0) return dCmp;
-      const order: Record<ShiftType, number> = { Pagi: 1, Siang: 2, Malam: 3 };
-      return order[a.shift] - order[b.shift];
-    });
-  }, [allApprovedLogbooks]);
-
-  const { todayDate: liveTodayDate } = useLiveClock();
+  const { todayDate: liveTodayDate, currentShift: liveCurrentShift } = useLiveClock();
   const [trackedTodayDate, setTrackedTodayDate] = useState(liveTodayDate);
-  const [hasManualPeriod, setHasManualPeriod] = useState(false);
-
-  const defaultPeriod = availableVerifiedPeriods[0];
-  const [selectedDate, setSelectedDate] = useState(defaultPeriod?.date || liveTodayDate);
+  const [selectedDate, setSelectedDate] = useState(liveTodayDate);
   const [shiftFilter, setShiftFilter] = useState<'ALL' | ShiftType>(
-    defaultPeriod?.shift || 'Pagi'
+    liveCurrentShift === 'Siang' ? 'Siang' : 'Pagi'
   );
   const [verifierFilter, setVerifierFilter] = useState<'ALL' | 'PJ Shift' | 'Kepala Ruang'>('ALL');
 
   useEffect(() => {
-    if (!hasManualPeriod && defaultPeriod) {
-      setSelectedDate(defaultPeriod.date);
-      setShiftFilter(defaultPeriod.shift);
-    }
-  }, [hasManualPeriod, defaultPeriod?.date, defaultPeriod?.shift]);
-
-  useEffect(() => {
     if (liveTodayDate !== trackedTodayDate) {
       setTrackedTodayDate(liveTodayDate);
-      if (!hasManualPeriod && !defaultPeriod) {
-        setSelectedDate(liveTodayDate);
-      }
+      setSelectedDate((prev) => (prev === trackedTodayDate ? liveTodayDate : prev));
     }
-  }, [liveTodayDate, trackedTodayDate, hasManualPeriod, defaultPeriod]);
+  }, [liveTodayDate, trackedTodayDate]);
 
   // Create/Save PJ Shift report modal
   const [showModal, setShowModal] = useState(false);
@@ -301,6 +269,8 @@ export function PjShiftReportsPage({
   }, [reviewTargetId, newReviewDraft, reports]);
   const [reviewNote, setReviewNote] = useState('');
   const [reviewing, setReviewing] = useState(false);
+  const [showResetConfirmModal, setShowResetConfirmModal] = useState(false);
+  const [resettingApprovals, setResettingApprovals] = useState(false);
 
   const canCreate =
     userProfile?.role === 'PJ Shift' ||
@@ -367,6 +337,19 @@ export function PjShiftReportsPage({
     );
   }, [pjShiftReports, selectedDate, shiftFilter]);
 
+  const hasAnyApproval = Boolean(
+    activeSavedReport &&
+      (activeSavedReport.handoverSignedBy ||
+        activeSavedReport.receivedSignedBy ||
+        activeSavedReport.reviewedBy ||
+        activeSavedReport.reviewStatus === 'Reviewed')
+  );
+  const canResetApprovals =
+    userProfile?.role === 'Administrator' &&
+    shiftFilter !== 'ALL' &&
+    Boolean(activeSavedReport) &&
+    hasAnyApproval;
+
   const nextShiftOrder: Record<ShiftType, ShiftType> = {
     Pagi: 'Siang',
     Siang: 'Malam',
@@ -397,6 +380,41 @@ export function PjShiftReportsPage({
       null
     );
   }, [pjShiftAssignments, handoverTargetDate, nextShiftName, shiftFilter]);
+
+  const scheduledPjCurrentList = useMemo(() => {
+    if (shiftFilter === 'ALL') return [];
+    const seen = new Set<string>();
+    const list: StaffDirectoryEntry[] = [];
+    for (const s of schedules) {
+      if (s.date !== selectedDate || s.shift !== shiftFilter) continue;
+      const st = staffMap.get(s.nurseId);
+      if (st && st.isActive && st.role === 'PJ Shift' && !seen.has(st.uid)) {
+        seen.add(st.uid);
+        list.push(st);
+      }
+    }
+    return list;
+  }, [schedules, selectedDate, shiftFilter, staffMap]);
+
+  const scheduledPjNextList = useMemo(() => {
+    if (shiftFilter === 'ALL' || shiftFilter === 'Siang') return [];
+    const seen = new Set<string>();
+    const list: StaffDirectoryEntry[] = [];
+    for (const s of schedules) {
+      if (s.date !== handoverTargetDate || s.shift !== nextShiftName) continue;
+      const st = staffMap.get(s.nurseId);
+      if (st && st.isActive && st.role === 'PJ Shift' && !seen.has(st.uid)) {
+        seen.add(st.uid);
+        list.push(st);
+      }
+    }
+    return list;
+  }, [schedules, handoverTargetDate, nextShiftName, shiftFilter, staffMap]);
+
+  const activeKaruList = useMemo(
+    () => staffDirectory.filter((st) => st.isActive && st.role === 'Kepala Ruang'),
+    [staffDirectory]
+  );
 
   // Core shift report analytics computed strictly from verified logbooks + unit master data
   const shiftStats = useMemo(() => {
@@ -619,28 +637,22 @@ export function PjShiftReportsPage({
     const pjShiftName =
       activeSavedReport?.handoverSignedByName ||
       assignedPjNameForBanner ||
-      activeSavedReport?.authorName ||
+      (scheduledPjCurrentList.length === 1 ? scheduledPjCurrentList[0].fullName : '') ||
+      (activeSavedReport?.authorRole === 'PJ Shift' ? activeSavedReport.authorName : '') ||
       Array.from(pjVerifierNames)[0] ||
-      pjInRoster[0] ||
-      staffDirectory.find((s) => s.isActive && s.role === 'PJ Shift')?.fullName ||
-      'PJ Shift HD';
+      'Belum ditetapkan PJ Shift';
 
-    const nextShiftScheduledPj = schedules
-      .filter((s) => s.date === handoverTargetDate && s.shift === nextShiftName)
-      .map((s) => staffDirectory.find((st) => st.uid === s.nurseId))
-      .find((st) => st?.role === 'PJ Shift')?.fullName;
     const nextPjShiftName =
       activeSavedReport?.receivedSignedByName ||
       assignedPjNext?.pjNurseName ||
-      nextShiftScheduledPj ||
-      staffDirectory.find((s) => s.isActive && s.role === 'PJ Shift' && s.fullName !== pjShiftName)
-        ?.fullName ||
-      'PJ Shift Berikutnya';
+      (scheduledPjNextList.length === 1 ? scheduledPjNextList[0].fullName : '') ||
+      'Belum ditetapkan PJ Shift';
 
     const kaRuangName =
       activeSavedReport?.reviewedByName ||
+      (userProfile?.role === 'Kepala Ruang' ? userProfile.fullName : '') ||
       Array.from(karuVerifierNames)[0] ||
-      staffDirectory.find((s) => s.isActive && s.role === 'Kepala Ruang')?.fullName ||
+      activeKaruList[0]?.fullName ||
       'Kepala Ruang HD';
 
     // Machines metrics
@@ -858,6 +870,10 @@ export function PjShiftReportsPage({
     assignedPjCurrent,
     assignedPjListForDate,
     assignedPjNext,
+    scheduledPjCurrentList,
+    scheduledPjNextList,
+    activeKaruList,
+    userProfile,
   ]);
 
   const savedSbar = useMemo(
@@ -940,35 +956,64 @@ export function PjShiftReportsPage({
         reason: 'Pilih Shift Pagi atau Siang untuk pengesahan digital.',
       };
     }
+    if (activeSavedReport?.handoverSignedBy) {
+      return {
+        allowed: false,
+        reason: `Sudah disahkan secara digital oleh ${activeSavedReport.handoverSignedByName || 'PJ Shift'}.`,
+      };
+    }
     if (!userProfile || userProfile.role !== 'PJ Shift') {
       return {
         allowed: false,
-        reason: 'Hanya akun PJ Shift yang dapat mengesahkan kolom ini.',
+        reason:
+          'Dilarang: Pengesahan digital ini hanya dapat dilakukan oleh pemilik akun PJ Shift bertugas.',
       };
     }
     if (assignedPjCurrent) {
       if (assignedPjCurrent.pjNurseId !== userProfile.uid) {
         return {
           allowed: false,
-          reason: `Penugasan PJ Shift ${shiftFilter} tgl ${formatDateId(selectedDate)} ditetapkan untuk ${assignedPjCurrent.pjNurseName}.`,
+          reason: `Dilarang: Hanya pemilik akun ${assignedPjCurrent.pjNurseName} yang dapat mengesahkan slot ini. Perawat lain dilarang mengesahkan.`,
         };
       }
       return { allowed: true, reason: '' };
     }
-    if (!userScheduleCurrentDate) {
+    if (scheduledPjCurrentList.length > 1) {
       return {
         allowed: false,
-        reason: `Jadwal Anda tgl ${formatDateId(selectedDate)} belum diatur Shift ${shiftFilter} di Jadwal Dinas / Penugasan PJ Shift.`,
+        reason:
+          'Terdapat lebih dari 1 PJ Shift terjadwal pada shift ini. Tetapkan tepat 1 pemilik akun di Penugasan PJ Shift terlebih dahulu.',
       };
     }
-    if (userScheduleCurrentDate.shift !== shiftFilter) {
+    if (!userScheduleCurrentDate || userScheduleCurrentDate.shift !== shiftFilter) {
+      const targetName = scheduledPjCurrentList[0]?.fullName;
       return {
         allowed: false,
-        reason: `Akun Anda (${userProfile.fullName}) terjadwal Shift ${userScheduleCurrentDate.shift}, tidak dapat mengesahkan PJ Shift ${shiftFilter}.`,
+        reason: targetName
+          ? `Dilarang: Hanya pemilik akun ${targetName} yang terjadwal Shift ${shiftFilter} tgl ${formatDateId(selectedDate)}. Perawat lain dilarang mengesahkan.`
+          : `Dilarang: Akun Anda tidak terjadwal sebagai PJ Shift ${shiftFilter} pada ${formatDateId(selectedDate)}.`,
+      };
+    }
+    if (
+      activeSavedReport &&
+      activeSavedReport.authorRole === 'PJ Shift' &&
+      activeSavedReport.authorId !== userProfile.uid
+    ) {
+      return {
+        allowed: false,
+        reason: `Dilarang: Laporan shift ini dibuat oleh akun ${activeSavedReport.authorName}. Perawat lain dilarang memberikan pengesahan digital.`,
       };
     }
     return { allowed: true, reason: '' };
-  }, [shiftFilter, userProfile, assignedPjCurrent, userScheduleCurrentDate, selectedDate]);
+  }, [
+    shiftFilter,
+    activeSavedReport,
+    userProfile,
+    assignedPjCurrent,
+    scheduledPjCurrentList,
+    userScheduleCurrentDate,
+    selectedDate,
+  ]);
 
   const kolom2Auth = useMemo(() => {
     if (shiftFilter === 'ALL') {
@@ -983,38 +1028,50 @@ export function PjShiftReportsPage({
         reason: 'Tidak ada Shift Malam berikutnya.',
       };
     }
+    if (activeSavedReport?.receivedSignedBy) {
+      return {
+        allowed: false,
+        reason: `Sudah disahkan secara digital oleh ${activeSavedReport.receivedSignedByName || 'PJ Shift Berikutnya'}.`,
+      };
+    }
     if (!userProfile || userProfile.role !== 'PJ Shift') {
       return {
         allowed: false,
-        reason: `Hanya akun PJ Shift ${nextShiftName} yang dapat mengesahkan kolom ini.`,
+        reason: `Dilarang: Pengesahan digital penerima hanya dapat dilakukan oleh pemilik akun PJ Shift ${nextShiftName}.`,
       };
     }
     if (assignedPjNext) {
       if (assignedPjNext.pjNurseId !== userProfile.uid) {
         return {
           allowed: false,
-          reason: `Penugasan PJ Shift ${nextShiftName} tgl ${formatDateId(handoverTargetDate)} ditetapkan untuk ${assignedPjNext.pjNurseName}.`,
+          reason: `Dilarang: Hanya pemilik akun ${assignedPjNext.pjNurseName} yang dapat mengesahkan penerima shift. Perawat lain dilarang mengesahkan.`,
         };
       }
       return { allowed: true, reason: '' };
     }
-    if (!userScheduleHandoverDate) {
+    if (scheduledPjNextList.length > 1) {
       return {
         allowed: false,
-        reason: `Jadwal Anda tgl ${formatDateId(handoverTargetDate)} belum diatur Shift ${nextShiftName} di Jadwal Dinas / Penugasan PJ Shift.`,
+        reason:
+          'Terdapat lebih dari 1 PJ Shift terjadwal pada shift berikutnya. Tetapkan tepat 1 pemilik akun di Penugasan PJ Shift terlebih dahulu.',
       };
     }
-    if (userScheduleHandoverDate.shift !== nextShiftName) {
+    if (!userScheduleHandoverDate || userScheduleHandoverDate.shift !== nextShiftName) {
+      const targetName = scheduledPjNextList[0]?.fullName;
       return {
         allowed: false,
-        reason: `Akun Anda (${userProfile.fullName}) terjadwal Shift ${userScheduleHandoverDate.shift} tgl ${formatDateId(handoverTargetDate)}, bukan PJ Shift ${nextShiftName}.`,
+        reason: targetName
+          ? `Dilarang: Hanya pemilik akun ${targetName} yang terjadwal PJ Shift ${nextShiftName} tgl ${formatDateId(handoverTargetDate)}. Perawat lain dilarang mengesahkan.`
+          : `Dilarang: Akun Anda tidak terjadwal sebagai PJ Shift ${nextShiftName} pada ${formatDateId(handoverTargetDate)}.`,
       };
     }
     return { allowed: true, reason: '' };
   }, [
     shiftFilter,
+    activeSavedReport,
     userProfile,
     assignedPjNext,
+    scheduledPjNextList,
     userScheduleHandoverDate,
     handoverTargetDate,
     nextShiftName,
@@ -1027,14 +1084,27 @@ export function PjShiftReportsPage({
         reason: 'Pilih Shift Pagi atau Siang untuk pengesahan digital.',
       };
     }
+    if (activeSavedReport?.reviewStatus === 'Reviewed' || activeSavedReport?.reviewedBy) {
+      return {
+        allowed: false,
+        reason: `Sudah disahkan secara digital oleh ${activeSavedReport.reviewedByName || 'Kepala Ruang'}.`,
+      };
+    }
     if (!userProfile || userProfile.role !== 'Kepala Ruang') {
       return {
         allowed: false,
-        reason: 'Hanya akun Kepala Ruang yang dapat mengesahkan kolom ini.',
+        reason:
+          'Dilarang: Pengesahan digital ini hanya dapat dilakukan oleh pemilik akun Kepala Ruang. Perawat lain dilarang mengesahkan.',
+      };
+    }
+    if (activeKaruList.length === 1 && activeKaruList[0].uid !== userProfile.uid) {
+      return {
+        allowed: false,
+        reason: `Dilarang: Hanya pemilik akun ${activeKaruList[0].fullName} (Kepala Ruang) yang dapat memberikan pengesahan digital.`,
       };
     }
     return { allowed: true, reason: '' };
-  }, [shiftFilter, userProfile]);
+  }, [shiftFilter, activeSavedReport, userProfile, activeKaruList]);
 
   const handleOpenCreateModal = () => {
     setModalNursesOnDuty(
@@ -1124,7 +1194,7 @@ export function PjShiftReportsPage({
 
   const handleSubmitReview = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userProfile || !reviewTarget) return;
+    if (!userProfile || !reviewTarget || !kolom3Auth.allowed) return;
     setReviewing(true);
     try {
       const noteText = clampString(
@@ -1284,6 +1354,49 @@ export function PjShiftReportsPage({
       setReviewTargetId('__NEW__');
     }
     setReviewNote(activeSavedReport?.reviewNote || '');
+  };
+
+  const handleResetApprovals = async () => {
+    if (!canResetApprovals || !activeSavedReport) return;
+    setResettingApprovals(true);
+    setSignFeedback(null);
+    try {
+      await updateDoc(doc(db, 'reports', activeSavedReport.id), {
+        handoverSignedBy: deleteField(),
+        handoverSignedByName: deleteField(),
+        handoverSignedShift: deleteField(),
+        handoverSignedAt: deleteField(),
+        receivedSignedBy: deleteField(),
+        receivedSignedByName: deleteField(),
+        receivedSignedShift: deleteField(),
+        receivedSignedDate: deleteField(),
+        receivedSignedAt: deleteField(),
+        reviewedBy: deleteField(),
+        reviewedByName: deleteField(),
+        reviewNote: deleteField(),
+        reviewedAt: deleteField(),
+        reviewStatus: 'Submitted',
+        updatedAt: serverTimestamp(),
+      });
+      setShowResetConfirmModal(false);
+      setSignFeedback({
+        type: 'success',
+        message: `Pengesahan digital Laporan PJ Shift ${shiftFilter} (${formatDateId(selectedDate)}) berhasil direset. Pemilik akun berwenang dapat mengesahkan ulang.`,
+      });
+      showToast(
+        `Pengesahan digital Shift ${shiftFilter} (${formatDateId(selectedDate)}) berhasil direset.`,
+        'success'
+      );
+    } catch (err) {
+      setSignFeedback({
+        type: 'error',
+        message: 'Gagal mereset pengesahan digital laporan PJ Shift.',
+      });
+      showToast('Gagal mereset pengesahan digital laporan PJ Shift.', 'error');
+      handleFirestoreError(err, OperationType.UPDATE, `reports/${activeSavedReport.id}`);
+    } finally {
+      setResettingApprovals(false);
+    }
   };
 
   const formatIncidentLines = (
@@ -1817,7 +1930,7 @@ export function PjShiftReportsPage({
             <Download className="h-4 w-4" />
             Ekspor CSV
           </button>
-          {canReview && shiftFilter !== 'ALL' && activeSavedReport?.reviewStatus !== 'Reviewed' && (
+          {canReview && kolom3Auth.allowed && (
             <button
               type="button"
               onClick={handleOpenKaruSign}
@@ -1825,6 +1938,16 @@ export function PjShiftReportsPage({
             >
               <CheckCircle2 className="h-4 w-4" />
               Sahkan Digital Ka. Ruang
+            </button>
+          )}
+          {canResetApprovals && (
+            <button
+              type="button"
+              onClick={() => setShowResetConfirmModal(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-rose-300 bg-rose-50 px-3.5 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100 whitespace-nowrap"
+            >
+              <RotateCcw className="h-4 w-4" />
+              Reset Pengesahan
             </button>
           )}
           {canCreate && (
@@ -1851,7 +1974,6 @@ export function PjShiftReportsPage({
               type="date"
               value={selectedDate}
               onChange={(e) => {
-                setHasManualPeriod(true);
                 setSelectedDate(e.target.value);
               }}
               className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-800 focus:border-[#0B5A8E] focus:outline-none"
@@ -1865,7 +1987,6 @@ export function PjShiftReportsPage({
             <select
               value={shiftFilter}
               onChange={(e) => {
-                setHasManualPeriod(true);
                 setShiftFilter(e.target.value as 'ALL' | ShiftType);
               }}
               className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 focus:border-[#0B5A8E] focus:outline-none"
@@ -2842,6 +2963,76 @@ export function PjShiftReportsPage({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Reset Digital Approval Confirmation Modal (Administrator Only) */}
+      {showResetConfirmModal && activeSavedReport && (
+        <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+          <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+              <h3 className="font-display text-base font-bold text-slate-900">
+                Reset Pengesahan Digital Shift
+              </h3>
+              <button
+                type="button"
+                disabled={resettingApprovals}
+                onClick={() => setShowResetConfirmModal(false)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 disabled:opacity-50"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4 text-xs text-slate-700">
+              <p>
+                Anda akan menghapus seluruh pengesahan digital (PJ Shift Penyerah, PJ Shift
+                Penerima, dan Kepala Ruang) pada laporan:
+              </p>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-1">
+                <p className="font-bold text-slate-900">
+                  {formatFullDayDateId(selectedDate)} · {getShiftTimeLabel(shiftFilter)}
+                </p>
+                {activeSavedReport.handoverSignedByName && (
+                  <p className="text-[11px] text-slate-600">
+                    • PJ Shift Penyerah: {activeSavedReport.handoverSignedByName}
+                  </p>
+                )}
+                {activeSavedReport.receivedSignedByName && (
+                  <p className="text-[11px] text-slate-600">
+                    • PJ Shift Penerima: {activeSavedReport.receivedSignedByName}
+                  </p>
+                )}
+                {activeSavedReport.reviewedByName && (
+                  <p className="text-[11px] text-slate-600">
+                    • Kepala Ruang: {activeSavedReport.reviewedByName}
+                  </p>
+                )}
+              </div>
+              <p className="text-[11px] text-rose-700">
+                Setelah direset, status laporan kembali menjadi menunggu pengesahan dan harus
+                ditandatangani ulang oleh pemilik akun masing-masing.
+              </p>
+              <div className="flex justify-end gap-2.5 pt-2 border-t border-slate-200">
+                <button
+                  type="button"
+                  disabled={resettingApprovals}
+                  onClick={() => setShowResetConfirmModal(false)}
+                  className="rounded-lg border border-slate-300 px-4 py-2 font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  disabled={resettingApprovals}
+                  onClick={handleResetApprovals}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2 font-semibold text-white hover:bg-rose-700 disabled:opacity-60"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  {resettingApprovals ? 'Mereset...' : 'Ya, Reset Pengesahan'}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

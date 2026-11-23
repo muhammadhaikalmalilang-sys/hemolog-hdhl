@@ -12,7 +12,6 @@ import {
   sendEmailVerification,
   sendPasswordResetEmail,
   setPersistence,
-  browserLocalPersistence,
   browserSessionPersistence,
   type User,
 } from 'firebase/auth';
@@ -28,6 +27,7 @@ import {
   db,
   formatFirestoreError,
   isBootstrapAdminEmail,
+  isPermissionDeniedError,
   isTransientFirestoreError,
   handleFirestoreError,
   onFirestoreReconnect,
@@ -211,7 +211,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     };
 
-    const attachProfileListener = (user: User, seq: number) => {
+    const attachProfileListener = (user: User, seq: number, authRetryDone = false) => {
       if (cancelled || seq !== authEventSeq) return;
       if (unsubscribeProfile) {
         unsubscribeProfile();
@@ -257,6 +257,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         },
         (error) => {
           if (cancelled || seq !== authEventSeq) return;
+          if (!auth.currentUser || auth.currentUser.uid !== user.uid) {
+            return;
+          }
           if (isTransientFirestoreError(error)) {
             needsResubscribe = true;
             console.warn('Koneksi profil terputus sementara, menyambungkan ulang...');
@@ -264,9 +267,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             if (retryTimer !== null) window.clearTimeout(retryTimer);
             retryTimer = window.setTimeout(() => {
               if (!cancelled && seq === authEventSeq && auth.currentUser?.uid === user.uid && (typeof navigator === 'undefined' || navigator.onLine)) {
-                attachProfileListener(user, seq);
+                attachProfileListener(user, seq, authRetryDone);
               }
             }, 3000);
+            return;
+          }
+          if (isPermissionDeniedError(error) && !authRetryDone) {
+            console.warn('Menyinkronkan token autentikasi profil...');
+            void user
+              .getIdToken(true)
+              .catch(() => undefined)
+              .finally(() => {
+                if (cancelled || seq !== authEventSeq) return;
+                if (!auth.currentUser || auth.currentUser.uid !== user.uid) return;
+                if (retryTimer !== null) window.clearTimeout(retryTimer);
+                retryTimer = window.setTimeout(() => {
+                  if (!cancelled && seq === authEventSeq && auth.currentUser?.uid === user.uid) {
+                    attachProfileListener(user, seq, true);
+                  }
+                }, 350);
+              });
             return;
           }
           setFatalError(formatFirestoreError(error, OperationType.GET, `users/${user.uid}`));
@@ -316,8 +336,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setIdleLogoutMessage(null);
       setProfileLoading(true);
 
-      // Attach profile listener directly so persistentLocalCache unlocks the UI in milliseconds
-      attachProfileListener(user, currentSeq);
+      // Ensure ID token is hydrated before opening profile listener on this tab
+      void user
+        .getIdToken()
+        .catch(() => undefined)
+        .finally(() => {
+          if (!cancelled && currentSeq === authEventSeq && auth.currentUser?.uid === user.uid) {
+            attachProfileListener(user, currentSeq);
+          }
+        });
     });
 
     return () => {
@@ -333,14 +360,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     throw new Error(fatalError);
   }
 
-  const loginWithEmail = async (email: string, password: string, rememberMe = true) => {
+  const loginWithEmail = async (email: string, password: string, _rememberMe = true) => {
     setBlockedMessage(null);
     setIdleLogoutMessage(null);
     stampLastActivity();
-    await setPersistence(
-      auth,
-      rememberMe ? browserLocalPersistence : browserSessionPersistence
-    );
+    await setPersistence(auth, browserSessionPersistence);
     await signInWithEmailAndPassword(auth, email.trim(), password);
     stampLastActivity();
   };
@@ -358,6 +382,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setBlockedMessage(null);
     setIdleLogoutMessage(null);
     stampLastActivity();
+    await setPersistence(auth, browserSessionPersistence);
     const cred = await createUserWithEmailAndPassword(auth, params.email.trim(), params.password);
     stampLastActivity();
     const user = cred.user;
@@ -398,6 +423,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setBlockedMessage(null);
     setIdleLogoutMessage(null);
     stampLastActivity();
+    await setPersistence(auth, browserSessionPersistence);
     const provider = new GoogleAuthProvider();
     await signInWithPopup(auth, provider);
     stampLastActivity();
