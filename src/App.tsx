@@ -122,10 +122,13 @@ function WorkspaceShell() {
     authReady,
     profileLoading,
     supabaseConfigured,
+    profileError,
+    retryProfile,
     logout,
     logoutDueToIdle,
   } = useAuth();
   const [activeMenu, setActiveMenu] = useState<MenuId>('dashboard');
+  const [copiedGrantSql, setCopiedGrantSql] = useState(false);
 
   const isAuthenticated = authReady && !profileLoading && Boolean(authUser && userProfile);
   const { showWarning, remainingSeconds, resetActivity } = useIdleTimeout({
@@ -251,6 +254,91 @@ function WorkspaceShell() {
         <p className="text-sm font-medium text-slate-600">
           Menghubungkan ke Unit Hemodialisa...
         </p>
+      </div>
+    );
+  }
+
+  if (authUser && profileError) {
+    const isPermissionError =
+      profileError.includes('42501') ||
+      profileError.toLowerCase().includes('permission denied');
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+        <div className="max-w-xl w-full rounded-xl border border-rose-200 bg-white p-6 shadow-sm space-y-4">
+          <div className="flex items-start gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-rose-50 text-rose-600">
+              <AlertTriangle className="h-5 w-5" />
+            </div>
+            <div>
+              <h2 className="font-display text-base font-bold text-slate-900">
+                {isPermissionError
+                  ? 'Hak Akses Tabel Supabase Belum Diberikan'
+                  : 'Gagal Memuat Profil Pengguna'}
+              </h2>
+              <p className="text-xs text-slate-600 mt-1">
+                {isPermissionError
+                  ? `Database Supabase (${SUPABASE_PROJECT_ID}) menolak akses ke tabel users. Pastikan Anda telah menjalankan seluruh isi skrip supabase/schema.sql (termasuk perintah GRANT ke role authenticated) di Supabase SQL Editor.`
+                  : 'Terjadi kendala saat mengambil profil akun Anda dari database Supabase.'}
+              </p>
+            </div>
+          </div>
+
+          {isPermissionError && (
+            <div className="space-y-2">
+              <pre className="rounded-lg bg-slate-900 p-3 text-[11px] font-mono text-slate-100 overflow-x-auto leading-relaxed">
+{`GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO authenticated;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO service_role;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO authenticated, service_role;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_role;`}
+              </pre>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const sql = `GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;\nGRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO authenticated;\nGRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO service_role;\nGRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO authenticated, service_role;\nGRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_role;`;
+                    void navigator.clipboard?.writeText(sql).then(() => {
+                      setCopiedGrantSql(true);
+                      window.setTimeout(() => setCopiedGrantSql(false), 2500);
+                    });
+                  }}
+                  className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  {copiedGrantSql ? 'SQL Tersalin!' : 'Salin Skrip SQL'}
+                </button>
+                <a
+                  href={`https://supabase.com/dashboard/project/${SUPABASE_PROJECT_ID}/sql/new`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-800 hover:bg-sky-100"
+                >
+                  Buka Supabase SQL Editor →
+                </a>
+              </div>
+            </div>
+          )}
+
+          <p className="text-[11px] font-mono text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-2.5 break-all">
+            {profileError}
+          </p>
+
+          <div className="flex flex-wrap items-center gap-2.5">
+            <button
+              type="button"
+              onClick={retryProfile}
+              className="rounded-lg bg-teal-600 px-4 py-2 text-xs font-semibold text-white hover:bg-teal-700"
+            >
+              Coba Muat Ulang Profil
+            </button>
+            <button
+              type="button"
+              onClick={() => void logout()}
+              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              Keluar / Ganti Akun
+            </button>
+          </div>
+        </div>
       </div>
     );
   }

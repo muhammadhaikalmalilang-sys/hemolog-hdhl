@@ -351,7 +351,7 @@ AS $$
     FROM auth.users au
     WHERE au.id = auth.uid()
       AND lower(coalesce(au.email, '')) = 'muhammadhaikalmalilang@gmail.com'
-      AND au.email_confirmed_at IS NOT NULL
+      AND (au.email_confirmed_at IS NOT NULL OR au.confirmed_at IS NOT NULL)
   );
 $$;
 
@@ -870,6 +870,23 @@ CREATE POLICY form_templates_write ON public.form_templates
   FOR ALL TO authenticated
   USING (public.app_is_admin())
   WITH CHECK (public.app_is_admin());
+
+-- ============================================================================
+-- 4B. GRANT HAK AKSES ROLE SUPABASE (WAJIB AGAR RLS DAPAT DIJALANKAN)
+-- ============================================================================
+
+GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO authenticated;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO service_role;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO authenticated, service_role;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_role;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO authenticated;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT ALL PRIVILEGES ON TABLES TO service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT ALL PRIVILEGES ON SEQUENCES TO authenticated, service_role;
 
 -- ============================================================================
 -- 5. SUPABASE REALTIME PUBLICATION

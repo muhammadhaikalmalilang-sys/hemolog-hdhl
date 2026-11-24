@@ -180,7 +180,8 @@ export function isDuplicateKeyError(error: unknown): boolean {
 export function formatDbError(
   error: unknown,
   operationType: OperationType,
-  path: string | null
+  path: string | null,
+  silent = false
 ): string {
   const errInfo = {
     error: extractDbErrorMessage(error),
@@ -190,7 +191,11 @@ export function formatDbError(
     projectId: SUPABASE_PROJECT_ID,
   };
   const json = JSON.stringify(errInfo);
-  console.error('Supabase DB Error:', json);
+  if (silent) {
+    console.warn('Supabase DB Notice:', json);
+  } else {
+    console.error('Supabase DB Error:', json);
+  }
   return json;
 }
 

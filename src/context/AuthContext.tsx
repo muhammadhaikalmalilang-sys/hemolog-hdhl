@@ -59,6 +59,8 @@ interface AuthContextValue {
   authReady: boolean;
   profileLoading: boolean;
   supabaseConfigured: boolean;
+  profileError: string | null;
+  retryProfile: () => void;
   blockedMessage: string | null;
   idleLogoutMessage: string | null;
   clearIdleLogoutMessage: () => void;
@@ -167,7 +169,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [profileLoading, setProfileLoading] = useState(isSupabaseConfigured);
   const [blockedMessage, setBlockedMessage] = useState<string | null>(null);
   const [idleLogoutMessage, setIdleLogoutMessage] = useState<string | null>(null);
-  const [fatalError, setFatalError] = useState<string | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [profileRetryNonce, setProfileRetryNonce] = useState(0);
 
   useEffect(() => {
     if (!supabase || !isSupabaseConfigured) {
@@ -271,8 +274,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             }
           }, 2500);
         } else {
-          console.error('Error initializing Supabase user profile:', error);
-          setFatalError(formatDbError(error, OperationType.CREATE, `users/${mappedUser.uid}`));
+          console.warn('Inisialisasi profil pengguna Supabase tertahan:', error);
+          setProfileError(
+            formatDbError(error, OperationType.CREATE, `users/${mappedUser.uid}`, true)
+          );
+          setAuthReady(true);
+          setProfileLoading(false);
         }
       }
     };
@@ -305,7 +312,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             return;
           }
           if (isPermissionDeniedError(error)) {
-            setFatalError(formatDbError(error, OperationType.GET, `users/${mappedUser.uid}`));
+            setProfileError(
+              formatDbError(error, OperationType.GET, `users/${mappedUser.uid}`, true)
+            );
+            setAuthReady(true);
+            setProfileLoading(false);
             return;
           }
           throw error;
@@ -379,7 +390,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           .subscribe();
       } catch (err) {
         if (cancelled || seq !== authEventSeq) return;
-        setFatalError(formatDbError(err, OperationType.GET, `users/${mappedUser.uid}`));
+        setProfileError(formatDbError(err, OperationType.GET, `users/${mappedUser.uid}`, true));
+        setAuthReady(true);
+        setProfileLoading(false);
       }
     };
 
@@ -393,7 +406,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       activeUser = mapped;
       bootstrappingUid = null;
       setAuthUser(mapped);
-      setFatalError(null);
+      setProfileError(null);
 
       if (!sbUser || !mapped) {
         setUserProfile(null);
@@ -441,11 +454,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       unsubReconnect();
       cleanupChannel();
     };
-  }, []);
+  }, [profileRetryNonce]);
 
-  if (fatalError) {
-    throw new Error(fatalError);
-  }
+  const retryProfile = () => {
+    setProfileError(null);
+    setProfileLoading(true);
+    setProfileRetryNonce((prev) => prev + 1);
+  };
 
   const getAccessToken = async (): Promise<string | null> => {
     if (!supabase) return null;
@@ -879,6 +894,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         authReady,
         profileLoading,
         supabaseConfigured: isSupabaseConfigured,
+        profileError,
+        retryProfile,
         blockedMessage,
         idleLogoutMessage,
         clearIdleLogoutMessage,
