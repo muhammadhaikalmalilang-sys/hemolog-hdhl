@@ -206,10 +206,7 @@ export default defineConfig(() => {
         output: {
           manualChunks(id) {
             if (!id.includes('node_modules')) return undefined;
-            if (id.includes('firebase/firestore')) return 'vendor-firestore';
-            if (id.includes('firebase/auth') || id.includes('firebase/app') || id.includes('@firebase')) {
-              return 'vendor-firebase-core';
-            }
+            if (id.includes('@supabase')) return 'vendor-supabase';
             if (id.includes('react-dom') || id.includes('/react/')) return 'vendor-react';
             if (id.includes('lucide-react') || id.includes('motion')) return 'vendor-ui';
             return undefined;

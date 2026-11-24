@@ -1,5 +1,4 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { collection, doc, serverTimestamp, writeBatch } from 'firebase/firestore';
 import {
   AlertCircle,
   CheckCircle2,
@@ -12,15 +11,15 @@ import {
   X,
 } from 'lucide-react';
 import {
-  db,
-  formatFirestoreError,
-  getUserFriendlyFirestoreError,
+  formatDbError,
+  getUserFriendlyDbError,
   OperationType,
-} from '../../lib/firebase';
+} from '../../lib/supabase';
+import { generateRecordId, insertRows, toPatientRow } from '../../lib/db';
 import { clampString, exportToCsv } from '../../lib/formatters';
 import type { Patient, PatientStatus } from '../../types';
 
-type AllowedFirestoreAccess = 'AV Shunt' | 'CDL' | 'Femoral' | 'AVG';
+type AllowedVascularAccess = 'AV Shunt' | 'CDL' | 'Femoral' | 'AVG';
 type ShiftHdOption = 'PAGI' | 'SIANG' | 'MALAM';
 
 interface BulkPatientDraftRow {
@@ -32,7 +31,7 @@ interface BulkPatientDraftRow {
   diagnosis: string;
   routineSchedule: string;
   shiftHd: ShiftHdOption;
-  vascularAccess: AllowedFirestoreAccess;
+  vascularAccess: AllowedVascularAccess;
   status: PatientStatus;
   notes: string;
 }
@@ -43,7 +42,7 @@ interface BulkAddPatientsModalProps {
   onSuccess: (addedCount: number) => void;
 }
 
-const ALLOWED_ACCESS_OPTIONS: AllowedFirestoreAccess[] = ['AV Shunt', 'CDL', 'Femoral', 'AVG'];
+const ALLOWED_ACCESS_OPTIONS: AllowedVascularAccess[] = ['AV Shunt', 'CDL', 'Femoral', 'AVG'];
 const ALLOWED_STATUS_OPTIONS: PatientStatus[] = ['Aktif', 'Rujuk', 'Nonaktif', 'Meninggal'];
 const SHIFT_HD_OPTIONS: ShiftHdOption[] = ['PAGI', 'SIANG', 'MALAM'];
 const SCHEDULE_PRESETS = [
@@ -63,7 +62,7 @@ function createRowKey(): string {
 }
 
 function createEmptyRow(defaults: {
-  vascularAccess: AllowedFirestoreAccess;
+  vascularAccess: AllowedVascularAccess;
   routineSchedule: string;
   shiftHd: ShiftHdOption;
   diagnosis: string;
@@ -170,7 +169,7 @@ function parseBirthDateInput(raw: string): { year: number | null; formattedDob: 
   return { year: null, formattedDob: null };
 }
 
-function normalizeVascularAccess(raw: string): AllowedFirestoreAccess {
+function normalizeVascularAccess(raw: string): AllowedVascularAccess {
   const s = raw.trim().toLowerCase();
   if (s.includes('cdl') || s.includes('cvc') || s.includes('kateter')) return 'CDL';
   if (s.includes('femoral')) return 'Femoral';
@@ -254,7 +253,7 @@ function isHeaderRow(cells: string[]): boolean {
 function parseSpreadsheetTextToRows(
   rawText: string,
   defaults: {
-    vascularAccess: AllowedFirestoreAccess;
+    vascularAccess: AllowedVascularAccess;
     routineSchedule: string;
     shiftHd: ShiftHdOption;
     diagnosis: string;
@@ -359,7 +358,7 @@ export function BulkAddPatientsModal({
 }: BulkAddPatientsModalProps) {
   const [activeTab, setActiveTab] = useState<'table' | 'import'>('table');
 
-  const [defaultVascularAccess, setDefaultVascularAccess] = useState<AllowedFirestoreAccess>('AV Shunt');
+  const [defaultVascularAccess, setDefaultVascularAccess] = useState<AllowedVascularAccess>('AV Shunt');
   const [defaultSchedule, setDefaultSchedule] = useState('SENIN-KAMIS');
   const [defaultShiftHd, setDefaultShiftHd] = useState<ShiftHdOption>('PAGI');
   const [defaultDiagnosis, setDefaultDiagnosis] = useState('CKD ST V');
@@ -629,15 +628,9 @@ export function BulkAddPatientsModal({
 
     setSaving(true);
     try {
-      const BATCH_LIMIT = 400;
-      const patientsRef = collection(db, 'patients');
-
-      for (let i = 0; i < validEntries.length; i += BATCH_LIMIT) {
-        const chunk = validEntries.slice(i, i + BATCH_LIMIT);
-        const batch = writeBatch(db);
-
-        chunk.forEach(({ row, evalResult }) => {
-          const patientRef = doc(patientsRef);
+      await insertRows(
+        'patients',
+        validEntries.map(({ row, evalResult }) => {
           const parsedYear = Math.min(2030, Math.max(1900, evalResult.parsedBirthYear || 1970));
           const mergedNotes = row.notes.trim()
             ? row.notes.trim()
@@ -649,7 +642,8 @@ export function BulkAddPatientsModal({
             row.shiftHd || defaultShiftHd
           );
 
-          batch.set(patientRef, {
+          return toPatientRow({
+            id: generateRecordId(),
             mrn: clampString(row.mrn, 40),
             fullName: clampString(row.fullName, 120),
             gender: row.gender,
@@ -662,19 +656,15 @@ export function BulkAddPatientsModal({
             status: row.status,
             patientType: 'Reguler',
             notes: clampString(mergedNotes, 500),
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
           });
-        });
-
-        await batch.commit();
-      }
+        })
+      );
 
       onSuccess(validEntries.length);
     } catch (err) {
-      formatFirestoreError(err, OperationType.CREATE, 'patients');
+      formatDbError(err, OperationType.CREATE, 'patients');
       setSubmitError(
-        getUserFriendlyFirestoreError(
+        getUserFriendlyDbError(
           err,
           'Gagal menyimpan data pasien massal. Periksa koneksi atau kelengkapan data.'
         )
@@ -796,7 +786,7 @@ export function BulkAddPatientsModal({
               <label className="block font-medium text-slate-600 mb-1">Default Akses Vaskular</label>
               <select
                 value={defaultVascularAccess}
-                onChange={(e) => setDefaultVascularAccess(e.target.value as AllowedFirestoreAccess)}
+                onChange={(e) => setDefaultVascularAccess(e.target.value as AllowedVascularAccess)}
                 className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs focus:border-teal-600 focus:outline-none"
               >
                 {ALLOWED_ACCESS_OPTIONS.map((acc) => (
@@ -1060,7 +1050,7 @@ export function BulkAddPatientsModal({
                                   updateRow(
                                     row.rowKey,
                                     'vascularAccess',
-                                    e.target.value as AllowedFirestoreAccess
+                                    e.target.value as AllowedVascularAccess
                                   )
                                 }
                                 className="w-full rounded border border-slate-300 bg-white px-1.5 py-1.5 text-xs focus:border-teal-600 focus:outline-none"

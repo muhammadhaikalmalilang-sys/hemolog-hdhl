@@ -1,9 +1,18 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { addDoc, collection, deleteDoc, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { CheckCircle2, Pencil, Plus, Search, Trash2, Users, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { BulkAddPatientsModal } from '../components/patients/BulkAddPatientsModal';
-import { db, formatFirestoreError, getUserFriendlyFirestoreError, OperationType } from '../lib/firebase';
+import {
+  formatDbError,
+  getUserFriendlyDbError,
+  OperationType,
+} from '../lib/supabase';
+import {
+  deleteRowByColumn,
+  insertRow,
+  toPatientRow,
+  updateRowByColumn,
+} from '../lib/db';
 import { clampString, isRegularPatient } from '../lib/formatters';
 import type { Patient, PatientStatus, PatientType, VascularAccessType } from '../types';
 
@@ -133,7 +142,7 @@ export function PatientsPage({ patients }: PatientsPageProps) {
 
     setSaving(true);
     try {
-      const payload = {
+      const payload = toPatientRow({
         mrn: cleanMrn,
         fullName: cleanName,
         gender,
@@ -146,20 +155,16 @@ export function PatientsPage({ patients }: PatientsPageProps) {
         status,
         patientType,
         notes: clampString(notes, 500),
-        updatedAt: serverTimestamp(),
-      };
+      });
       if (editing) {
-        await updateDoc(doc(db, 'patients', editing.id), payload);
+        await updateRowByColumn('patients', 'id', editing.id, payload);
       } else {
-        await addDoc(collection(db, 'patients'), {
-          ...payload,
-          createdAt: serverTimestamp(),
-        });
+        await insertRow('patients', payload);
       }
       setShowModal(false);
     } catch (err) {
-      formatFirestoreError(err, editing ? OperationType.UPDATE : OperationType.CREATE, 'patients');
-      setModalError(getUserFriendlyFirestoreError(err, 'Gagal menyimpan data pasien.'));
+      formatDbError(err, editing ? OperationType.UPDATE : OperationType.CREATE, 'patients');
+      setModalError(getUserFriendlyDbError(err, 'Gagal menyimpan data pasien.'));
     } finally {
       setSaving(false);
     }
@@ -169,12 +174,12 @@ export function PatientsPage({ patients }: PatientsPageProps) {
     if (!deleteTarget) return;
     setPageError(null);
     try {
-      await deleteDoc(doc(db, 'patients', deleteTarget.id));
+      await deleteRowByColumn('patients', 'id', deleteTarget.id);
       setDeleteTargetId(null);
     } catch (err) {
-      formatFirestoreError(err, OperationType.DELETE, `patients/${deleteTarget.id}`);
+      formatDbError(err, OperationType.DELETE, `patients/${deleteTarget.id}`);
       setDeleteTargetId(null);
-      setPageError(getUserFriendlyFirestoreError(err, 'Gagal menghapus data pasien.'));
+      setPageError(getUserFriendlyDbError(err, 'Gagal menghapus data pasien.'));
     }
   };
 

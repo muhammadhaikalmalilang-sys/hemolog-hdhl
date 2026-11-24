@@ -1,7 +1,7 @@
 import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
-import { doc, serverTimestamp, updateDoc, writeBatch } from 'firebase/firestore';
 import { AlertTriangle, CheckCircle2, Clock, Search, Eye, Pencil, X } from 'lucide-react';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { handleDbError, OperationType } from '../lib/supabase';
+import { toLogbookRow, updateRowByColumn, updateRowsByColumnValues } from '../lib/db';
 import {
   clampString,
   formatDateId,
@@ -57,7 +57,7 @@ export function VerificationPage({
   staffDirectory,
   formTemplate,
 }: VerificationPageProps) {
-  const { firebaseUser, userProfile } = useAuth();
+  const { authUser, userProfile } = useAuth();
   const { showToast } = useToast();
   const { todayDate: liveTodayDate, nowMs, wibTimeLabel } = useLiveClock();
   const [todayDate, setTodayDate] = useState(liveTodayDate);
@@ -174,7 +174,7 @@ export function VerificationPage({
   };
 
   const handleVerify = async (entry: LogbookEntry, nextStatus: VerificationStatus, note?: string) => {
-    if (!firebaseUser || !userProfile || !entry.id) return;
+    if (!authUser || !userProfile || !entry.id) return;
     const access = getLogbookVerificationAccess(entry, userProfile, Date.now());
     if (!access.allowed) {
       showToast(access.reason || 'Tidak dapat memverifikasi di luar jam operasional WIB.', 'error');
@@ -183,19 +183,23 @@ export function VerificationPage({
     const targetStatus: VerificationStatus = nextStatus === 'Approved' ? 'Approved' : 'Revision';
     const verifierName =
       clampString(
-        userProfile.fullName || firebaseUser.displayName || firebaseUser.email || 'Verifikator',
+        userProfile.fullName || authUser.displayName || authUser.email || 'Verifikator',
         120
       ) || 'Verifikator';
     setProcessingId(entry.id);
     try {
-      await updateDoc(doc(db, 'logbook', entry.id), {
-        verificationStatus: targetStatus,
-        verifiedBy: firebaseUser.uid,
-        verifiedByName: verifierName,
-        verificationNote: clampString(note || '', 500),
-        verifiedAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      await updateRowByColumn(
+        'logbook',
+        'id',
+        entry.id,
+        toLogbookRow({
+          verificationStatus: targetStatus,
+          verifiedBy: authUser.uid,
+          verifiedByName: verifierName,
+          verificationNote: clampString(note || '', 500),
+          verifiedAt: new Date().toISOString(),
+        })
+      );
       setSelectedEntryId(null);
       setVerificationNote('');
       setEditSuccessMsg(null);
@@ -207,14 +211,14 @@ export function VerificationPage({
       );
     } catch (err) {
       showToast('Gagal menyimpan status verifikasi logbook.', 'error');
-      handleFirestoreError(err, OperationType.UPDATE, `logbook/${entry.id}`);
+      handleDbError(err, OperationType.UPDATE, `logbook/${entry.id}`);
     } finally {
       setProcessingId(null);
     }
   };
 
   const handleBatchApprove = async () => {
-    if (!firebaseUser || !userProfile || selectedIds.size === 0 || batchApproving) return;
+    if (!authUser || !userProfile || selectedIds.size === 0 || batchApproving) return;
     if (userProfile.role === 'Administrator') {
       showToast('Administrator tidak diperbolehkan memberikan verifikasi.', 'error');
       return;
@@ -232,29 +236,29 @@ export function VerificationPage({
 
     const verifierName =
       clampString(
-        userProfile.fullName || firebaseUser.displayName || firebaseUser.email || 'Verifikator',
+        userProfile.fullName || authUser.displayName || authUser.email || 'Verifikator',
         120
       ) || 'Verifikator';
 
     setBatchApproving(true);
     try {
-      const batch = writeBatch(db);
-      for (const entry of targets) {
-        batch.update(doc(db, 'logbook', entry.id), {
+      await updateRowsByColumnValues(
+        'logbook',
+        'id',
+        targets.map((entry) => entry.id),
+        toLogbookRow({
           verificationStatus: 'Approved',
-          verifiedBy: firebaseUser.uid,
+          verifiedBy: authUser.uid,
           verifiedByName: verifierName,
           verificationNote: 'Sesuai standar asuhan HD',
-          verifiedAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      }
-      await batch.commit();
+          verifiedAt: new Date().toISOString(),
+        })
+      );
       setSelectedIds(new Set());
       showToast(`${targets.length} logbook berhasil disetujui sekaligus.`, 'success');
     } catch (err) {
       showToast('Gagal menyetujui beberapa logbook terpilih.', 'error');
-      handleFirestoreError(err, OperationType.UPDATE, 'logbook');
+      handleDbError(err, OperationType.UPDATE, 'logbook');
     } finally {
       setBatchApproving(false);
     }

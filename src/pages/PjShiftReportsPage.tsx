@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { addDoc, collection, deleteField, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import {
   CheckCircle2,
   Download,
@@ -12,7 +11,8 @@ import {
   ShieldCheck,
   X,
 } from 'lucide-react';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { handleDbError, OperationType } from '../lib/supabase';
+import { generateRecordId, insertRow, toReportRow, updateRowByColumn } from '../lib/db';
 import {
   clampString,
   exportToCsv,
@@ -108,6 +108,8 @@ function formatSignatureTimestamp(ts: unknown): string {
   let dateObj: Date | null = null;
   if (ts instanceof Date) {
     dateObj = ts;
+  } else if (typeof ts === 'string' || typeof ts === 'number') {
+    dateObj = new Date(ts);
   } else if (typeof ts === 'object' && ts !== null && 'toDate' in ts && typeof (ts as { toDate: () => Date }).toDate === 'function') {
     dateObj = (ts as { toDate: () => Date }).toDate();
   } else if (typeof ts === 'object' && ts !== null && 'seconds' in ts && typeof (ts as { seconds: number }).seconds === 'number') {
@@ -924,8 +926,6 @@ export function PjShiftReportsPage({
       incidents: clampString(incidentsDefault, 1000),
       handoverNotes: clampString(handoverDefault, 2500),
       reviewStatus: 'Submitted' as const,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
     };
   };
 
@@ -1147,35 +1147,41 @@ export function PjShiftReportsPage({
     };
     try {
       if (activeSavedReport && activeSavedReport.reviewStatus !== 'Reviewed') {
-        await updateDoc(doc(db, 'reports', activeSavedReport.id), {
-          shift: effectiveShift,
-          totalPatients: shiftStats.totalVerified,
-          activeMachines: shiftStats.operationalMachines,
-          nursesOnDuty: clampString(modalNursesOnDuty || userProfile.fullName, 500),
-          incidents: clampString(modalIncidents || 'Tidak ada', 1000),
-          handoverNotes: clampString(modalHandoverNotes || '-', 2500),
-          ...sbarFields,
-          updatedAt: serverTimestamp(),
-        });
+        await updateRowByColumn(
+          'reports',
+          'id',
+          activeSavedReport.id,
+          toReportRow({
+            shift: effectiveShift,
+            totalPatients: shiftStats.totalVerified,
+            activeMachines: shiftStats.operationalMachines,
+            nursesOnDuty: clampString(modalNursesOnDuty || userProfile.fullName, 500),
+            incidents: clampString(modalIncidents || 'Tidak ada', 1000),
+            handoverNotes: clampString(modalHandoverNotes || '-', 2500),
+            ...sbarFields,
+          })
+        );
       } else {
-        await addDoc(collection(db, 'reports'), {
-          reportType: 'pj_shift',
-          date: selectedDate,
-          monthKey: selectedDate.slice(0, 7),
-          authorId: userProfile.uid,
-          authorName: clampString(userProfile.fullName, 120),
-          authorRole: userProfile.role,
-          shift: effectiveShift,
-          totalPatients: shiftStats.totalVerified,
-          activeMachines: shiftStats.operationalMachines,
-          nursesOnDuty: clampString(modalNursesOnDuty || userProfile.fullName, 500),
-          incidents: clampString(modalIncidents || 'Tidak ada', 1000),
-          handoverNotes: clampString(modalHandoverNotes || '-', 2500),
-          ...sbarFields,
-          reviewStatus: 'Submitted',
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
+        await insertRow(
+          'reports',
+          toReportRow({
+            id: generateRecordId(),
+            reportType: 'pj_shift',
+            date: selectedDate,
+            monthKey: selectedDate.slice(0, 7),
+            authorId: userProfile.uid,
+            authorName: clampString(userProfile.fullName, 120),
+            authorRole: userProfile.role,
+            shift: effectiveShift,
+            totalPatients: shiftStats.totalVerified,
+            activeMachines: shiftStats.operationalMachines,
+            nursesOnDuty: clampString(modalNursesOnDuty || userProfile.fullName, 500),
+            incidents: clampString(modalIncidents || 'Tidak ada', 1000),
+            handoverNotes: clampString(modalHandoverNotes || '-', 2500),
+            ...sbarFields,
+            reviewStatus: 'Submitted',
+          })
+        );
       }
       setShowModal(false);
       showToast(
@@ -1186,7 +1192,7 @@ export function PjShiftReportsPage({
       );
     } catch (err) {
       showToast('Gagal menyimpan laporan PJ Shift.', 'error');
-      handleFirestoreError(err, OperationType.CREATE, 'reports');
+      handleDbError(err, OperationType.CREATE, 'reports');
     } finally {
       setSaving(false);
     }
@@ -1201,28 +1207,37 @@ export function PjShiftReportsPage({
         reviewNote || 'Laporan shift telah direview dan disahkan secara digital.',
         500
       );
+      const nowIso = new Date().toISOString();
       if (reviewTarget.id === '__NEW__') {
         const effectiveShift: ShiftType = shiftFilter === 'ALL' ? 'Pagi' : shiftFilter;
         const base = getBaseNewReportPayload(effectiveShift);
         if (base) {
-          await addDoc(collection(db, 'reports'), {
-            ...base,
+          await insertRow(
+            'reports',
+            toReportRow({
+              id: generateRecordId(),
+              ...base,
+              reviewStatus: 'Reviewed',
+              reviewedBy: userProfile.uid,
+              reviewedByName: clampString(userProfile.fullName, 120),
+              reviewNote: noteText,
+              reviewedAt: nowIso,
+            })
+          );
+        }
+      } else {
+        await updateRowByColumn(
+          'reports',
+          'id',
+          reviewTarget.id,
+          toReportRow({
             reviewStatus: 'Reviewed',
             reviewedBy: userProfile.uid,
             reviewedByName: clampString(userProfile.fullName, 120),
             reviewNote: noteText,
-            reviewedAt: serverTimestamp(),
-          });
-        }
-      } else {
-        await updateDoc(doc(db, 'reports', reviewTarget.id), {
-          reviewStatus: 'Reviewed',
-          reviewedBy: userProfile.uid,
-          reviewedByName: clampString(userProfile.fullName, 120),
-          reviewNote: noteText,
-          reviewedAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
+            reviewedAt: nowIso,
+          })
+        );
       }
       setSignFeedback({
         type: 'success',
@@ -1241,7 +1256,7 @@ export function PjShiftReportsPage({
         message: 'Gagal menyimpan pengesahan digital Kepala Ruang. Pastikan hak akses akun sesuai.',
       });
       showToast('Gagal menyimpan pengesahan digital Kepala Ruang.', 'error');
-      handleFirestoreError(err, OperationType.UPDATE, `reports/${reviewTarget.id}`);
+      handleDbError(err, OperationType.UPDATE, `reports/${reviewTarget.id}`);
     } finally {
       setReviewing(false);
     }
@@ -1251,25 +1266,34 @@ export function PjShiftReportsPage({
     if (!userProfile || !kolom1Auth.allowed || shiftFilter === 'ALL') return;
     setSigningSlot('handover');
     setSignFeedback(null);
+    const nowIso = new Date().toISOString();
     try {
       if (activeSavedReport) {
-        await updateDoc(doc(db, 'reports', activeSavedReport.id), {
-          handoverSignedBy: userProfile.uid,
-          handoverSignedByName: clampString(userProfile.fullName, 120),
-          handoverSignedShift: shiftFilter,
-          handoverSignedAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      } else {
-        const base = getBaseNewReportPayload(shiftFilter);
-        if (base) {
-          await addDoc(collection(db, 'reports'), {
-            ...base,
+        await updateRowByColumn(
+          'reports',
+          'id',
+          activeSavedReport.id,
+          toReportRow({
             handoverSignedBy: userProfile.uid,
             handoverSignedByName: clampString(userProfile.fullName, 120),
             handoverSignedShift: shiftFilter,
-            handoverSignedAt: serverTimestamp(),
-          });
+            handoverSignedAt: nowIso,
+          })
+        );
+      } else {
+        const base = getBaseNewReportPayload(shiftFilter);
+        if (base) {
+          await insertRow(
+            'reports',
+            toReportRow({
+              id: generateRecordId(),
+              ...base,
+              handoverSignedBy: userProfile.uid,
+              handoverSignedByName: clampString(userProfile.fullName, 120),
+              handoverSignedShift: shiftFilter,
+              handoverSignedAt: nowIso,
+            })
+          );
         }
       }
       setSignFeedback({
@@ -1284,7 +1308,7 @@ export function PjShiftReportsPage({
           'Pengesahan ditolak oleh sistem keamanan. Pastikan akun Anda terjadwal pada shift ini di Jadwal Dinas.',
       });
       showToast('Pengesahan PJ Shift gagal dicatat.', 'error');
-      handleFirestoreError(err, OperationType.UPDATE, 'reports');
+      handleDbError(err, OperationType.UPDATE, 'reports');
     } finally {
       setSigningSlot(null);
     }
@@ -1294,27 +1318,36 @@ export function PjShiftReportsPage({
     if (!userProfile || !kolom2Auth.allowed || shiftFilter === 'ALL') return;
     setSigningSlot('received');
     setSignFeedback(null);
+    const nowIso = new Date().toISOString();
     try {
       if (activeSavedReport) {
-        await updateDoc(doc(db, 'reports', activeSavedReport.id), {
-          receivedSignedBy: userProfile.uid,
-          receivedSignedByName: clampString(userProfile.fullName, 120),
-          receivedSignedShift: nextShiftName,
-          receivedSignedDate: handoverTargetDate,
-          receivedSignedAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      } else {
-        const base = getBaseNewReportPayload(shiftFilter);
-        if (base) {
-          await addDoc(collection(db, 'reports'), {
-            ...base,
+        await updateRowByColumn(
+          'reports',
+          'id',
+          activeSavedReport.id,
+          toReportRow({
             receivedSignedBy: userProfile.uid,
             receivedSignedByName: clampString(userProfile.fullName, 120),
             receivedSignedShift: nextShiftName,
             receivedSignedDate: handoverTargetDate,
-            receivedSignedAt: serverTimestamp(),
-          });
+            receivedSignedAt: nowIso,
+          })
+        );
+      } else {
+        const base = getBaseNewReportPayload(shiftFilter);
+        if (base) {
+          await insertRow(
+            'reports',
+            toReportRow({
+              id: generateRecordId(),
+              ...base,
+              receivedSignedBy: userProfile.uid,
+              receivedSignedByName: clampString(userProfile.fullName, 120),
+              receivedSignedShift: nextShiftName,
+              receivedSignedDate: handoverTargetDate,
+              receivedSignedAt: nowIso,
+            })
+          );
         }
       }
       setSignFeedback({
@@ -1329,7 +1362,7 @@ export function PjShiftReportsPage({
           'Pengesahan penerima ditolak. Pastikan akun Anda terjadwal sebagai PJ Shift berikutnya di Jadwal Dinas.',
       });
       showToast('Pengesahan penerima PJ Shift gagal dicatat.', 'error');
-      handleFirestoreError(err, OperationType.UPDATE, 'reports');
+      handleDbError(err, OperationType.UPDATE, 'reports');
     } finally {
       setSigningSlot(null);
     }
@@ -1361,23 +1394,27 @@ export function PjShiftReportsPage({
     setResettingApprovals(true);
     setSignFeedback(null);
     try {
-      await updateDoc(doc(db, 'reports', activeSavedReport.id), {
-        handoverSignedBy: deleteField(),
-        handoverSignedByName: deleteField(),
-        handoverSignedShift: deleteField(),
-        handoverSignedAt: deleteField(),
-        receivedSignedBy: deleteField(),
-        receivedSignedByName: deleteField(),
-        receivedSignedShift: deleteField(),
-        receivedSignedDate: deleteField(),
-        receivedSignedAt: deleteField(),
-        reviewedBy: deleteField(),
-        reviewedByName: deleteField(),
-        reviewNote: deleteField(),
-        reviewedAt: deleteField(),
-        reviewStatus: 'Submitted',
-        updatedAt: serverTimestamp(),
-      });
+      await updateRowByColumn(
+        'reports',
+        'id',
+        activeSavedReport.id,
+        toReportRow({
+          handoverSignedBy: undefined,
+          handoverSignedByName: undefined,
+          handoverSignedShift: undefined,
+          handoverSignedAt: undefined,
+          receivedSignedBy: undefined,
+          receivedSignedByName: undefined,
+          receivedSignedShift: undefined,
+          receivedSignedDate: undefined,
+          receivedSignedAt: undefined,
+          reviewedBy: undefined,
+          reviewedByName: undefined,
+          reviewNote: undefined,
+          reviewedAt: undefined,
+          reviewStatus: 'Submitted',
+        })
+      );
       setShowResetConfirmModal(false);
       setSignFeedback({
         type: 'success',
@@ -1393,7 +1430,7 @@ export function PjShiftReportsPage({
         message: 'Gagal mereset pengesahan digital laporan PJ Shift.',
       });
       showToast('Gagal mereset pengesahan digital laporan PJ Shift.', 'error');
-      handleFirestoreError(err, OperationType.UPDATE, `reports/${activeSavedReport.id}`);
+      handleDbError(err, OperationType.UPDATE, `reports/${activeSavedReport.id}`);
     } finally {
       setResettingApprovals(false);
     }
@@ -1550,17 +1587,25 @@ export function PjShiftReportsPage({
     );
     try {
       if (activeSavedReport) {
-        await updateDoc(doc(db, 'reports', activeSavedReport.id), {
-          sectionDItems: nextItems,
-          updatedAt: serverTimestamp(),
-        });
+        await updateRowByColumn(
+          'reports',
+          'id',
+          activeSavedReport.id,
+          toReportRow({
+            sectionDItems: nextItems,
+          })
+        );
       } else {
         const base = getBaseNewReportPayload(shiftFilter);
         if (base) {
-          await addDoc(collection(db, 'reports'), {
-            ...base,
-            sectionDItems: nextItems,
-          });
+          await insertRow(
+            'reports',
+            toReportRow({
+              id: generateRecordId(),
+              ...base,
+              sectionDItems: nextItems,
+            })
+          );
         }
       }
       setEditingSectionDIndex(null);
@@ -1576,7 +1621,7 @@ export function PjShiftReportsPage({
         message: 'Gagal menyimpan perubahan Bagian D.',
       });
       showToast('Gagal menyimpan perubahan Bagian D.', 'error');
-      handleFirestoreError(err, OperationType.UPDATE, 'reports');
+      handleDbError(err, OperationType.UPDATE, 'reports');
     } finally {
       setSavingSectionD(false);
     }
@@ -1586,10 +1631,14 @@ export function PjShiftReportsPage({
     if (!activeSavedReport || !canEditContent) return;
     setSavingSectionD(true);
     try {
-      await updateDoc(doc(db, 'reports', activeSavedReport.id), {
-        sectionDItems: [],
-        updatedAt: serverTimestamp(),
-      });
+      await updateRowByColumn(
+        'reports',
+        'id',
+        activeSavedReport.id,
+        toReportRow({
+          sectionDItems: [],
+        })
+      );
       setEditingSectionDIndex(null);
       setDraftSectionDRow(null);
       setSignFeedback({
@@ -1599,7 +1648,7 @@ export function PjShiftReportsPage({
       showToast('Bagian D dikembalikan ke sinkronisasi otomatis logbook.', 'info');
     } catch (err) {
       showToast('Gagal mereset Bagian D.', 'error');
-      handleFirestoreError(err, OperationType.UPDATE, `reports/${activeSavedReport.id}`);
+      handleDbError(err, OperationType.UPDATE, `reports/${activeSavedReport.id}`);
     } finally {
       setSavingSectionD(false);
     }
@@ -1628,17 +1677,23 @@ export function PjShiftReportsPage({
     };
     try {
       if (activeSavedReport) {
-        await updateDoc(doc(db, 'reports', activeSavedReport.id), {
-          ...sbarUpdatePayload,
-          updatedAt: serverTimestamp(),
-        });
+        await updateRowByColumn(
+          'reports',
+          'id',
+          activeSavedReport.id,
+          toReportRow(sbarUpdatePayload)
+        );
       } else {
         const base = getBaseNewReportPayload(shiftFilter);
         if (base) {
-          await addDoc(collection(db, 'reports'), {
-            ...base,
-            ...sbarUpdatePayload,
-          });
+          await insertRow(
+            'reports',
+            toReportRow({
+              id: generateRecordId(),
+              ...base,
+              ...sbarUpdatePayload,
+            })
+          );
         }
       }
       setEditingSbarKey(null);
@@ -1654,7 +1709,7 @@ export function PjShiftReportsPage({
         message: 'Gagal menyimpan perubahan SBAR.',
       });
       showToast('Gagal menyimpan perubahan SBAR.', 'error');
-      handleFirestoreError(err, OperationType.UPDATE, 'reports');
+      handleDbError(err, OperationType.UPDATE, 'reports');
     } finally {
       setSavingSbar(false);
     }

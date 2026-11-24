@@ -1,13 +1,10 @@
 import React, { useMemo, useState } from 'react';
-import { doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { Search, UserPlus, Users, ShieldCheck, Ban, CheckCircle, X, Trash2, AlertTriangle } from 'lucide-react';
 import {
-  ACTIVE_FIREBASE_PROJECT_ID,
-  db,
-  handleFirestoreError,
   isBootstrapAdminEmail,
-  OperationType,
-} from '../lib/firebase';
+  SUPABASE_PROJECT_ID,
+} from '../lib/supabase';
+import { updateRowByColumn } from '../lib/db';
 import { useAuth } from '../context/AuthContext';
 import { RoleBadge } from '../components/ui/StatusBadge';
 import { BulkAddAccountsModal } from '../components/accounts/BulkAddAccountsModal';
@@ -68,40 +65,29 @@ export function AccountsPage({ users }: AccountsPageProps) {
 
   const handleChangeRole = async (target: UserProfile, nextRole: UserRole) => {
     setFeedback(null);
-    try {
-      await updateDoc(doc(db, 'users', target.uid), {
-        role: nextRole,
-        updatedAt: serverTimestamp(),
-      });
-      await updateDoc(doc(db, 'staff_directory', target.uid), {
-        role: nextRole,
-        updatedAt: serverTimestamp(),
-      });
-      setFeedback(`Role ${target.fullName} berhasil diubah menjadi ${nextRole}.`);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${target.uid}`);
-    }
+    const nowIso = new Date().toISOString();
+    await Promise.all([
+      updateRowByColumn('users', 'uid', target.uid, { role: nextRole, updated_at: nowIso }),
+      updateRowByColumn('staff_directory', 'uid', target.uid, { role: nextRole, updated_at: nowIso }),
+    ]);
+    setFeedback(`Role ${target.fullName} berhasil diubah menjadi ${nextRole}.`);
   };
 
   const handleToggleActive = async (target: UserProfile) => {
     if (target.uid === userProfile?.uid) return;
     setFeedback(null);
     const nextActive = !target.isActive;
-    try {
-      await updateDoc(doc(db, 'users', target.uid), {
-        isActive: nextActive,
-        updatedAt: serverTimestamp(),
-      });
-      await updateDoc(doc(db, 'staff_directory', target.uid), {
-        isActive: nextActive,
-        updatedAt: serverTimestamp(),
-      });
-      setFeedback(
-        `Akun ${target.fullName} telah ${nextActive ? 'diaktifkan kembali' : 'diblokir / dinonaktifkan'}.`
-      );
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${target.uid}`);
-    }
+    const nowIso = new Date().toISOString();
+    await Promise.all([
+      updateRowByColumn('users', 'uid', target.uid, { is_active: nextActive, updated_at: nowIso }),
+      updateRowByColumn('staff_directory', 'uid', target.uid, {
+        is_active: nextActive,
+        updated_at: nowIso,
+      }),
+    ]);
+    setFeedback(
+      `Akun ${target.fullName} telah ${nextActive ? 'diaktifkan kembali' : 'diblokir / dinonaktifkan'}.`
+    );
   };
 
   const handleCreateAccount = async (e: React.FormEvent) => {
@@ -130,17 +116,22 @@ export function AccountsPage({ users }: AccountsPageProps) {
       setFullName('');
       setNip('');
       setPhone('');
-      setFeedback(`Akun Firebase Auth & profil untuk ${fullName} (${role}) berhasil dibuat.`);
+      setFeedback(`Akun Supabase Auth & profil untuk ${fullName} (${role}) berhasil dibuat.`);
     } catch (err: unknown) {
-      const code = (err as { code?: string })?.code || '';
-      if (code === 'auth/operation-not-allowed') {
+      const code = String((err as { code?: string })?.code || '').toLowerCase();
+      const rawMsg = err instanceof Error ? err.message : 'Gagal membuat akun baru.';
+      if (code === 'signup_disabled' || code === 'email_provider_disabled') {
         setErrorMsg(
-          'Pembuatan akun Email/Password belum aktif di Firebase Console (Authentication -> Sign-in method -> Email/Password).'
+          'Pembuatan akun Email/Password belum aktif di Supabase Dashboard (Authentication -> Providers -> Email).'
         );
-      } else if (code === 'auth/email-already-in-use') {
-        setErrorMsg('Email tersebut sudah terdaftar di Firebase Authentication.');
+      } else if (
+        code === 'email_exists' ||
+        code === 'user_already_exists' ||
+        rawMsg.toLowerCase().includes('already')
+      ) {
+        setErrorMsg('Email tersebut sudah terdaftar di Supabase Authentication.');
       } else {
-        setErrorMsg(err instanceof Error ? err.message : 'Gagal membuat akun baru.');
+        setErrorMsg(rawMsg);
       }
     } finally {
       setCreating(false);
@@ -161,8 +152,8 @@ export function AccountsPage({ users }: AccountsPageProps) {
       setDeleteTargetUid(null);
       setFeedback(
         result.authDeleted
-          ? `Akun ${deletedName} (${deletedEmail}) berhasil dihapus permanen dari Data Akun & Firebase Authentication.`
-          : `Profil ${deletedName} (${deletedEmail}) berhasil dihapus dari Data Akun (user sudah tidak terdaftar di Firebase Authentication).`
+          ? `Akun ${deletedName} (${deletedEmail}) berhasil dihapus permanen dari Data Akun & Supabase Authentication.`
+          : `Profil ${deletedName} (${deletedEmail}) berhasil dihapus dari Data Akun (user sudah tidak terdaftar di Supabase Authentication).`
       );
     } catch (err: unknown) {
       const e = err as Error & { code?: string };
@@ -514,8 +505,8 @@ export function AccountsPage({ users }: AccountsPageProps) {
             <div className="p-6 space-y-4 text-xs">
               <p className="text-slate-600 leading-relaxed">
                 Anda akan menghapus akun staf berikut secara permanen dari{' '}
-                <strong className="text-slate-900">Data Akun (Firestore)</strong> dan{' '}
-                <strong className="text-slate-900">Firebase Authentication</strong>:
+                <strong className="text-slate-900">Data Akun (Supabase DB)</strong> dan{' '}
+                <strong className="text-slate-900">Supabase Authentication</strong>:
               </p>
 
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-3.5 space-y-1">
@@ -541,35 +532,21 @@ export function AccountsPage({ users }: AccountsPageProps) {
                       </span>
                     ) : null}
                   </p>
-                  {deleteErrorCode === 'FIREBASE_ADMIN_NOT_CONFIGURED' && (
+                  {deleteErrorCode === 'SUPABASE_ADMIN_NOT_CONFIGURED' && (
                     <ol className="list-decimal pl-4 space-y-1 text-[11px] text-rose-700">
                       <li>
-                        Buka Vercel &rarr; <strong>Settings &rarr; Environment Variables</strong> (atau
-                        Firebase Console proyek <strong>{ACTIVE_FIREBASE_PROJECT_ID}</strong> &rarr;{' '}
-                        <strong>Project Settings &rarr; Service Accounts</strong>).
+                        Buka Supabase Dashboard project <strong>{SUPABASE_PROJECT_ID}</strong> &rarr;{' '}
+                        <strong>Project Settings &rarr; API Keys</strong> lalu salin{' '}
+                        <code className="font-mono font-semibold">service_role</code> key.
                       </li>
                       <li>
-                        Pastikan variabel <code className="font-mono font-semibold">FIREBASE_SERVICE_ACCOUNT_JSON</code>{' '}
-                        (tanpa prefix <code className="font-mono">VITE_</code>) sudah diisi JSON Service Account utuh untuk{' '}
-                        <strong>Production &amp; Preview</strong>.
+                        Tambahkan variabel <code className="font-mono font-semibold">SUPABASE_SERVICE_ROLE_KEY</code>{' '}
+                        (tanpa prefix <code className="font-mono">VITE_</code>) di Environment Variables server / Vercel.
                       </li>
                       <li>
-                        Lakukan <strong>Redeploy</strong> di Vercel agar variabel environment terbaca oleh Serverless Function.
+                        Lakukan <strong>Redeploy</strong> agar variabel environment terbaca oleh Serverless Function.
                       </li>
                     </ol>
-                  )}
-                  {deleteErrorCode === 'FIREBASE_ADMIN_INVALID_CREDENTIALS' && (
-                    <p className="text-[11px] text-rose-700">
-                      Isi <code className="font-mono font-semibold">FIREBASE_SERVICE_ACCOUNT_JSON</code> di Vercel
-                      tidak terbaca sebagai JSON Service Account yang valid. Salin ulang JSON utuh (1 baris atau multi-baris) lalu klik{' '}
-                      <strong>Redeploy</strong>.
-                    </p>
-                  )}
-                  {deleteErrorCode === 'FIREBASE_ADMIN_PROJECT_MISMATCH' && (
-                    <p className="text-[11px] text-rose-700">
-                      Pastikan Service Account JSON berasal dari project Firebase{' '}
-                      <strong className="font-mono">{ACTIVE_FIREBASE_PROJECT_ID}</strong>.
-                    </p>
                   )}
                   {(deleteErrorCode === 'API_UNREACHABLE' ||
                     deleteErrorCode === 'API_ROUTE_NOT_FOUND' ||
@@ -577,7 +554,7 @@ export function AccountsPage({ users }: AccountsPageProps) {
                     deleteErrorCode === 'HTTP_500') && (
                     <p className="text-[11px] text-rose-700">
                       Serverless Function <code className="font-mono">/api/admin/users</code> tidak merespons dengan benar di hosting.
-                      Buka <code className="font-mono">/api/health</code> pada domain Vercel Anda untuk memeriksa status server API.
+                      Buka <code className="font-mono">/api/health</code> pada domain hosting Anda untuk memeriksa status server API.
                     </p>
                   )}
                 </div>
@@ -614,7 +591,7 @@ export function AccountsPage({ users }: AccountsPageProps) {
           onSuccess={(createdCount) => {
             setShowBulkModal(false);
             setFeedback(
-              `${createdCount} akun staf baru berhasil dibuat di Firebase Authentication dan Data Akun.`
+              `${createdCount} akun staf baru berhasil dibuat di Supabase Authentication dan Data Akun.`
             );
           }}
         />

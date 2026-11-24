@@ -1,5 +1,4 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { deleteField, doc, getDoc, serverTimestamp, writeBatch } from 'firebase/firestore';
 import {
   AlertCircle,
   CheckCircle2,
@@ -10,11 +9,11 @@ import {
   X,
 } from 'lucide-react';
 import {
-  db,
-  formatFirestoreError,
-  getUserFriendlyFirestoreError,
+  formatDbError,
+  getUserFriendlyDbError,
   OperationType,
-} from '../../lib/firebase';
+} from '../../lib/supabase';
+import { toScheduleRow, upsertRows } from '../../lib/db';
 import {
   clampString,
   exportToCsv,
@@ -436,14 +435,7 @@ export function ImportScheduleSpreadsheetModal({
   );
 
   const daysInMonth = useMemo(() => getDaysInMonth(targetMonthKey), [targetMonthKey]);
-
-  const existingScheduleIdSet = useMemo(() => {
-    const set = new Set<string>();
-    for (const s of existingSchedules) {
-      set.add(s.id);
-    }
-    return set;
-  }, [existingSchedules]);
+  void existingSchedules;
 
   const stats = useMemo(() => {
     let matchedRows = 0;
@@ -588,7 +580,6 @@ export function ImportScheduleSpreadsheetModal({
 
     type WriteOp = {
       docId: string;
-      exists: boolean;
       nurse: StaffDirectoryEntry;
       date: string;
       shift: ScheduleShiftType;
@@ -607,7 +598,6 @@ export function ImportScheduleSpreadsheetModal({
         const docId = `${nurse.uid}_${dateStr}`;
         ops.push({
           docId,
-          exists: existingScheduleIdSet.has(docId),
           nurse,
           date: dateStr,
           shift: cell.shift,
@@ -626,76 +616,30 @@ export function ImportScheduleSpreadsheetModal({
     setSaving(true);
     try {
       const safeValidatorName = ensureMinName(userProfile.fullName, 120, 'Kepala Ruang');
-      const CHUNK_SIZE = 400;
-
-      for (let i = 0; i < ops.length; i += CHUNK_SIZE) {
-        const chunk = ops.slice(i, i + CHUNK_SIZE);
-        const liveSnaps = await Promise.all(
-          chunk.map((op) => getDoc(doc(db, 'schedules', op.docId)).catch(() => null))
-        );
-
-        const batch = writeBatch(db);
-        chunk.forEach((op, idx) => {
-          const ref = doc(db, 'schedules', op.docId);
-          const snap = liveSnaps[idx];
-          const exists = snap ? snap.exists() : op.exists;
-          const existingData = snap?.exists() ? snap.data() : undefined;
-          const safeNurseName = ensureMinName(op.nurse.fullName, 120, 'Staf HD');
-
-          if (exists) {
-            const clearValidator =
-              effectiveValidationMode === 'Draft' &&
-              existingData &&
-              (existingData.validatedBy !== undefined || existingData.validatedByName !== undefined)
-                ? {
-                    validatedBy: deleteField(),
-                    validatedByName: deleteField(),
-                  }
-                : {};
-            batch.update(ref, {
-              nurseName: safeNurseName,
-              date: op.date,
-              monthKey: targetMonthKey,
-              shift: op.shift,
-              validationStatus: effectiveValidationMode,
-              ...(effectiveValidationMode === 'Validated'
-                ? {
-                    validatedBy: userProfile.uid,
-                    validatedByName: safeValidatorName,
-                  }
-                : clearValidator),
-              notes: 'Impor Spreadsheet',
-              updatedAt: serverTimestamp(),
-            });
-          } else {
-            batch.set(ref, {
-              nurseId: op.nurse.uid,
-              nurseName: safeNurseName,
-              date: op.date,
-              monthKey: targetMonthKey,
-              shift: op.shift,
-              validationStatus: effectiveValidationMode,
-              ...(effectiveValidationMode === 'Validated'
-                ? {
-                    validatedBy: userProfile.uid,
-                    validatedByName: safeValidatorName,
-                  }
-                : {}),
-              notes: 'Impor Spreadsheet',
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            });
-          }
+      const rowsToUpsert = ops.map((op) => {
+        const safeNurseName = ensureMinName(op.nurse.fullName, 120, 'Staf HD');
+        return toScheduleRow({
+          id: op.docId,
+          nurseId: op.nurse.uid,
+          nurseName: safeNurseName,
+          date: op.date,
+          monthKey: targetMonthKey,
+          shift: op.shift,
+          validationStatus: effectiveValidationMode,
+          validatedBy: effectiveValidationMode === 'Validated' ? userProfile.uid : undefined,
+          validatedByName: effectiveValidationMode === 'Validated' ? safeValidatorName : undefined,
+          notes: 'Impor Spreadsheet',
         });
-        await batch.commit();
-      }
+      });
+
+      await upsertRows('schedules', rowsToUpsert, 'id');
       onImported({ monthKey: targetMonthKey, savedCount: ops.length });
     } catch (err) {
-      formatFirestoreError(err, OperationType.WRITE, 'schedules');
+      formatDbError(err, OperationType.WRITE, 'schedules');
       setSaveError(
-        getUserFriendlyFirestoreError(
+        getUserFriendlyDbError(
           err,
-          'Gagal menyimpan jadwal ke Firestore. Pastikan akun Administrator aktif.'
+          'Gagal menyimpan jadwal ke database. Pastikan akun Administrator aktif.'
         )
       );
     } finally {

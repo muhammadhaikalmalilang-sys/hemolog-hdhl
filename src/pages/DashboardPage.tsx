@@ -24,7 +24,7 @@ import {
   isRegularPatient,
   MONTH_NAMES_ID,
 } from '../lib/formatters';
-import { seedInitialMasterData, seedSampleLogbookForUser } from '../lib/seedData';
+import { seedInitialUnitData } from '../lib/seedData';
 import { DialysisChart } from '../components/ui/DialysisChart';
 import { MachineStatusBadge, ShiftBadge, VerificationBadge } from '../components/ui/StatusBadge';
 import type {
@@ -235,14 +235,16 @@ export function DashboardPage({
     setSeeding(true);
     setSeedFeedback(null);
     try {
-      await seedInitialMasterData();
-      await seedSampleLogbookForUser({
-        uid: userProfile.uid,
-        fullName: userProfile.fullName,
-        nip: userProfile.nip,
+      await seedInitialUnitData({
+        machinesCount: machines.length,
+        doctorsCount: doctors.length,
+        patientsCount: patients.length,
+        categoriesCount: 0,
+        userId: userProfile.uid,
+        userName: userProfile.fullName,
       });
       const msg =
-        'Data master awal (dokter, mesin HD, kategori tindakan, pasien & 1 contoh logbook) berhasil disimpan.';
+        'Data master awal (dokter, mesin HD, kategori tindakan, pasien & jadwal awal) berhasil disimpan ke Supabase.';
       setSeedFeedback(msg);
       showToast(msg, 'success');
     } catch (err) {
@@ -338,7 +340,7 @@ export function DashboardPage({
             <p className="font-semibold">Database Master Unit Hemodialisa Masih Kosong</p>
             <p className="text-xs text-sky-800 mt-0.5">
               Klik tombol di samping untuk mengisi data awal Dokter DPJP, Mesin HD, Pasien, dan
-              Kategori Tindakan ke Firestore agar perawat langsung dapat menginput logbook.
+              Kategori Tindakan ke database Supabase agar perawat langsung dapat menginput logbook.
             </p>
           </div>
           <button

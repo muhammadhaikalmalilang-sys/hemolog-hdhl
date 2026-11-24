@@ -1,15 +1,5 @@
 import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import {
-  addDoc,
-  collection,
-  deleteDoc,
-  doc,
-  runTransaction,
-  serverTimestamp,
-  updateDoc,
-  writeBatch,
-} from 'firebase/firestore';
-import {
   AlertCircle,
   Calendar,
   CalendarPlus,
@@ -27,7 +17,26 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import {
+  handleDbError,
+  isDuplicateKeyError,
+  isPermissionDeniedError,
+  OperationType,
+} from '../lib/supabase';
+import {
+  deleteRowByColumn,
+  deleteRowsByColumnValues,
+  generateRecordId,
+  getRowByColumn,
+  insertRow,
+  mapLogbookRow,
+  mapMachineLockRow,
+  toActionCategoryRow,
+  toLogbookRow,
+  toMachineLockRow,
+  updateRowByColumn,
+  upsertRow,
+} from '../lib/db';
 import {
   clampString,
   formatDateId,
@@ -800,38 +809,50 @@ export function LogbookPage({
     }
 
     const lockId = `${inputDate}_${activeShift}_${mach.id}`;
-    const lockRef = doc(db, 'machine_locks', lockId);
     setClaimingSlot(true);
     try {
-      await runTransaction(db, async (tx) => {
-        const snap = await tx.get(lockRef);
-        if (snap.exists()) {
-          const data = snap.data() as MachineLock;
-          if (
-            data.nurseId === userProfile.uid &&
-            !data.logbookId &&
-            data.patientId === pat.id
-          ) {
-            return;
-          }
-          throw new Error(`MACHINE_LOCKED:${data.nurseName || 'staf lain'}`);
+      const existingRow = await getRowByColumn('machine_locks', 'id', lockId);
+      if (existingRow) {
+        const existingData = mapMachineLockRow(existingRow);
+        if (
+          !(
+            existingData.nurseId === userProfile.uid &&
+            !existingData.logbookId &&
+            existingData.patientId === pat.id
+          )
+        ) {
+          throw new Error(`MACHINE_LOCKED:${existingData.nurseName || 'staf lain'}`);
         }
-        tx.set(lockRef, {
-          id: lockId,
-          date: inputDate,
-          monthKey: inputDate.slice(0, 7),
-          shift: activeShift,
-          machineId: mach.id,
-          machineNumber: clampString(mach.machineNumber, 40) || 'HD',
-          patientId: pat.id,
-          patientName: clampString(pat.fullName, 120) || 'Pasien HD',
-          nurseId: userProfile.uid,
-          nurseName: clampString(userProfile.fullName, 120) || 'Perawat',
-          logbookId: '',
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      });
+      } else {
+        try {
+          await insertRow(
+            'machine_locks',
+            toMachineLockRow({
+              id: lockId,
+              date: inputDate,
+              monthKey: inputDate.slice(0, 7),
+              shift: activeShift,
+              machineId: mach.id,
+              machineNumber: clampString(mach.machineNumber, 40) || 'HD',
+              patientId: pat.id,
+              patientName: clampString(pat.fullName, 120) || 'Pasien HD',
+              nurseId: userProfile.uid,
+              nurseName: clampString(userProfile.fullName, 120) || 'Perawat',
+              logbookId: '',
+            })
+          );
+        } catch (insertErr) {
+          if (isDuplicateKeyError(insertErr)) {
+            const racedRow = await getRowByColumn('machine_locks', 'id', lockId).catch(() => null);
+            const lockerName =
+              typeof racedRow?.nurse_name === 'string' && racedRow.nurse_name.trim()
+                ? racedRow.nurse_name
+                : 'staf lain';
+            throw new Error(`MACHINE_LOCKED:${lockerName}`);
+          }
+          throw insertErr;
+        }
+      }
 
       setQueuedSlots((prev) =>
         prev.some((item) => item.patientId === pat.id)
@@ -851,9 +872,8 @@ export function LogbookPage({
       showToast(`${pat.fullName} ditambahkan ke daftar Shift ${activeShift} (${mach.machineNumber}).`, 'success');
       return true;
     } catch (err) {
-      const errCode = (err as { code?: string })?.code || '';
       const errMsg = err instanceof Error ? err.message : '';
-      if (errMsg.startsWith('MACHINE_LOCKED:') || errCode === 'permission-denied') {
+      if (errMsg.startsWith('MACHINE_LOCKED:') || isPermissionDeniedError(err)) {
         const lockerName = errMsg.startsWith('MACHINE_LOCKED:')
           ? errMsg.replace('MACHINE_LOCKED:', '').trim() || 'staf lain'
           : 'staf lain';
@@ -863,7 +883,7 @@ export function LogbookPage({
         setDraftMachineId('');
         return false;
       }
-      handleFirestoreError(err, OperationType.WRITE, `machine_locks/${lockId}`);
+      handleDbError(err, OperationType.WRITE, `machine_locks/${lockId}`);
       return false;
     } finally {
       setClaimingSlot(false);
@@ -931,9 +951,9 @@ export function LogbookPage({
     );
     if (matchingLock) {
       try {
-        await deleteDoc(doc(db, 'machine_locks', matchingLock.id));
+        await deleteRowByColumn('machine_locks', 'id', matchingLock.id);
       } catch (err) {
-        handleFirestoreError(err, OperationType.DELETE, `machine_locks/${matchingLock.id}`);
+        handleDbError(err, OperationType.DELETE, `machine_locks/${matchingLock.id}`);
       }
     }
   };
@@ -1005,122 +1025,119 @@ export function LogbookPage({
     const safePatientName = clampString(item.patient.fullName, 120) || 'Pasien HD';
     const safeNurseName = clampString(userProfile.fullName, 120) || 'Perawat';
     const isAdminRole = userProfile.role === 'Administrator';
-    const isFirestoreTimestamp = (val: unknown): boolean =>
-      Boolean(val && typeof (val as { toMillis?: unknown }).toMillis === 'function');
 
     let txOp: OperationType = OperationType.WRITE;
     let txPath = `machine_locks/${newLockId}`;
 
     try {
-      await runTransaction(db, async (tx) => {
-        const newLockRef = doc(db, 'machine_locks', newLockId);
-        const oldLockRef = oldLockId !== newLockId ? doc(db, 'machine_locks', oldLockId) : null;
-        const logRef = own ? doc(db, 'logbook', own.id) : null;
+      const [logRow, newLockRow, oldLockRow] = await Promise.all([
+        own ? getRowByColumn('logbook', 'id', own.id) : Promise.resolve(null),
+        getRowByColumn('machine_locks', 'id', newLockId),
+        oldLockId !== newLockId ? getRowByColumn('machine_locks', 'id', oldLockId) : Promise.resolve(null),
+      ]);
 
-        let logSnap: Awaited<ReturnType<typeof tx.get>> | null = null;
-        if (logRef) {
-          txOp = OperationType.GET;
-          txPath = logRef.path;
-          logSnap = await tx.get(logRef);
-        }
-
+      if (own) {
         txOp = OperationType.GET;
-        txPath = newLockRef.path;
-        const newLockSnap = await tx.get(newLockRef);
-
-        let oldLockSnap: Awaited<ReturnType<typeof tx.get>> | null = null;
-        if (oldLockRef) {
-          txOp = OperationType.GET;
-          txPath = oldLockRef.path;
-          oldLockSnap = await tx.get(oldLockRef);
+        txPath = `logbook/${own.id}`;
+        if (!logRow) {
+          throw new Error('LOGBOOK_MISSING');
         }
-
-        if (own && logRef) {
-          if (!logSnap || !logSnap.exists()) {
-            throw new Error('LOGBOOK_MISSING');
-          }
-          const logData = logSnap.data() as Partial<LogbookEntry>;
-          if (!isAdminRole && logData.nurseId !== userProfile.uid) {
-            throw new Error('LOGBOOK_NOT_OWNER');
-          }
-          if (
-            !isAdminRole &&
-            logData.verificationStatus !== 'Draft' &&
-            logData.verificationStatus !== 'Revision'
-          ) {
-            throw new Error(`LOGBOOK_LOCKED:${logData.verificationStatus || 'Pending'}`);
-          }
+        const logData = mapLogbookRow(logRow);
+        if (!isAdminRole && logData.nurseId !== userProfile.uid) {
+          throw new Error('LOGBOOK_NOT_OWNER');
         }
-
-        if (newLockSnap.exists()) {
-          const ld = newLockSnap.data() as Partial<MachineLock>;
-          const ownedByCurrent = ld.nurseId === userProfile.uid;
-          const matchesThisSlot =
-            (own && ld.logbookId === own.id) ||
-            (!own && !ld.logbookId && ld.patientId === item.patient.id);
-          const knownOrphan = Boolean(
-            (isAdminRole || ownedByCurrent) &&
-              ld.logbookId &&
-              !existingLogbookIds.has(ld.logbookId)
-          );
-          if (!(ownedByCurrent && matchesThisSlot) && !knownOrphan) {
-            throw new Error(`MACHINE_LOCKED:${ld.nurseName || 'staf lain'}`);
-          }
+        if (
+          !isAdminRole &&
+          logData.verificationStatus !== 'Draft' &&
+          logData.verificationStatus !== 'Revision'
+        ) {
+          throw new Error(`LOGBOOK_LOCKED:${logData.verificationStatus || 'Pending'}`);
         }
+      }
 
-        if (own && logRef) {
-          txOp = OperationType.UPDATE;
-          txPath = logRef.path;
-          tx.update(logRef, {
+      let existingML: MachineLock | null = null;
+      let shouldDeleteOrphanFirst = false;
+      if (newLockRow) {
+        const ld = mapMachineLockRow(newLockRow);
+        existingML = ld;
+        const ownedByCurrent = ld.nurseId === userProfile.uid;
+        const matchesThisSlot =
+          (own && ld.logbookId === own.id) ||
+          (!own && !ld.logbookId && ld.patientId === item.patient.id);
+        const knownOrphan = Boolean(
+          (isAdminRole || ownedByCurrent) &&
+            ld.logbookId &&
+            !existingLogbookIds.has(ld.logbookId)
+        );
+        if (!(ownedByCurrent && matchesThisSlot) && !knownOrphan) {
+          throw new Error(`MACHINE_LOCKED:${ld.nurseName || 'staf lain'}`);
+        }
+        shouldDeleteOrphanFirst = knownOrphan && !ownedByCurrent && !isAdminRole;
+      }
+
+      if (own) {
+        txOp = OperationType.UPDATE;
+        txPath = `logbook/${own.id}`;
+        await updateRowByColumn(
+          'logbook',
+          'id',
+          own.id,
+          toLogbookRow({
             machineId: newMach.id,
             machineNumber: safeMachineNumber,
-            updatedAt: serverTimestamp(),
-          });
-        }
-
-        if (oldLockSnap && oldLockSnap.exists() && oldLockRef) {
-          const oldML = oldLockSnap.data() as Partial<MachineLock>;
-          const canDeleteOld =
-            isAdminRole ||
-            (oldML.nurseId === userProfile.uid && (own ? true : !oldML.logbookId));
-          if (canDeleteOld) {
-            txOp = OperationType.DELETE;
-            txPath = oldLockRef.path;
-            tx.delete(oldLockRef);
-          }
-        }
-
-        const existingML = newLockSnap.exists()
-          ? (newLockSnap.data() as Partial<MachineLock>)
-          : null;
-        const keepCreatedAt = Boolean(
-          existingML &&
-            existingML.nurseId === userProfile.uid &&
-            isFirestoreTimestamp(existingML.createdAt)
+          })
         );
+      }
 
-        txOp = existingML ? OperationType.UPDATE : OperationType.CREATE;
-        txPath = newLockRef.path;
-        const nextLockFields = {
-          id: newLockId,
-          date: targetDate,
-          monthKey: targetDate.slice(0, 7),
-          shift: targetShift,
-          machineId: newMach.id,
-          machineNumber: safeMachineNumber,
-          patientId: item.patient.id,
-          patientName: safePatientName,
-          nurseId: userProfile.uid,
-          nurseName: safeNurseName,
-          logbookId: own ? own.id : '',
-          updatedAt: serverTimestamp(),
-        };
-        tx.set(newLockRef, {
-          ...nextLockFields,
-          createdAt:
-            keepCreatedAt && existingML ? existingML.createdAt : serverTimestamp(),
-        });
+      if (oldLockRow && oldLockId !== newLockId) {
+        const oldML = mapMachineLockRow(oldLockRow);
+        const canDeleteOld =
+          isAdminRole ||
+          (oldML.nurseId === userProfile.uid && (own ? true : !oldML.logbookId));
+        if (canDeleteOld) {
+          txOp = OperationType.DELETE;
+          txPath = `machine_locks/${oldLockId}`;
+          await deleteRowByColumn('machine_locks', 'id', oldLockId);
+        }
+      }
+
+      const nextLockRow = toMachineLockRow({
+        id: newLockId,
+        date: targetDate,
+        monthKey: targetDate.slice(0, 7),
+        shift: targetShift,
+        machineId: newMach.id,
+        machineNumber: safeMachineNumber,
+        patientId: item.patient.id,
+        patientName: safePatientName,
+        nurseId: userProfile.uid,
+        nurseName: safeNurseName,
+        logbookId: own ? own.id : '',
       });
+
+      if (shouldDeleteOrphanFirst) {
+        await deleteRowByColumn('machine_locks', 'id', newLockId);
+      }
+
+      txOp = existingML && !shouldDeleteOrphanFirst ? OperationType.UPDATE : OperationType.CREATE;
+      txPath = `machine_locks/${newLockId}`;
+      if (existingML && !shouldDeleteOrphanFirst) {
+        await upsertRow('machine_locks', nextLockRow, 'id');
+      } else {
+        try {
+          await insertRow('machine_locks', nextLockRow);
+        } catch (insertErr) {
+          if (isDuplicateKeyError(insertErr)) {
+            const raced = await getRowByColumn('machine_locks', 'id', newLockId).catch(() => null);
+            const lockerName =
+              typeof raced?.nurse_name === 'string' && raced.nurse_name.trim()
+                ? raced.nurse_name
+                : 'staf lain';
+            throw new Error(`MACHINE_LOCKED:${lockerName}`);
+          }
+          throw insertErr;
+        }
+      }
 
       if (!own) {
         setQueuedSlots((prev) =>
@@ -1131,9 +1148,8 @@ export function LogbookPage({
       }
       showToast(`Bed/Mesin ${item.patient.fullName} diubah ke ${newMach.machineNumber}.`, 'success');
     } catch (err) {
-      const errCode = (err as { code?: string })?.code || '';
       const msg = err instanceof Error ? err.message : '';
-      if (msg.startsWith('MACHINE_LOCKED:') || errCode === 'permission-denied') {
+      if (msg.startsWith('MACHINE_LOCKED:') || isPermissionDeniedError(err)) {
         const lockerName = msg.startsWith('MACHINE_LOCKED:')
           ? msg.replace('MACHINE_LOCKED:', '').trim() || 'staf lain'
           : 'staf lain';
@@ -1150,7 +1166,7 @@ export function LogbookPage({
           `Logbook sudah berstatus ${st} sehingga Bed/Mesin tidak dapat diubah.`
         );
       } else {
-        handleFirestoreError(err, txOp, txPath);
+        handleDbError(err, txOp, txPath);
       }
     } finally {
       setChangingMachinePatientId(null);
@@ -1178,8 +1194,6 @@ export function LogbookPage({
   const handleConfirmDelete = async () => {
     if (!deleteTarget) return;
     try {
-      const batch = writeBatch(db);
-      batch.delete(doc(db, 'logbook', deleteTarget.id));
       const lockId = `${deleteTarget.date}_${deleteTarget.patientId}`;
       const locksToDelete = new Set<string>();
       if (isAdminMaster) {
@@ -1198,9 +1212,6 @@ export function LogbookPage({
             locksToDelete.add(lk.id);
           }
         }
-      }
-      for (const idToDel of locksToDelete) {
-        batch.delete(doc(db, 'logbook_locks', idToDel));
       }
 
       const machineLockId = `${deleteTarget.date}_${deleteTarget.shift}_${deleteTarget.machineId}`;
@@ -1221,17 +1232,23 @@ export function LogbookPage({
           }
         }
       }
-      for (const idToDel of machineLocksToDelete) {
-        batch.delete(doc(db, 'machine_locks', idToDel));
-      }
 
-      await batch.commit();
+      await deleteRowByColumn('logbook', 'id', deleteTarget.id);
+      await Promise.all([
+        locksToDelete.size > 0
+          ? deleteRowsByColumnValues('logbook_locks', 'id', Array.from(locksToDelete))
+          : Promise.resolve(),
+        machineLocksToDelete.size > 0
+          ? deleteRowsByColumnValues('machine_locks', 'id', Array.from(machineLocksToDelete))
+          : Promise.resolve(),
+      ]);
+
       const deletedName = deleteTarget.patientName;
       setDeleteTargetId(null);
       showToast(`Logbook ${deletedName} berhasil dihapus.`, 'success');
     } catch (err) {
       showToast('Gagal menghapus logbook.', 'error');
-      handleFirestoreError(err, OperationType.DELETE, `logbook/${deleteTarget.id}`);
+      handleDbError(err, OperationType.DELETE, `logbook/${deleteTarget.id}`);
     }
   };
 
@@ -1241,20 +1258,27 @@ export function LogbookPage({
     setCatSaving(true);
     const wasEditing = Boolean(editingCat);
     try {
-      const payload = {
+      const categoryData = {
         name: clampString(catName, 80),
         code: clampString(catCode.toUpperCase(), 20),
         description: clampString(catDesc, 300),
         isActive: true,
-        updatedAt: serverTimestamp(),
       };
       if (editingCat) {
-        await updateDoc(doc(db, 'action_categories', editingCat.id), payload);
+        await updateRowByColumn(
+          'action_categories',
+          'id',
+          editingCat.id,
+          toActionCategoryRow(categoryData)
+        );
       } else {
-        await addDoc(collection(db, 'action_categories'), {
-          ...payload,
-          createdAt: serverTimestamp(),
-        });
+        await insertRow(
+          'action_categories',
+          toActionCategoryRow({
+            id: generateRecordId(),
+            ...categoryData,
+          })
+        );
       }
       setCatName('');
       setCatCode('');
@@ -1266,7 +1290,7 @@ export function LogbookPage({
       );
     } catch (err) {
       showToast('Gagal menyimpan kategori tindakan HD.', 'error');
-      handleFirestoreError(err, OperationType.WRITE, 'action_categories');
+      handleDbError(err, OperationType.WRITE, 'action_categories');
     } finally {
       setCatSaving(false);
     }
@@ -1274,27 +1298,31 @@ export function LogbookPage({
 
   const toggleCategoryActive = async (cat: ActionCategory) => {
     try {
-      await updateDoc(doc(db, 'action_categories', cat.id), {
-        isActive: !cat.isActive,
-        updatedAt: serverTimestamp(),
-      });
+      await updateRowByColumn(
+        'action_categories',
+        'id',
+        cat.id,
+        toActionCategoryRow({
+          isActive: !cat.isActive,
+        })
+      );
       showToast(
         `Kategori "${cat.name}" ${!cat.isActive ? 'diaktifkan' : 'dinonaktifkan'}.`,
         'info'
       );
     } catch (err) {
       showToast('Gagal memperbarui status kategori.', 'error');
-      handleFirestoreError(err, OperationType.UPDATE, `action_categories/${cat.id}`);
+      handleDbError(err, OperationType.UPDATE, `action_categories/${cat.id}`);
     }
   };
 
   const deleteCategory = async (catId: string) => {
     try {
-      await deleteDoc(doc(db, 'action_categories', catId));
+      await deleteRowByColumn('action_categories', 'id', catId);
       showToast('Kategori tindakan HD dihapus.', 'info');
     } catch (err) {
       showToast('Gagal menghapus kategori tindakan.', 'error');
-      handleFirestoreError(err, OperationType.DELETE, `action_categories/${catId}`);
+      handleDbError(err, OperationType.DELETE, `action_categories/${catId}`);
     }
   };
 

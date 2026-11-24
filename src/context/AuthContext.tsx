@@ -1,52 +1,68 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import type { Session, User as SupabaseUser } from '@supabase/supabase-js';
 import {
-  onAuthStateChanged,
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  signInWithPopup,
-  GoogleAuthProvider,
-  signOut,
-  updatePassword,
-  reauthenticateWithCredential,
-  EmailAuthProvider,
-  sendEmailVerification,
-  sendPasswordResetEmail,
-  setPersistence,
-  browserSessionPersistence,
-  type User,
-} from 'firebase/auth';
-import {
-  doc,
-  setDoc,
-  updateDoc,
-  onSnapshot,
-  serverTimestamp,
-} from 'firebase/firestore';
-import {
-  auth,
-  db,
-  formatFirestoreError,
+  createSecondarySupabaseClient,
+  formatDbError,
   isBootstrapAdminEmail,
   isPermissionDeniedError,
-  isTransientFirestoreError,
-  handleFirestoreError,
-  onFirestoreReconnect,
+  isSupabaseConfigured,
+  isTransientDbError,
+  onSupabaseReconnect,
   OperationType,
-  reconnectFirestore,
-  withSecondaryAuth,
-} from '../lib/firebase';
+  reconnectSupabase,
+  requireSupabase,
+  supabase,
+  SUPABASE_PROJECT_ID,
+} from '../lib/supabase';
+import {
+  mapUserRow,
+  toStaffDirectoryRow,
+  toUserRow,
+} from '../lib/db';
 import { clampString } from '../lib/formatters';
 import { clearLastActivity, stampLastActivity } from '../hooks/useIdleTimeout';
 import type { UserProfile, UserRole } from '../types';
 
+export interface AuthUser {
+  uid: string;
+  email: string | null;
+  displayName: string | null;
+  emailVerified: boolean;
+  providerIds: string[];
+}
+
+function toAuthUser(sbUser: SupabaseUser | null | undefined): AuthUser | null {
+  if (!sbUser) return null;
+  const meta = (sbUser.user_metadata || {}) as Record<string, unknown>;
+  const appMeta = (sbUser.app_metadata || {}) as Record<string, unknown>;
+  const providerIds: string[] = Array.isArray(appMeta.providers)
+    ? appMeta.providers.map((p) => String(p))
+    : appMeta.provider
+    ? [String(appMeta.provider)]
+    : sbUser.identities?.map((i) => i.provider) || ['email'];
+
+  return {
+    uid: sbUser.id,
+    email: sbUser.email ?? null,
+    displayName:
+      (typeof meta.full_name === 'string' && meta.full_name) ||
+      (typeof meta.name === 'string' && meta.name) ||
+      null,
+    emailVerified: Boolean(sbUser.email_confirmed_at || sbUser.confirmed_at),
+    providerIds,
+  };
+}
+
 interface AuthContextValue {
-  firebaseUser: User | null;
+  authUser: AuthUser | null;
   userProfile: UserProfile | null;
   authReady: boolean;
   profileLoading: boolean;
+  supabaseConfigured: boolean;
   blockedMessage: string | null;
   idleLogoutMessage: string | null;
   clearIdleLogoutMessage: () => void;
+  getAccessToken: () => Promise<string | null>;
   loginWithEmail: (email: string, password: string, rememberMe?: boolean) => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
   registerWithEmail: (params: {
@@ -54,7 +70,7 @@ interface AuthContextValue {
     password: string;
     fullName: string;
     nip: string;
-  }) => Promise<void>;
+  }) => Promise<{ requiresEmailConfirmation: boolean }>;
   loginWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
   logoutDueToIdle: () => Promise<void>;
@@ -126,7 +142,7 @@ async function parseApiJsonResponse<T extends { ok?: boolean; error?: string; me
       trimmed.includes('<div id="root">');
     const err = new Error(
       looksLikeSpaHtml
-        ? `Endpoint server /api tidak merespons JSON (HTTP ${res.status}). Pastikan Serverless Function Vercel (/api/index.ts) ter-deploy dengan benar.`
+        ? `Endpoint server /api tidak merespons JSON (HTTP ${res.status}). Pastikan Serverless Function (/api/index.mjs) berjalan dengan benar.`
         : `${fallbackMessage} (HTTP ${res.status}${trimmed ? `: ${trimmed.slice(0, 140)}` : ''})`
     ) as Error & { code?: string };
     err.code = looksLikeSpaHtml ? 'API_UNREACHABLE' : `HTTP_${res.status}`;
@@ -145,187 +161,241 @@ async function parseApiJsonResponse<T extends { ok?: boolean; error?: string; me
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
-  const [authReady, setAuthReady] = useState(false);
-  const [profileLoading, setProfileLoading] = useState(true);
+  const [authReady, setAuthReady] = useState(!isSupabaseConfigured);
+  const [profileLoading, setProfileLoading] = useState(isSupabaseConfigured);
   const [blockedMessage, setBlockedMessage] = useState<string | null>(null);
   const [idleLogoutMessage, setIdleLogoutMessage] = useState<string | null>(null);
   const [fatalError, setFatalError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!supabase || !isSupabaseConfigured) {
+      setAuthReady(true);
+      setProfileLoading(false);
+      return;
+    }
+
+    const sb = supabase;
     let cancelled = false;
     let authEventSeq = 0;
-    let unsubscribeProfile: (() => void) | null = null;
-    let needsResubscribe = false;
+    let profileChannel: ReturnType<typeof sb.channel> | null = null;
     let retryTimer: number | null = null;
-    let activeUser: User | null = null;
-
+    let activeUser: AuthUser | null = null;
     let bootstrappingUid: string | null = null;
 
-    const bootstrapMissingProfile = async (user: User, seq: number) => {
-      if (bootstrappingUid === user.uid) return;
-      bootstrappingUid = user.uid;
+    const cleanupChannel = () => {
+      if (profileChannel) {
+        void sb.removeChannel(profileChannel);
+        profileChannel = null;
+      }
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+    };
+
+    const bootstrapMissingProfile = async (
+      sbUser: SupabaseUser,
+      mappedUser: AuthUser,
+      seq: number
+    ) => {
+      if (bootstrappingUid === mappedUser.uid) return;
+      bootstrappingUid = mappedUser.uid;
       try {
-        const isBootstrap = user.emailVerified && isBootstrapAdminEmail(user.email);
+        const meta = (sbUser.user_metadata || {}) as Record<string, unknown>;
+        const isBootstrap =
+          mappedUser.emailVerified && isBootstrapAdminEmail(mappedUser.email);
         const initialRole: UserRole = isBootstrap ? 'Administrator' : 'Perawat Pelaksana';
         const fallbackName =
-          clampString(user.displayName || user.email?.split('@')[0] || 'Perawat HD', 120) ||
-          'Perawat HD';
-        const initialNip = isBootstrap ? 'ADM-001' : `HD-${user.uid.slice(0, 6).toUpperCase()}`;
+          clampString(
+            (typeof meta.full_name === 'string' && meta.full_name) ||
+              mappedUser.displayName ||
+              mappedUser.email?.split('@')[0] ||
+              'Perawat HD',
+            120
+          ) || 'Perawat HD';
+        const initialNip = isBootstrap
+          ? 'ADM-001'
+          : clampString(
+              (typeof meta.nip === 'string' && meta.nip) ||
+                `HD-${mappedUser.uid.slice(0, 6).toUpperCase()}`,
+              40
+            );
 
-        const profilePayload = {
-          uid: user.uid,
-          email: clampString(user.email || 'staff@hemolog.local', 200),
+        const nowIso = new Date().toISOString();
+        const userRow = toUserRow({
+          uid: mappedUser.uid,
+          email: clampString(mappedUser.email || 'staff@hemolog.local', 200),
           fullName: fallbackName,
           nip: initialNip,
           role: initialRole,
           isActive: true,
           phone: '',
           specialization: isBootstrap ? 'System Administrator' : 'Perawat Hemodialisa',
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        };
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        });
+        const dirRow = toStaffDirectoryRow({
+          uid: mappedUser.uid,
+          fullName: fallbackName,
+          nip: initialNip,
+          role: initialRole,
+          isActive: true,
+          updatedAt: nowIso,
+        });
 
-        await Promise.all([
-          setDoc(doc(db, 'users', user.uid), profilePayload),
-          setDoc(doc(db, 'staff_directory', user.uid), {
-            uid: user.uid,
-            fullName: fallbackName,
-            role: initialRole,
-            isActive: true,
-            updatedAt: serverTimestamp(),
-          }),
+        const [{ data: insertedUser, error: uErr }, { error: dErr }] = await Promise.all([
+          sb.from('users').upsert(userRow, { onConflict: 'uid' }).select().single(),
+          sb.from('staff_directory').upsert(dirRow, { onConflict: 'uid' }),
         ]);
+
+        if (uErr || dErr) {
+          throw uErr || dErr;
+        }
+
+        if (cancelled || seq !== authEventSeq) return;
+        if (insertedUser) {
+          setUserProfile(mapUserRow(insertedUser));
+          setAuthReady(true);
+          setProfileLoading(false);
+        }
       } catch (error) {
         if (cancelled || seq !== authEventSeq) return;
         bootstrappingUid = null;
-        if (isTransientFirestoreError(error)) {
-          console.warn('Inisialisasi profil tertunda sementara, mencoba sinkronisasi ulang:', error);
-          void reconnectFirestore({ force: true, resubscribe: true, reason: 'error' });
+        if (isTransientDbError(error)) {
+          console.warn('Inisialisasi profil tertunda sementara, mencoba ulang:', error);
+          retryTimer = window.setTimeout(() => {
+            if (!cancelled && seq === authEventSeq) {
+              void loadAndWatchProfile(sbUser, mappedUser, seq);
+            }
+          }, 2500);
         } else {
-          console.error('Error initializing user profile:', error);
-          setAuthReady(true);
-          setProfileLoading(false);
+          console.error('Error initializing Supabase user profile:', error);
+          setFatalError(formatDbError(error, OperationType.CREATE, `users/${mappedUser.uid}`));
         }
       }
     };
 
-    const attachProfileListener = (user: User, seq: number, authRetryDone = false) => {
+    const loadAndWatchProfile = async (
+      sbUser: SupabaseUser,
+      mappedUser: AuthUser,
+      seq: number
+    ) => {
       if (cancelled || seq !== authEventSeq) return;
-      if (unsubscribeProfile) {
-        unsubscribeProfile();
-        unsubscribeProfile = null;
-      }
-      if (retryTimer !== null) {
-        window.clearTimeout(retryTimer);
-        retryTimer = null;
-      }
-      const userRef = doc(db, 'users', user.uid);
-      unsubscribeProfile = onSnapshot(
-        userRef,
-        (docSnap) => {
-          if (cancelled || seq !== authEventSeq) return;
-          needsResubscribe = false;
-          if (docSnap.exists()) {
-            const data = docSnap.data() as UserProfile;
-            if (!data.isActive) {
-              setBlockedMessage(
-                'Akun Anda sedang dinonaktifkan oleh Administrator. Hubungi Admin Unit Hemodialisa untuk aktivasi kembali.'
-              );
-              setUserProfile(null);
-              signOut(auth).catch(() => undefined);
-            } else {
-              const fallbackName =
-                clampString(
-                  data.fullName || user.displayName || user.email?.split('@')[0] || 'Staf HD',
-                  120
-                ) || 'Staf HD';
-              setUserProfile({
-                ...data,
-                uid: user.uid,
-                email: data.email || user.email || '',
-                fullName: fallbackName,
-              });
-            }
-            setAuthReady(true);
-            setProfileLoading(false);
-          } else if (!docSnap.metadata.fromCache) {
-            // Confirmed from server that this newly signed-in user has no profile document yet
-            void bootstrapMissingProfile(user, seq);
-          }
-        },
-        (error) => {
-          if (cancelled || seq !== authEventSeq) return;
-          if (!auth.currentUser || auth.currentUser.uid !== user.uid) {
-            return;
-          }
-          if (isTransientFirestoreError(error)) {
-            needsResubscribe = true;
-            console.warn('Koneksi profil terputus sementara, menyambungkan ulang...');
-            void reconnectFirestore({ force: true, resubscribe: true, reason: 'error' });
-            if (retryTimer !== null) window.clearTimeout(retryTimer);
+      cleanupChannel();
+
+      try {
+        const { data, error } = await sb
+          .from('users')
+          .select('*')
+          .eq('uid', mappedUser.uid)
+          .maybeSingle();
+
+        if (cancelled || seq !== authEventSeq) return;
+
+        if (error) {
+          if (isTransientDbError(error)) {
+            console.warn('Koneksi profil Supabase terputus sementara, menyambungkan ulang...');
             retryTimer = window.setTimeout(() => {
-              if (!cancelled && seq === authEventSeq && auth.currentUser?.uid === user.uid && (typeof navigator === 'undefined' || navigator.onLine)) {
-                attachProfileListener(user, seq, authRetryDone);
+              if (!cancelled && seq === authEventSeq) {
+                void loadAndWatchProfile(sbUser, mappedUser, seq);
               }
             }, 3000);
             return;
           }
-          if (isPermissionDeniedError(error) && !authRetryDone) {
-            console.warn('Menyinkronkan token autentikasi profil...');
-            void user
-              .getIdToken(true)
-              .catch(() => undefined)
-              .finally(() => {
-                if (cancelled || seq !== authEventSeq) return;
-                if (!auth.currentUser || auth.currentUser.uid !== user.uid) return;
-                if (retryTimer !== null) window.clearTimeout(retryTimer);
-                retryTimer = window.setTimeout(() => {
-                  if (!cancelled && seq === authEventSeq && auth.currentUser?.uid === user.uid) {
-                    attachProfileListener(user, seq, true);
-                  }
-                }, 350);
-              });
+          if (isPermissionDeniedError(error)) {
+            setFatalError(formatDbError(error, OperationType.GET, `users/${mappedUser.uid}`));
             return;
           }
-          setFatalError(formatFirestoreError(error, OperationType.GET, `users/${user.uid}`));
+          throw error;
         }
-      );
+
+        if (!data) {
+          await bootstrapMissingProfile(sbUser, mappedUser, seq);
+        } else {
+          const profile = mapUserRow(data);
+          if (!profile.isActive) {
+            setBlockedMessage(
+              'Akun Anda sedang dinonaktifkan oleh Administrator. Hubungi Admin Unit Hemodialisa untuk aktivasi kembali.'
+            );
+            setUserProfile(null);
+            await sb.auth.signOut().catch(() => undefined);
+          } else {
+            const fallbackName =
+              clampString(
+                profile.fullName ||
+                  mappedUser.displayName ||
+                  mappedUser.email?.split('@')[0] ||
+                  'Staf HD',
+                120
+              ) || 'Staf HD';
+            setUserProfile({
+              ...profile,
+              uid: mappedUser.uid,
+              email: profile.email || mappedUser.email || '',
+              fullName: fallbackName,
+            });
+          }
+          setAuthReady(true);
+          setProfileLoading(false);
+        }
+
+        if (cancelled || seq !== authEventSeq) return;
+        profileChannel = sb
+          .channel(`user-profile-${mappedUser.uid}-${seq}`)
+          .on(
+            'postgres_changes',
+            {
+              event: '*',
+              schema: 'public',
+              table: 'users',
+              filter: `uid=eq.${mappedUser.uid}`,
+            },
+            (payload) => {
+              if (cancelled || seq !== authEventSeq) return;
+              if (payload.eventType === 'DELETE') {
+                setBlockedMessage('Akun Anda telah dihapus oleh Administrator.');
+                setUserProfile(null);
+                void sb.auth.signOut().catch(() => undefined);
+                return;
+              }
+              if (payload.new) {
+                const updated = mapUserRow(payload.new as Record<string, unknown>);
+                if (!updated.isActive) {
+                  setBlockedMessage(
+                    'Akun Anda sedang dinonaktifkan oleh Administrator. Hubungi Admin Unit Hemodialisa untuk aktivasi kembali.'
+                  );
+                  setUserProfile(null);
+                  void sb.auth.signOut().catch(() => undefined);
+                } else {
+                  setUserProfile(updated);
+                }
+                setAuthReady(true);
+                setProfileLoading(false);
+              }
+            }
+          )
+          .subscribe();
+      } catch (err) {
+        if (cancelled || seq !== authEventSeq) return;
+        setFatalError(formatDbError(err, OperationType.GET, `users/${mappedUser.uid}`));
+      }
     };
 
-    const unsubReconnect = onFirestoreReconnect((event) => {
-      if (
-        !cancelled &&
-        activeUser &&
-        auth.currentUser?.uid === activeUser.uid &&
-        (needsResubscribe || event.shouldResubscribe)
-      ) {
-        needsResubscribe = false;
-        attachProfileListener(activeUser, authEventSeq);
-      }
-    });
-
-    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+    const handleSession = (session: Session | null) => {
       const currentSeq = ++authEventSeq;
-      if (unsubscribeProfile) {
-        unsubscribeProfile();
-        unsubscribeProfile = null;
-      }
-      if (retryTimer !== null) {
-        window.clearTimeout(retryTimer);
-        retryTimer = null;
-      }
-
+      cleanupChannel();
       if (cancelled) return;
 
-      activeUser = user;
-      needsResubscribe = false;
+      const sbUser = session?.user ?? null;
+      const mapped = toAuthUser(sbUser);
+      activeUser = mapped;
       bootstrappingUid = null;
-      setFirebaseUser(user);
+      setAuthUser(mapped);
       setFatalError(null);
 
-      if (!user) {
+      if (!sbUser || !mapped) {
         setUserProfile(null);
         setAuthReady(true);
         setProfileLoading(false);
@@ -335,24 +405,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setBlockedMessage(null);
       setIdleLogoutMessage(null);
       setProfileLoading(true);
+      void loadAndWatchProfile(sbUser, mapped, currentSeq);
+    };
 
-      // Ensure ID token is hydrated before opening profile listener on this tab
-      void user
-        .getIdToken()
-        .catch(() => undefined)
-        .finally(() => {
-          if (!cancelled && currentSeq === authEventSeq && auth.currentUser?.uid === user.uid) {
-            attachProfileListener(user, currentSeq);
+    void sb.auth.getSession().then(({ data }) => {
+      if (!cancelled) {
+        handleSession(data.session);
+      }
+    });
+
+    const {
+      data: { subscription },
+    } = sb.auth.onAuthStateChange((_event, session) => {
+      if (!cancelled) {
+        handleSession(session);
+      }
+    });
+
+    const unsubReconnect = onSupabaseReconnect((event) => {
+      if (!cancelled && activeUser && event.shouldResubscribe) {
+        void sb.auth.getSession().then(({ data }) => {
+          if (!cancelled && data.session?.user) {
+            const mapped = toAuthUser(data.session.user);
+            if (mapped) {
+              void loadAndWatchProfile(data.session.user, mapped, authEventSeq);
+            }
           }
         });
+      }
     });
 
     return () => {
       cancelled = true;
-      unsubscribeAuth();
+      subscription.unsubscribe();
       unsubReconnect();
-      if (unsubscribeProfile) unsubscribeProfile();
-      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      cleanupChannel();
     };
   }, []);
 
@@ -360,17 +447,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     throw new Error(fatalError);
   }
 
+  const getAccessToken = async (): Promise<string | null> => {
+    if (!supabase) return null;
+    const { data } = await supabase.auth.getSession();
+    return data.session?.access_token ?? null;
+  };
+
   const loginWithEmail = async (email: string, password: string, _rememberMe = true) => {
+    const sb = requireSupabase();
     setBlockedMessage(null);
     setIdleLogoutMessage(null);
     stampLastActivity();
-    await setPersistence(auth, browserSessionPersistence);
-    await signInWithEmailAndPassword(auth, email.trim(), password);
+    const { error } = await sb.auth.signInWithPassword({
+      email: email.trim().toLowerCase(),
+      password,
+    });
+    if (error) throw error;
     stampLastActivity();
   };
 
   const resetPassword = async (email: string) => {
-    await sendPasswordResetEmail(auth, email.trim());
+    const sb = requireSupabase();
+    const { error } = await sb.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
+      redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined,
+    });
+    if (error) throw error;
   };
 
   const registerWithEmail = async (params: {
@@ -379,54 +480,92 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     fullName: string;
     nip: string;
   }) => {
+    const sb = requireSupabase();
     setBlockedMessage(null);
     setIdleLogoutMessage(null);
     stampLastActivity();
-    await setPersistence(auth, browserSessionPersistence);
-    const cred = await createUserWithEmailAndPassword(auth, params.email.trim(), params.password);
-    stampLastActivity();
-    const user = cred.user;
-    const isBootstrap = user.emailVerified && isBootstrapAdminEmail(user.email);
-    const role: UserRole = isBootstrap ? 'Administrator' : 'Perawat Pelaksana';
+
+    const cleanEmail = clampString(params.email.toLowerCase(), 200);
     const cleanName = clampString(params.fullName, 120);
     const cleanNip = clampString(params.nip, 40);
 
-    try {
-      await Promise.all([
-        setDoc(doc(db, 'users', user.uid), {
-          uid: user.uid,
-          email: clampString(params.email.trim(), 200),
-          fullName: cleanName,
+    const { data, error } = await sb.auth.signUp({
+      email: cleanEmail,
+      password: params.password,
+      options: {
+        emailRedirectTo: typeof window !== 'undefined' ? window.location.origin : undefined,
+        data: {
+          full_name: cleanName,
           nip: cleanNip,
-          role,
-          isActive: true,
-          phone: '',
-          specialization: 'Perawat Hemodialisa',
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        }),
-        setDoc(doc(db, 'staff_directory', user.uid), {
-          uid: user.uid,
-          fullName: cleanName,
-          role,
-          isActive: true,
-          updatedAt: serverTimestamp(),
-        }),
-      ]);
-      await sendEmailVerification(user).catch(() => undefined);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `users/${user.uid}`);
+        },
+      },
+    });
+    if (error) throw error;
+    if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+      const dupErr = new Error('Email sudah terdaftar. Silakan masuk melalui formulir login.') as Error & {
+        code?: string;
+      };
+      dupErr.code = 'email_exists';
+      throw dupErr;
     }
+
+    stampLastActivity();
+
+    if (data.session && data.user) {
+      const emailVerified = Boolean(data.user.email_confirmed_at || data.user.confirmed_at);
+      const isBootstrap = emailVerified && isBootstrapAdminEmail(cleanEmail);
+      const role: UserRole = isBootstrap ? 'Administrator' : 'Perawat Pelaksana';
+      const nowIso = new Date().toISOString();
+
+      const [{ error: uErr }, { error: dErr }] = await Promise.all([
+        sb.from('users').upsert(
+          toUserRow({
+            uid: data.user.id,
+            email: cleanEmail,
+            fullName: cleanName,
+            nip: cleanNip,
+            role,
+            isActive: true,
+            phone: '',
+            specialization: isBootstrap ? 'System Administrator' : 'Perawat Hemodialisa',
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          }),
+          { onConflict: 'uid' }
+        ),
+        sb.from('staff_directory').upsert(
+          toStaffDirectoryRow({
+            uid: data.user.id,
+            fullName: cleanName,
+            nip: cleanNip,
+            role,
+            isActive: true,
+            updatedAt: nowIso,
+          }),
+          { onConflict: 'uid' }
+        ),
+      ]);
+      if (uErr || dErr) {
+        throw new Error(formatDbError(uErr || dErr, OperationType.CREATE, `users/${data.user.id}`));
+      }
+      return { requiresEmailConfirmation: false };
+    }
+
+    return { requiresEmailConfirmation: true };
   };
 
   const loginWithGoogle = async () => {
+    const sb = requireSupabase();
     setBlockedMessage(null);
     setIdleLogoutMessage(null);
     stampLastActivity();
-    await setPersistence(auth, browserSessionPersistence);
-    const provider = new GoogleAuthProvider();
-    await signInWithPopup(auth, provider);
-    stampLastActivity();
+    const { error } = await sb.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined,
+      },
+    });
+    if (error) throw error;
   };
 
   const clearIdleLogoutMessage = () => {
@@ -436,7 +575,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = async () => {
     clearLastActivity();
     setIdleLogoutMessage(null);
-    await signOut(auth);
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
   };
 
   const logoutDueToIdle = async () => {
@@ -444,7 +585,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIdleLogoutMessage(
       'Sesi Anda telah otomatis logout karena tidak ada aktivitas pada aplikasi lebih dari 15 menit. Silakan masuk kembali.'
     );
-    await signOut(auth);
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
   };
 
   const updateOwnProfile = async (data: {
@@ -453,43 +596,72 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     phone: string;
     specialization: string;
   }) => {
-    if (!firebaseUser || !userProfile) throw new Error('Pengguna belum terautentikasi.');
+    const sb = requireSupabase();
+    if (!authUser || !userProfile) throw new Error('Pengguna belum terautentikasi.');
     const cleanName = clampString(data.fullName, 120);
     const cleanNip = clampString(data.nip, 40);
     const cleanPhone = clampString(data.phone, 30);
     const cleanSpec = clampString(data.specialization, 100);
+    const nowIso = new Date().toISOString();
 
-    try {
-      await Promise.all([
-        updateDoc(doc(db, 'users', firebaseUser.uid), {
-          fullName: cleanName,
+    const [{ error: uErr }, { error: dErr }] = await Promise.all([
+      sb
+        .from('users')
+        .update({
+          full_name: cleanName,
           nip: cleanNip,
           phone: cleanPhone,
           specialization: cleanSpec,
-          updatedAt: serverTimestamp(),
-        }),
-        updateDoc(doc(db, 'staff_directory', firebaseUser.uid), {
-          fullName: cleanName,
-          updatedAt: serverTimestamp(),
-        }),
-      ]);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `users/${firebaseUser.uid}`);
+          updated_at: nowIso,
+        })
+        .eq('uid', authUser.uid),
+      sb
+        .from('staff_directory')
+        .update({
+          full_name: cleanName,
+          nip: cleanNip,
+          updated_at: nowIso,
+        })
+        .eq('uid', authUser.uid),
+    ]);
+
+    if (uErr || dErr) {
+      throw new Error(formatDbError(uErr || dErr, OperationType.UPDATE, `users/${authUser.uid}`));
     }
   };
 
   const changeUserPassword = async (currentPassword: string, newPassword: string) => {
-    if (!firebaseUser || !firebaseUser.email) {
+    const sb = requireSupabase();
+    if (!authUser || !authUser.email) {
       throw new Error('Akun tidak terautentikasi.');
     }
-    const credential = EmailAuthProvider.credential(firebaseUser.email, currentPassword);
-    await reauthenticateWithCredential(firebaseUser, credential);
-    await updatePassword(firebaseUser, newPassword);
+
+    const verifier = createSecondarySupabaseClient();
+    const { error: verifyErr } = await verifier.auth.signInWithPassword({
+      email: authUser.email,
+      password: currentPassword,
+    });
+    if (verifyErr) {
+      const err = new Error('Kata sandi saat ini tidak sesuai.') as Error & { code?: string };
+      err.code = 'invalid_current_password';
+      throw err;
+    }
+
+    const { error: updErr } = await sb.auth.updateUser({ password: newPassword });
+    if (updErr) throw updErr;
   };
 
   const resendVerificationEmail = async () => {
-    if (!firebaseUser) throw new Error('Akun tidak terautentikasi.');
-    await sendEmailVerification(firebaseUser);
+    const sb = requireSupabase();
+    if (!authUser || !authUser.email) throw new Error('Akun tidak terautentikasi.');
+    const { error } = await sb.auth.resend({
+      type: 'signup',
+      email: authUser.email,
+      options: {
+        emailRedirectTo: typeof window !== 'undefined' ? window.location.origin : undefined,
+      },
+    });
+    if (error) throw error;
   };
 
   const adminCreateAccount = async (params: {
@@ -501,27 +673,75 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     phone?: string;
     specialization?: string;
   }) => {
+    const sb = requireSupabase();
     if (userProfile?.role !== 'Administrator') {
       throw new Error('Hanya Administrator yang dapat membuat akun baru.');
     }
 
-    const cleanEmail = clampString(params.email, 200);
+    const cleanEmail = clampString(params.email.toLowerCase(), 200);
     const cleanName = clampString(params.fullName, 120);
     const cleanNip = clampString(params.nip, 40);
     const cleanPhone = clampString(params.phone || '', 30);
     const cleanSpec = clampString(params.specialization || 'Perawat Hemodialisa', 100);
 
-    const newUid = await withSecondaryAuth(async (secAuth) => {
-      const cred = await createUserWithEmailAndPassword(secAuth, cleanEmail, params.password);
-      const uid = cred.user.uid;
-      await sendEmailVerification(cred.user).catch(() => undefined);
-      await signOut(secAuth);
-      return uid;
-    });
+    const token = await getAccessToken();
+    if (token) {
+      try {
+        const res = await fetch('/api/admin/users', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            email: cleanEmail,
+            password: params.password,
+            fullName: cleanName,
+            nip: cleanNip,
+            role: params.role,
+            phone: cleanPhone,
+            specialization: cleanSpec,
+          }),
+        });
+        if (res.status !== 503) {
+          const parsed = await parseApiJsonResponse<{
+            ok?: boolean;
+            uid?: string;
+            error?: string;
+            message?: string;
+          }>(res, 'Gagal membuat akun baru.');
+          if (parsed.ok) return;
+        }
+      } catch (apiErr) {
+        const code = (apiErr as { code?: string })?.code;
+        if (code && code !== 'SUPABASE_ADMIN_NOT_CONFIGURED' && code !== 'API_UNREACHABLE') {
+          throw apiErr;
+        }
+      }
+    }
 
-    try {
-      await Promise.all([
-        setDoc(doc(db, 'users', newUid), {
+    // Fallback: client-side in-memory secondary Supabase signUp + primary admin DB insert
+    const secondary = createSecondarySupabaseClient();
+    const { data, error: signUpErr } = await secondary.auth.signUp({
+      email: cleanEmail,
+      password: params.password,
+      options: {
+        data: {
+          full_name: cleanName,
+          nip: cleanNip,
+        },
+      },
+    });
+    if (signUpErr) throw signUpErr;
+    if (!data.user || (Array.isArray(data.user.identities) && data.user.identities.length === 0)) {
+      throw new Error('Email sudah terdaftar di Supabase Authentication.');
+    }
+
+    const newUid = data.user.id;
+    const nowIso = new Date().toISOString();
+    const [{ error: uErr }, { error: dErr }] = await Promise.all([
+      sb.from('users').upsert(
+        toUserRow({
           uid: newUid,
           email: cleanEmail,
           fullName: cleanName,
@@ -530,35 +750,45 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           isActive: true,
           phone: cleanPhone,
           specialization: cleanSpec,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
+          createdAt: nowIso,
+          updatedAt: nowIso,
         }),
-        setDoc(doc(db, 'staff_directory', newUid), {
+        { onConflict: 'uid' }
+      ),
+      sb.from('staff_directory').upsert(
+        toStaffDirectoryRow({
           uid: newUid,
           fullName: cleanName,
+          nip: cleanNip,
           role: params.role,
           isActive: true,
-          updatedAt: serverTimestamp(),
+          updatedAt: nowIso,
         }),
-      ]);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `users/${newUid}`);
+        { onConflict: 'uid' }
+      ),
+    ]);
+    if (uErr || dErr) {
+      throw new Error(formatDbError(uErr || dErr, OperationType.CREATE, `users/${newUid}`));
     }
   };
 
   const adminDeleteAccount = async (targetUid: string) => {
-    if (!firebaseUser || userProfile?.role !== 'Administrator') {
+    if (!authUser || userProfile?.role !== 'Administrator') {
       throw new Error('Hanya Administrator yang dapat menghapus akun pengguna.');
     }
-    if (targetUid === firebaseUser.uid) {
+    if (targetUid === authUser.uid) {
       throw new Error('Anda tidak dapat menghapus akun Anda sendiri yang sedang aktif.');
     }
 
-    const idToken = await firebaseUser.getIdToken();
+    const token = await getAccessToken();
+    if (!token) {
+      throw new Error('Token sesi Supabase tidak ditemukan. Silakan muat ulang halaman.');
+    }
+
     const res = await fetch(`/api/admin/users/${encodeURIComponent(targetUid)}`, {
       method: 'DELETE',
       headers: {
-        Authorization: `Bearer ${idToken}`,
+        Authorization: `Bearer ${token}`,
       },
     });
 
@@ -592,16 +822,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       specialization?: string;
     }[]
   ) => {
-    if (!firebaseUser || userProfile?.role !== 'Administrator') {
+    if (!authUser || userProfile?.role !== 'Administrator') {
       throw new Error('Hanya Administrator yang dapat membuat akun massal.');
     }
 
-    const idToken = await firebaseUser.getIdToken();
+    const token = await getAccessToken();
+    if (!token) {
+      throw new Error('Token sesi Supabase tidak ditemukan. Silakan muat ulang halaman.');
+    }
+
     const res = await fetch('/api/admin/users/bulk', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${idToken}`,
+        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({ accounts }),
     });
@@ -620,7 +854,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }[];
       error?: string;
       message?: string;
-    }>(res, 'Gagal membuat banyak akun staf.');
+    }>(res, `Gagal membuat banyak akun staf pada Supabase (${SUPABASE_PROJECT_ID}).`);
 
     return {
       ok: Boolean(data.ok),
@@ -630,16 +864,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   };
 
+  // Trigger reconnect silently if offline->online occurs while mounted
+  useEffect(() => {
+    if (authUser && isSupabaseConfigured) {
+      void reconnectSupabase({ force: false, resubscribe: false, reason: 'focus' });
+    }
+  }, [authUser]);
+
   return (
     <AuthContext.Provider
       value={{
-        firebaseUser,
+        authUser,
         userProfile,
         authReady,
         profileLoading,
+        supabaseConfigured: isSupabaseConfigured,
         blockedMessage,
         idleLogoutMessage,
         clearIdleLogoutMessage,
+        getAccessToken,
         loginWithEmail,
         resetPassword,
         registerWithEmail,

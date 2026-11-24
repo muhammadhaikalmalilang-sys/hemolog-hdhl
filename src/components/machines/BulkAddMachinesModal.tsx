@@ -1,5 +1,4 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { collection, doc, serverTimestamp, writeBatch } from 'firebase/firestore';
 import {
   Activity,
   AlertCircle,
@@ -11,7 +10,8 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
+import { handleDbError, OperationType } from '../../lib/supabase';
+import { generateRecordId, insertRows, toMachineRow } from '../../lib/db';
 import { clampString, exportToCsv, getTodayDateStr } from '../../lib/formatters';
 import type { Machine, MachineStatus } from '../../types';
 
@@ -419,17 +419,12 @@ export function BulkAddMachinesModal({
 
     setSaving(true);
     try {
-      const BATCH_LIMIT = 400;
-      const machinesRef = collection(db, 'machines');
       const cleanDate = clampString(defaultMaintenanceDate, 20);
-
-      for (let i = 0; i < validEntries.length; i += BATCH_LIMIT) {
-        const chunk = validEntries.slice(i, i + BATCH_LIMIT);
-        const batch = writeBatch(db);
-
-        chunk.forEach(({ row }) => {
-          const machineRef = doc(machinesRef);
-          batch.set(machineRef, {
+      await insertRows(
+        'machines',
+        validEntries.map(({ row }) =>
+          toMachineRow({
+            id: generateRecordId(),
             machineNumber: clampString(row.machineNumber, 40),
             brand: clampString(row.brand || defaultBrand, 80),
             serialNumber: '',
@@ -437,18 +432,14 @@ export function BulkAddMachinesModal({
             status: row.status,
             lastMaintenanceDate: cleanDate,
             notes: '',
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-        });
-
-        await batch.commit();
-      }
+          })
+        )
+      );
 
       onSuccess(validEntries.length);
     } catch (err) {
       setSubmitError('Gagal menyimpan data mesin massal. Periksa koneksi atau hak akses admin.');
-      handleFirestoreError(err, OperationType.CREATE, 'machines');
+      handleDbError(err, OperationType.CREATE, 'machines');
     } finally {
       setSaving(false);
     }

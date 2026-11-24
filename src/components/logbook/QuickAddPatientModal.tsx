@@ -1,12 +1,11 @@
 import React, { useState } from 'react';
-import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { AlertCircle, UserPlus, X } from 'lucide-react';
 import {
-  db,
-  formatFirestoreError,
-  getUserFriendlyFirestoreError,
+  formatDbError,
+  getUserFriendlyDbError,
   OperationType,
-} from '../../lib/firebase';
+} from '../../lib/supabase';
+import { insertRow, toPatientRow } from '../../lib/db';
 import { clampString } from '../../lib/formatters';
 import type {
   Patient,
@@ -90,7 +89,7 @@ export function QuickAddPatientModal({
 
     setSaving(true);
     try {
-      const payload = {
+      const payload = toPatientRow({
         mrn: cleanMrn,
         fullName: cleanName,
         gender,
@@ -101,14 +100,12 @@ export function QuickAddPatientModal({
         dpjpName: '-',
         routineSchedule: cleanSchedule || 'Non-Reguler / Insidental',
         status,
-        patientType: 'Non-Reguler' as const,
+        patientType: 'Non-Reguler',
         notes: clampString(notes, 500),
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      };
-      const docRef = await addDoc(collection(db, 'patients'), payload);
+      });
+      const inserted = await insertRow('patients', payload);
       onCreated({
-        id: docRef.id,
+        id: String(inserted.id),
         mrn: cleanMrn,
         fullName: cleanName,
         routineSchedule: cleanSchedule || 'Non-Reguler / Insidental',
@@ -117,9 +114,9 @@ export function QuickAddPatientModal({
       });
       onClose();
     } catch (err) {
-      formatFirestoreError(err, OperationType.CREATE, 'patients');
+      formatDbError(err, OperationType.CREATE, 'patients');
       setErrorMsg(
-        getUserFriendlyFirestoreError(err, 'Gagal menyimpan pasien baru ke master data.')
+        getUserFriendlyDbError(err, 'Gagal menyimpan pasien baru ke master data.')
       );
     } finally {
       setSaving(false);

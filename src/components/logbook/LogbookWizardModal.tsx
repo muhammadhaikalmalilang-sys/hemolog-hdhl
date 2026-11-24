@@ -1,15 +1,5 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-  collection,
-  deleteDoc,
-  doc,
-  getDoc,
-  getDocFromServer,
-  runTransaction,
-  serverTimestamp,
-  setDoc,
-} from 'firebase/firestore';
-import {
   Activity,
   AlertCircle,
   AlertTriangle,
@@ -39,13 +29,28 @@ import {
   X,
 } from 'lucide-react';
 import {
-  ACTIVE_FIREBASE_DATABASE_ID,
-  auth,
-  db,
-  formatFirestoreError,
-  isTransientFirestoreError,
+  formatDbError,
+  getUserFriendlyDbError,
+  isDuplicateKeyError,
+  isPermissionDeniedError,
+  isTransientDbError,
   OperationType,
-} from '../../lib/firebase';
+  SUPABASE_PROJECT_ID,
+} from '../../lib/supabase';
+import {
+  deleteRowByColumn,
+  generateRecordId,
+  getRowByColumn,
+  insertRow,
+  mapLogbookLockRow,
+  mapLogbookRow,
+  mapMachineLockRow,
+  toLogbookLockRow,
+  toLogbookRow,
+  toMachineLockRow,
+  updateRowByColumn,
+  upsertRow,
+} from '../../lib/db';
 import {
   clampString,
   extractShiftFromSchedule,
@@ -2889,7 +2894,6 @@ export function LogbookWizardModal({
       targetVerifierId: clampString(selectedVerifier?.uid || '', 128),
       targetVerifierName: clampString(selectedVerifier?.fullName || safeTargetVerifierRole, 120),
       wizardDetails,
-      updatedAt: serverTimestamp(),
     };
 
     setSaving(true);
@@ -2899,19 +2903,13 @@ export function LogbookWizardModal({
     let txOp: OperationType = currentEntry ? OperationType.UPDATE : OperationType.CREATE;
     let txPath = currentEntry ? `logbook/${currentEntry.id}` : 'logbook';
     const queuedTxOps: string[] = [];
-    let txDiag: Record<string, unknown> = {};
-    let lastCreatePayload: Record<string, unknown> | null = null;
-    let lastUpdatePayload: Record<string, unknown> | null = null;
-    let lastExistingLogData: Record<string, unknown> | null = null;
-    let createdDraftLogRef: ReturnType<typeof doc> | null = null;
-    let createdPatientLockRef: ReturnType<typeof doc> | null = null;
-    let createdMachineLockRef: ReturnType<typeof doc> | null = null;
+    let createdDraftLogId: string | null = null;
+    let createdPatientLockId: string | null = null;
+    let createdMachineLockId: string | null = null;
     const isAdminRole = userProfile.role === 'Administrator';
     const isVerifierRole =
       userProfile.role === 'Kepala Ruang' ||
       userProfile.role === 'PJ Shift';
-    const isFirestoreTimestamp = (val: unknown): boolean =>
-      Boolean(val && typeof (val as { toMillis?: unknown }).toMillis === 'function');
     let canVerifierEditCurrent = false;
     try {
       const monthKey = safeDate.slice(0, 7);
@@ -2922,27 +2920,21 @@ export function LogbookWizardModal({
       const safeLockPatientName = clampString(pat.fullName, 120) || 'Pasien HD';
       const safeLockNurseName = clampString(userProfile.fullName, 120) || 'Perawat HD';
       const existingLogbookIds = new Set(logbooks.map((lb) => lb.id));
-      const targetLogRef = currentEntry
-        ? doc(db, 'logbook', currentEntry.id)
-        : doc(collection(db, 'logbook'));
-      const savedDocId = targetLogRef.id;
-      const newMachineLockRef = doc(db, 'machine_locks', newMachineLockId);
-      const oldMachineLockRef =
-        oldMachineLockId && oldMachineLockId !== newMachineLockId
-          ? doc(db, 'machine_locks', oldMachineLockId)
-          : null;
+      const savedDocId = currentEntry ? currentEntry.id : generateRecordId();
+      const oldMachineLockIdToDelete =
+        oldMachineLockId && oldMachineLockId !== newMachineLockId ? oldMachineLockId : null;
 
-      let newPatientLockRef: ReturnType<typeof doc> | null = null;
-      let oldPatientLockRef: ReturnType<typeof doc> | null = null;
+      let newPatientLockId: string | null = null;
+      let oldPatientLockIdToDelete: string | null = null;
       if (currentEntry) {
         const oldLockId = `${currentEntry.date}_${currentEntry.patientId}`;
         const newLockId = `${safeDate}_${pat.id}`;
         if (oldLockId !== newLockId) {
-          newPatientLockRef = doc(db, 'logbook_locks', newLockId);
-          oldPatientLockRef = doc(db, 'logbook_locks', oldLockId);
+          newPatientLockId = newLockId;
+          oldPatientLockIdToDelete = oldLockId;
         }
       } else {
-        newPatientLockRef = doc(db, 'logbook_locks', `${safeDate}_${pat.id}`);
+        newPatientLockId = `${safeDate}_${pat.id}`;
       }
 
       const safeMachineNumber = clampString(mach.machineNumber, 40) || 'HD';
@@ -2957,8 +2949,8 @@ export function LogbookWizardModal({
                 ml.machineNumber === safeMachineNumber &&
                 ml.date === safeDate &&
                 ml.shift === safeShift &&
-                isFirestoreTimestamp(ml.createdAt) &&
-                isFirestoreTimestamp(ml.updatedAt) &&
+                Boolean(ml.createdAt) &&
+                Boolean(ml.updatedAt) &&
                 (isAdminRole ||
                   isVerifierRole ||
                   ml.nurseId === userProfile.uid)
@@ -2967,15 +2959,15 @@ export function LogbookWizardModal({
       const skipRedundantMachineLockSync = Boolean(localMatchingMachineLock);
 
       // Preflight conflict checks in parallel before mutating logbook
-      const [prePatientLockSnap, preMachineLockSnap] = await Promise.all([
-        newPatientLockRef ? getDoc(newPatientLockRef) : Promise.resolve(null),
-        skipRedundantMachineLockSync ? Promise.resolve(null) : getDoc(newMachineLockRef),
+      const [prePatientLockRow, preMachineLockRow] = await Promise.all([
+        newPatientLockId ? getRowByColumn('logbook_locks', 'id', newPatientLockId) : Promise.resolve(null),
+        skipRedundantMachineLockSync ? Promise.resolve(null) : getRowByColumn('machine_locks', 'id', newMachineLockId),
       ]);
 
-      if (newPatientLockRef && prePatientLockSnap?.exists()) {
+      if (newPatientLockId && prePatientLockRow) {
         txOp = OperationType.GET;
-        txPath = newPatientLockRef.path;
-        const plData = prePatientLockSnap.data() as Partial<LogbookLock>;
+        txPath = `logbook_locks/${newPatientLockId}`;
+        const plData = mapLogbookLockRow(prePatientLockRow);
         const sameEntry = Boolean(currentEntry && plData.logbookId === currentEntry.id);
         const canCheckOrphan = Boolean(
           isAdminRole || plData.nurseId === userProfile.uid || (currentEntry && isVerifierRole)
@@ -2987,14 +2979,14 @@ export function LogbookWizardModal({
           throw new Error(`PATIENT_LOCKED:${plData.nurseName || 'staf lain'}`);
         }
         if (!sameEntry && knownOrphan) {
-          await deleteDoc(newPatientLockRef).catch(() => undefined);
+          await deleteRowByColumn('logbook_locks', 'id', newPatientLockId).catch(() => undefined);
         }
       }
 
-      if (!skipRedundantMachineLockSync && preMachineLockSnap?.exists()) {
+      if (!skipRedundantMachineLockSync && preMachineLockRow) {
         txOp = OperationType.GET;
-        txPath = newMachineLockRef.path;
-        const lockData = preMachineLockSnap.data() as MachineLock;
+        txPath = `machine_locks/${newMachineLockId}`;
+        const lockData = mapMachineLockRow(preMachineLockRow);
         const ownedByCurrent = lockData.nurseId === userProfile.uid;
         const matchesThisSlot =
           (currentEntry && lockData.logbookId === currentEntry.id) ||
@@ -3024,300 +3016,212 @@ export function LogbookWizardModal({
       // Phase 1: Write logbook entry (new entries start as Draft so rollback delete is always permitted)
       const initialCreateStatus = currentEntry ? submitStatus : 'Draft';
       if (currentEntry) {
-        await runTransaction(db, async (tx) => {
-          txOp = OperationType.GET;
-          txPath = targetLogRef.path;
-          const existingLogSnap = await tx.get(targetLogRef);
-          if (!existingLogSnap.exists()) {
-            throw new Error('LOGBOOK_MISSING');
-          }
-          const currentLogData = existingLogSnap.data() as Partial<LogbookEntry>;
-          lastExistingLogData = currentLogData as Record<string, unknown>;
-          const currentStatus = currentLogData.verificationStatus;
-          canVerifierEditCurrent =
-            isVerifierRole &&
-            (currentStatus === 'Pending' || currentStatus === 'Revision');
+        txOp = OperationType.GET;
+        txPath = `logbook/${savedDocId}`;
+        const existingLogRow = await getRowByColumn('logbook', 'id', savedDocId);
+        if (!existingLogRow) {
+          throw new Error('LOGBOOK_MISSING');
+        }
+        const currentLogData = mapLogbookRow(existingLogRow);
+        const currentStatus = currentLogData.verificationStatus;
+        canVerifierEditCurrent =
+          isVerifierRole &&
+          currentLogData.nurseId !== userProfile.uid &&
+          (currentStatus === 'Pending' || currentStatus === 'Revision');
 
-          if (
-            !isAdminRole &&
-            !canVerifierEditCurrent &&
-            currentLogData.nurseId !== userProfile.uid
-          ) {
-            throw new Error('LOGBOOK_NOT_OWNER');
-          }
-          if (
-            !isAdminRole &&
-            currentStatus !== 'Draft' &&
-            currentStatus !== 'Revision' &&
-            !canVerifierEditCurrent
-          ) {
-            throw new Error(`LOGBOOK_LOCKED:${currentStatus || 'Pending'}`);
-          }
+        if (
+          !isAdminRole &&
+          !canVerifierEditCurrent &&
+          currentLogData.nurseId !== userProfile.uid
+        ) {
+          throw new Error('LOGBOOK_NOT_OWNER');
+        }
+        if (
+          !isAdminRole &&
+          currentStatus !== 'Draft' &&
+          currentStatus !== 'Revision' &&
+          !canVerifierEditCurrent
+        ) {
+          throw new Error(`LOGBOOK_LOCKED:${currentStatus || 'Pending'}`);
+        }
 
-          if (typeof currentLogData.nurseId === 'string' && currentLogData.nurseId) {
-            entryOwnerId = currentLogData.nurseId;
-          }
-          if (typeof currentLogData.nurseName === 'string' && currentLogData.nurseName.trim()) {
-            entryOwnerName = clampString(currentLogData.nurseName, 120) || safeLockNurseName;
-          }
+        if (typeof currentLogData.nurseId === 'string' && currentLogData.nurseId) {
+          entryOwnerId = currentLogData.nurseId;
+        }
+        if (typeof currentLogData.nurseName === 'string' && currentLogData.nurseName.trim()) {
+          entryOwnerName = clampString(currentLogData.nurseName, 120) || safeLockNurseName;
+        }
 
-          txOp = OperationType.UPDATE;
-          txPath = targetLogRef.path;
-          const updatePayload: Record<string, unknown> = { ...payload };
-          if (!isFirestoreTimestamp(currentLogData.createdAt)) {
-            updatePayload.createdAt = serverTimestamp();
-          }
-          if (typeof currentLogData.nurseNip !== 'string' || currentLogData.nurseNip.length > 40) {
-            updatePayload.nurseNip = clampString(
-              typeof currentLogData.nurseNip === 'string'
-                ? currentLogData.nurseNip
-                : currentLogData.nurseId === userProfile.uid
-                ? userProfile.nip || ''
-                : '',
-              40
-            );
-          }
-          if (
-            typeof currentLogData.nurseName !== 'string' ||
-            currentLogData.nurseName.trim().length === 0 ||
-            currentLogData.nurseName.length > 120
-          ) {
-            updatePayload.nurseName = entryOwnerName;
-          }
-          lastUpdatePayload = updatePayload;
-          tx.update(targetLogRef, updatePayload);
-        });
+        txOp = OperationType.UPDATE;
+        txPath = `logbook/${savedDocId}`;
+        const updateData: Partial<LogbookEntry> = { ...payload };
+        if (typeof currentLogData.nurseNip !== 'string' || currentLogData.nurseNip.length > 40) {
+          updateData.nurseNip = clampString(
+            typeof currentLogData.nurseNip === 'string'
+              ? currentLogData.nurseNip
+              : currentLogData.nurseId === userProfile.uid
+              ? userProfile.nip || ''
+              : '',
+            40
+          );
+        }
+        if (
+          typeof currentLogData.nurseName !== 'string' ||
+          currentLogData.nurseName.trim().length === 0 ||
+          currentLogData.nurseName.length > 120
+        ) {
+          updateData.nurseName = entryOwnerName;
+        }
+        await updateRowByColumn('logbook', 'id', savedDocId, toLogbookRow(updateData));
       } else {
         txOp = OperationType.CREATE;
-        txPath = targetLogRef.path;
-        const createDocData: Record<string, unknown> = {
-          ...payload,
-          verificationStatus: initialCreateStatus,
-          nurseId: userProfile.uid,
-          nurseName: safeLockNurseName,
-          nurseNip: clampString(userProfile.nip || '', 40),
-          createdAt: serverTimestamp(),
-        };
-        lastCreatePayload = createDocData;
-        await setDoc(targetLogRef, createDocData);
+        txPath = `logbook/${savedDocId}`;
+        await insertRow(
+          'logbook',
+          toLogbookRow({
+            id: savedDocId,
+            ...payload,
+            verificationStatus: initialCreateStatus,
+            nurseId: userProfile.uid,
+            nurseName: safeLockNurseName,
+            nurseNip: clampString(userProfile.nip || '', 40),
+          })
+        );
+        createdDraftLogId = savedDocId;
       }
-      queuedTxOps.push(`${currentEntry ? 'update' : 'create'}:${targetLogRef.path}`);
-      if (!currentEntry) {
-        createdDraftLogRef = targetLogRef;
-      }
+      queuedTxOps.push(`${currentEntry ? 'update' : 'create'}:logbook/${savedDocId}`);
 
       // Phase 2 & Phase 3: Claim / update patient daily lock and machine slot lock in parallel
       const runPatientLockPhase = async () => {
-        if (!newPatientLockRef) return;
-        let didCreatePatientLock = false;
-        let patientLockOpMode: 'create' | 'update' = 'create';
-        await runTransaction(db, async (tx) => {
-          txOp = OperationType.GET;
-          txPath = newPatientLockRef!.path;
-          const newPatientLockSnap = await tx.get(newPatientLockRef!);
-          if (newPatientLockSnap.exists()) {
-            const plData = newPatientLockSnap.data() as Partial<LogbookLock>;
-            const sameEntry = Boolean(
-              (currentEntry && plData.logbookId === currentEntry.id) ||
-                plData.logbookId === targetLogRef.id
-            );
-            const knownOrphan = Boolean(
-              (isAdminRole || plData.nurseId === userProfile.uid || canVerifierEditCurrent) &&
-                plData.logbookId &&
-                !existingLogbookIds.has(plData.logbookId)
-            );
-            if (!sameEntry && !knownOrphan) {
-              throw new Error(`PATIENT_LOCKED:${plData.nurseName || 'staf lain'}`);
-            }
-          }
+        if (!newPatientLockId) return;
+        txOp = OperationType.GET;
+        txPath = `logbook_locks/${newPatientLockId}`;
+        const existingPLRow = await getRowByColumn('logbook_locks', 'id', newPatientLockId);
 
-          const existingPL = newPatientLockSnap.exists()
-            ? (newPatientLockSnap.data() as Partial<LogbookLock>)
-            : null;
-          patientLockOpMode = existingPL ? 'update' : 'create';
-          txOp = existingPL ? OperationType.UPDATE : OperationType.CREATE;
-          txPath = newPatientLockRef!.path;
-          const keepExistingCreatedAt = Boolean(
-            existingPL &&
-              existingPL.logbookId === targetLogRef.id &&
-              existingPL.nurseId === entryOwnerId &&
-              isFirestoreTimestamp(existingPL.createdAt)
+        let shouldDeleteOrphanFirst = false;
+        if (existingPLRow) {
+          const plData = mapLogbookLockRow(existingPLRow);
+          const sameEntry = Boolean(
+            (currentEntry && plData.logbookId === currentEntry.id) ||
+              plData.logbookId === savedDocId
           );
-          const patientLockFields = {
-            id: `${safeDate}_${pat.id}`,
-            date: safeDate,
-            monthKey,
-            patientId: pat.id,
-            patientName: safeLockPatientName,
-            nurseId: entryOwnerId,
-            nurseName: entryOwnerName,
-            logbookId: targetLogRef.id,
-            updatedAt: serverTimestamp(),
-          };
-          const allowedPatientLockKeys = new Set([
-            'id',
-            'date',
-            'monthKey',
-            'patientId',
-            'patientName',
-            'nurseId',
-            'nurseName',
-            'logbookId',
-            'createdAt',
-            'updatedAt',
-          ]);
-          const hasCleanPatientLockKeys = Boolean(
-            existingPL && Object.keys(existingPL).every((k) => allowedPatientLockKeys.has(k))
+          const knownOrphan = Boolean(
+            (isAdminRole || plData.nurseId === userProfile.uid || canVerifierEditCurrent) &&
+              plData.logbookId &&
+              !existingLogbookIds.has(plData.logbookId)
           );
-          didCreatePatientLock = !existingPL;
-          if (keepExistingCreatedAt && hasCleanPatientLockKeys) {
-            tx.update(newPatientLockRef!, patientLockFields);
-          } else {
-            tx.set(newPatientLockRef!, {
-              ...patientLockFields,
-              createdAt:
-                keepExistingCreatedAt && existingPL
-                  ? existingPL.createdAt
-                  : serverTimestamp(),
-            });
+          if (!sameEntry && !knownOrphan) {
+            throw new Error(`PATIENT_LOCKED:${plData.nurseName || 'staf lain'}`);
           }
-        });
-        queuedTxOps.push(`${patientLockOpMode}:${newPatientLockRef.path}`);
-        if (didCreatePatientLock) {
-          createdPatientLockRef = newPatientLockRef;
+          shouldDeleteOrphanFirst =
+            knownOrphan &&
+            plData.nurseId !== entryOwnerId &&
+            !isAdminRole &&
+            !isVerifierRole;
         }
+
+        const patientLockRow = toLogbookLockRow({
+          id: newPatientLockId,
+          date: safeDate,
+          monthKey,
+          patientId: pat.id,
+          patientName: safeLockPatientName,
+          nurseId: entryOwnerId,
+          nurseName: entryOwnerName,
+          logbookId: savedDocId,
+        });
+
+        if (shouldDeleteOrphanFirst) {
+          await deleteRowByColumn('logbook_locks', 'id', newPatientLockId);
+        }
+
+        const patientLockOpMode: 'create' | 'update' =
+          existingPLRow && !shouldDeleteOrphanFirst ? 'update' : 'create';
+        txOp = patientLockOpMode === 'update' ? OperationType.UPDATE : OperationType.CREATE;
+        txPath = `logbook_locks/${newPatientLockId}`;
+
+        if (patientLockOpMode === 'update') {
+          await upsertRow('logbook_locks', patientLockRow, 'id');
+        } else {
+          try {
+            await insertRow('logbook_locks', patientLockRow);
+            createdPatientLockId = newPatientLockId;
+          } catch (insertErr) {
+            if (isDuplicateKeyError(insertErr)) {
+              const raced = await getRowByColumn('logbook_locks', 'id', newPatientLockId).catch(() => null);
+              const lockerName =
+                typeof raced?.nurse_name === 'string' && raced.nurse_name.trim()
+                  ? raced.nurse_name
+                  : 'staf lain';
+              throw new Error(`PATIENT_LOCKED:${lockerName}`);
+            }
+            throw insertErr;
+          }
+        }
+        queuedTxOps.push(`${patientLockOpMode}:logbook_locks/${newPatientLockId}`);
       };
 
       const runMachineLockPhase = async () => {
         if (skipRedundantMachineLockSync) return;
-        let didCreateMachineLock = false;
         let machineLockOpMode: 'create' | 'update' | 'skip' = 'skip';
-        await runTransaction(db, async (tx) => {
-          txOp = OperationType.GET;
-          txPath = newMachineLockRef.path;
-          const newMachineLockSnap = await tx.get(newMachineLockRef);
+        txOp = OperationType.GET;
+        txPath = `machine_locks/${newMachineLockId}`;
+        const existingMLRow = await getRowByColumn('machine_locks', 'id', newMachineLockId);
 
-          if (newMachineLockSnap.exists()) {
-            const existingML = newMachineLockSnap.data() as Partial<MachineLock>;
-            const ownedByCurrent = existingML.nurseId === userProfile.uid;
-            const matchesThisSlot =
-              (currentEntry && existingML.logbookId === currentEntry.id) ||
-              existingML.logbookId === targetLogRef.id ||
-              (!existingML.logbookId && existingML.patientId === pat.id);
-            const knownOrphan = Boolean(
-              (isAdminRole || ownedByCurrent || canVerifierEditCurrent) &&
-                existingML.logbookId &&
-                !existingLogbookIds.has(existingML.logbookId)
-            );
-            if (
-              !(ownedByCurrent && matchesThisSlot) &&
-              !(
-                (isAdminRole || canVerifierEditCurrent) &&
-                currentEntry &&
-                existingML.logbookId === currentEntry.id
-              ) &&
-              !knownOrphan
-            ) {
-              throw new Error(`MACHINE_LOCKED:${existingML.nurseName || 'staf lain'}`);
-            }
+        if (existingMLRow) {
+          const existingML = mapMachineLockRow(existingMLRow);
+          const ownedByCurrent = existingML.nurseId === userProfile.uid;
+          const matchesThisSlot =
+            (currentEntry && existingML.logbookId === currentEntry.id) ||
+            existingML.logbookId === savedDocId ||
+            (!existingML.logbookId && existingML.patientId === pat.id);
+          const knownOrphan = Boolean(
+            (isAdminRole || ownedByCurrent || canVerifierEditCurrent) &&
+              existingML.logbookId &&
+              !existingLogbookIds.has(existingML.logbookId)
+          );
+          if (
+            !(ownedByCurrent && matchesThisSlot) &&
+            !(
+              (isAdminRole || canVerifierEditCurrent) &&
+              currentEntry &&
+              existingML.logbookId === currentEntry.id
+            ) &&
+            !knownOrphan
+          ) {
+            throw new Error(`MACHINE_LOCKED:${existingML.nurseName || 'staf lain'}`);
+          }
 
-            const sameOwner = existingML.nurseId === entryOwnerId;
-            const isOrphanReclaim =
-              Boolean(existingML.logbookId) &&
-              !existingLogbookIds.has(existingML.logbookId as string);
-            const preserveOtherOwner =
-              !sameOwner && (isAdminRole || canVerifierEditCurrent) && !isOrphanReclaim;
-            const targetLockNurseId =
-              preserveOtherOwner && existingML.nurseId ? existingML.nurseId : entryOwnerId;
-            const targetLockNurseName =
-              preserveOtherOwner && existingML.nurseName
-                ? clampString(existingML.nurseName, 120) || entryOwnerName
-                : entryOwnerName;
-            const hasValidTimestamps =
-              isFirestoreTimestamp(existingML.createdAt) &&
-              isFirestoreTimestamp(existingML.updatedAt);
+          const sameOwner = existingML.nurseId === entryOwnerId;
+          const isOrphanReclaim =
+            Boolean(existingML.logbookId) &&
+            !existingLogbookIds.has(existingML.logbookId);
+          const preserveOtherOwner =
+            !sameOwner && (isAdminRole || canVerifierEditCurrent) && !isOrphanReclaim;
+          const targetLockNurseId =
+            preserveOtherOwner && existingML.nurseId ? existingML.nurseId : entryOwnerId;
+          const targetLockNurseName =
+            preserveOtherOwner && existingML.nurseName
+              ? clampString(existingML.nurseName, 120) || entryOwnerName
+              : entryOwnerName;
 
-            const lockAlreadyMatches =
-              hasValidTimestamps &&
-              existingML.id === newMachineLockId &&
-              existingML.date === safeDate &&
-              existingML.monthKey === monthKey &&
-              existingML.shift === safeShift &&
-              existingML.machineId === mach.id &&
-              existingML.machineNumber === safeMachineNumber &&
-              existingML.patientId === pat.id &&
-              existingML.patientName === safeLockPatientName &&
-              existingML.nurseId === targetLockNurseId &&
-              existingML.nurseName === targetLockNurseName &&
-              existingML.logbookId === targetLogRef.id;
+          const lockAlreadyMatches =
+            Boolean(existingML.createdAt) &&
+            Boolean(existingML.updatedAt) &&
+            existingML.id === newMachineLockId &&
+            existingML.date === safeDate &&
+            existingML.monthKey === monthKey &&
+            existingML.shift === safeShift &&
+            existingML.machineId === mach.id &&
+            existingML.machineNumber === safeMachineNumber &&
+            existingML.patientId === pat.id &&
+            existingML.patientName === safeLockPatientName &&
+            existingML.nurseId === targetLockNurseId &&
+            existingML.nurseName === targetLockNurseName &&
+            existingML.logbookId === savedDocId;
 
-            if (!lockAlreadyMatches) {
-              machineLockOpMode = 'update';
-              txOp = OperationType.UPDATE;
-              txPath = newMachineLockRef.path;
-              const machineLockFields = {
-                id: newMachineLockId,
-                date: safeDate,
-                monthKey,
-                shift: safeShift,
-                machineId: mach.id,
-                machineNumber: safeMachineNumber,
-                patientId: pat.id,
-                patientName: safeLockPatientName,
-                nurseId: targetLockNurseId,
-                nurseName: targetLockNurseName,
-                logbookId: targetLogRef.id,
-                updatedAt: serverTimestamp(),
-              };
-              const keepMachineCreatedAt =
-                (sameOwner || preserveOtherOwner) &&
-                isFirestoreTimestamp(existingML.createdAt);
-              const allowedMachineLockKeys = new Set([
-                'id',
-                'date',
-                'monthKey',
-                'shift',
-                'machineId',
-                'machineNumber',
-                'patientId',
-                'patientName',
-                'nurseId',
-                'nurseName',
-                'logbookId',
-                'createdAt',
-                'updatedAt',
-              ]);
-              const hasCleanMachineLockKeys = Object.keys(existingML).every((k) =>
-                allowedMachineLockKeys.has(k)
-              );
-              const useUpdateOnML = keepMachineCreatedAt && hasCleanMachineLockKeys;
-              txDiag = {
-                mlExists: true,
-                mlSameNurse: sameOwner,
-                mlHasLogbookId: Boolean(existingML.logbookId),
-                mlHasValidCreatedAt: isFirestoreTimestamp(existingML.createdAt),
-                mlHasCleanKeys: hasCleanMachineLockKeys,
-                mlTxMode: useUpdateOnML ? 'update' : 'set',
-                entryKeysCount: Object.keys(payload).length + 4,
-              };
-              didCreateMachineLock = false;
-              if (useUpdateOnML) {
-                tx.update(newMachineLockRef, machineLockFields);
-              } else {
-                tx.set(newMachineLockRef, {
-                  ...machineLockFields,
-                  createdAt: keepMachineCreatedAt ? existingML.createdAt : serverTimestamp(),
-                });
-              }
-            } else {
-              machineLockOpMode = 'skip';
-            }
-          } else {
-            machineLockOpMode = 'create';
-            txOp = OperationType.CREATE;
-            txPath = newMachineLockRef.path;
-            didCreateMachineLock = true;
-            tx.set(newMachineLockRef, {
+          if (!lockAlreadyMatches) {
+            const machineLockRow = toMachineLockRow({
               id: newMachineLockId,
               date: safeDate,
               monthKey,
@@ -3326,49 +3230,110 @@ export function LogbookWizardModal({
               machineNumber: safeMachineNumber,
               patientId: pat.id,
               patientName: safeLockPatientName,
-              nurseId: entryOwnerId,
-              nurseName: entryOwnerName,
-              logbookId: targetLogRef.id,
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
+              nurseId: targetLockNurseId,
+              nurseName: targetLockNurseName,
+              logbookId: savedDocId,
             });
+            const deleteOrphanFirst =
+              isOrphanReclaim &&
+              existingML.nurseId !== targetLockNurseId &&
+              !isAdminRole &&
+              !isVerifierRole;
+            if (deleteOrphanFirst) {
+              await deleteRowByColumn('machine_locks', 'id', newMachineLockId);
+              machineLockOpMode = 'create';
+              txOp = OperationType.CREATE;
+              txPath = `machine_locks/${newMachineLockId}`;
+              try {
+                await insertRow('machine_locks', machineLockRow);
+                createdMachineLockId = newMachineLockId;
+              } catch (insertErr) {
+                if (isDuplicateKeyError(insertErr)) {
+                  const raced = await getRowByColumn('machine_locks', 'id', newMachineLockId).catch(() => null);
+                  const lockerName =
+                    typeof raced?.nurse_name === 'string' && raced.nurse_name.trim()
+                      ? raced.nurse_name
+                      : 'staf lain';
+                  throw new Error(`MACHINE_LOCKED:${lockerName}`);
+                }
+                throw insertErr;
+              }
+            } else {
+              machineLockOpMode = 'update';
+              txOp = OperationType.UPDATE;
+              txPath = `machine_locks/${newMachineLockId}`;
+              await upsertRow('machine_locks', machineLockRow, 'id');
+            }
+          } else {
+            machineLockOpMode = 'skip';
           }
-        });
-        if (machineLockOpMode !== 'skip') {
-          queuedTxOps.push(`${machineLockOpMode}:${newMachineLockRef.path}`);
+        } else {
+          machineLockOpMode = 'create';
+          txOp = OperationType.CREATE;
+          txPath = `machine_locks/${newMachineLockId}`;
+          try {
+            await insertRow(
+              'machine_locks',
+              toMachineLockRow({
+                id: newMachineLockId,
+                date: safeDate,
+                monthKey,
+                shift: safeShift,
+                machineId: mach.id,
+                machineNumber: safeMachineNumber,
+                patientId: pat.id,
+                patientName: safeLockPatientName,
+                nurseId: entryOwnerId,
+                nurseName: entryOwnerName,
+                logbookId: savedDocId,
+              })
+            );
+            createdMachineLockId = newMachineLockId;
+          } catch (insertErr) {
+            if (isDuplicateKeyError(insertErr)) {
+              const raced = await getRowByColumn('machine_locks', 'id', newMachineLockId).catch(() => null);
+              const lockerName =
+                typeof raced?.nurse_name === 'string' && raced.nurse_name.trim()
+                  ? raced.nurse_name
+                  : 'staf lain';
+              throw new Error(`MACHINE_LOCKED:${lockerName}`);
+            }
+            throw insertErr;
+          }
         }
-        if (didCreateMachineLock) {
-          createdMachineLockRef = newMachineLockRef;
+
+        if (machineLockOpMode !== 'skip') {
+          queuedTxOps.push(`${machineLockOpMode}:machine_locks/${newMachineLockId}`);
         }
       };
 
       await Promise.all([runPatientLockPhase(), runMachineLockPhase()]);
 
-      if (oldPatientLockRef || oldMachineLockRef) {
+      if (oldPatientLockIdToDelete || oldMachineLockIdToDelete) {
         await Promise.all([
           (async () => {
-            if (!oldPatientLockRef) return;
-            const oldPatientLockSnap = await getDoc(oldPatientLockRef).catch(() => null);
-            if (oldPatientLockSnap?.exists()) {
-              const oldPL = oldPatientLockSnap.data() as Partial<LogbookLock>;
+            if (!oldPatientLockIdToDelete) return;
+            const oldPatientLockRow = await getRowByColumn('logbook_locks', 'id', oldPatientLockIdToDelete).catch(() => null);
+            if (oldPatientLockRow) {
+              const oldPL = mapLogbookLockRow(oldPatientLockRow);
               if (isAdminRole || canVerifierEditCurrent || oldPL.nurseId === userProfile.uid) {
                 txOp = OperationType.DELETE;
-                txPath = oldPatientLockRef.path;
+                txPath = `logbook_locks/${oldPatientLockIdToDelete}`;
                 queuedTxOps.push(`delete:${txPath}`);
-                await deleteDoc(oldPatientLockRef);
+                await deleteRowByColumn('logbook_locks', 'id', oldPatientLockIdToDelete);
               }
             }
           })(),
           (async () => {
-            if (!oldMachineLockRef) return;
-            const oldMachineLockSnap = await getDoc(oldMachineLockRef).catch(() => null);
-            if (oldMachineLockSnap?.exists()) {
-              const oldML = oldMachineLockSnap.data() as MachineLock;
+            if (!oldMachineLockIdToDelete) return;
+            const oldMachineLockRow = await getRowByColumn('machine_locks', 'id', oldMachineLockIdToDelete).catch(() => null);
+            if (oldMachineLockRow) {
+              const oldML = mapMachineLockRow(oldMachineLockRow);
               if (isAdminRole || canVerifierEditCurrent || oldML.nurseId === userProfile.uid) {
                 txOp = OperationType.DELETE;
-                txPath = oldMachineLockRef.path;
+                txPath = `machine_locks/${oldMachineLockIdToDelete}`;
                 queuedTxOps.push(`delete:${txPath}`);
-                await deleteDoc(oldMachineLockRef);
+                await deleteRowByColumn('machine_locks', 'id', oldMachineLockIdToDelete);
               }
             }
           })(),
@@ -3378,20 +3343,20 @@ export function LogbookWizardModal({
       // Phase 4: If newly created entry should be submitted immediately, promote Draft -> Pending
       if (!currentEntry && submitStatus === 'Pending') {
         txOp = OperationType.UPDATE;
-        txPath = targetLogRef.path;
-        await runTransaction(db, async (tx) => {
-          tx.update(targetLogRef, {
-            verificationStatus: 'Pending',
-            updatedAt: serverTimestamp(),
-          });
-        });
-        queuedTxOps.push(`promote:${targetLogRef.path}`);
+        txPath = `logbook/${savedDocId}`;
+        await updateRowByColumn(
+          'logbook',
+          'id',
+          savedDocId,
+          toLogbookRow({ verificationStatus: 'Pending' })
+        );
+        queuedTxOps.push(`promote:logbook/${savedDocId}`);
       }
 
       // All phases committed cleanly; disarm rollback
-      createdDraftLogRef = null;
-      createdPatientLockRef = null;
-      createdMachineLockRef = null;
+      createdDraftLogId = null;
+      createdPatientLockId = null;
+      createdMachineLockId = null;
 
       const savedOwnerId = entryOwnerId;
       const savedOwnerName = entryOwnerName;
@@ -3429,14 +3394,14 @@ export function LogbookWizardModal({
       onClose();
       return 'saved';
     } catch (err) {
-      if (createdMachineLockRef) {
-        await deleteDoc(createdMachineLockRef).catch(() => undefined);
+      if (createdMachineLockId) {
+        await deleteRowByColumn('machine_locks', 'id', createdMachineLockId).catch(() => undefined);
       }
-      if (createdPatientLockRef) {
-        await deleteDoc(createdPatientLockRef).catch(() => undefined);
+      if (createdPatientLockId) {
+        await deleteRowByColumn('logbook_locks', 'id', createdPatientLockId).catch(() => undefined);
       }
-      if (createdDraftLogRef) {
-        await deleteDoc(createdDraftLogRef).catch(() => undefined);
+      if (createdDraftLogId) {
+        await deleteRowByColumn('logbook', 'id', createdDraftLogId).catch(() => undefined);
       }
       const msg = err instanceof Error ? err.message : '';
       if (msg.startsWith('MACHINE_LOCKED:')) {
@@ -3458,320 +3423,36 @@ export function LogbookWizardModal({
         setErrorMsg(
           `Entri logbook ini sudah berstatus ${statusLabel} sehingga terkunci dan tidak dapat diubah lagi.`
         );
-      } else if (isTransientFirestoreError(err)) {
+      } else if (isTransientDbError(err)) {
         setErrorMsg(
-          'Koneksi ke server sedang terputus atau sibuk sementara. Data Anda tetap aman — silakan klik Simpan & Lanjut kembali.'
+          'Koneksi ke server Supabase sedang terputus atau sibuk sementara. Data Anda tetap aman — silakan klik Simpan & Lanjut kembali.'
         );
       } else {
-        const extraDiag: Record<string, unknown> = {};
-        try {
-          const [uSnap, pSnap, mSnap, dSnap, plSnap, mlSnap, testSnap, testV2Snap] = await Promise.all([
-            getDocFromServer(doc(db, 'users', userProfile.uid)).catch((e) => ({ err: String(e) })),
-            getDocFromServer(doc(db, 'patients', pat.id)).catch((e) => ({ err: String(e) })),
-            getDocFromServer(doc(db, 'machines', mach.id)).catch((e) => ({ err: String(e) })),
-            getDocFromServer(doc(db, 'doctors', docObj.id)).catch((e) => ({ err: String(e) })),
-            getDocFromServer(doc(db, 'logbook_locks', `${safeDate}_${pat.id}`)).catch((e) => ({ err: String(e) })),
-            getDocFromServer(doc(db, 'machine_locks', `${safeDate}_${safeShift}_${mach.id}`)).catch((e) => ({ err: String(e) })),
-            getDocFromServer(doc(db, 'test', 'connection')).catch((e) => ({ err: String(e) })),
-            getDocFromServer(doc(db, 'test', 'rules_v2')).catch((e) => ({ err: String(e) })),
-          ]);
-          const existsFlag = (s: unknown) =>
-            s && typeof s === 'object' && 'exists' in s && typeof (s as { exists: unknown }).exists === 'function'
-              ? (s as { exists: () => boolean }).exists()
-              : (s as { err?: string })?.err || 'unknown';
-          const uData =
-            uSnap && typeof uSnap === 'object' && 'exists' in uSnap && uSnap.exists()
-              ? (uSnap.data() as Record<string, unknown>)
-              : null;
-          const plData =
-            plSnap && typeof plSnap === 'object' && 'exists' in plSnap && plSnap.exists()
-              ? (plSnap.data() as Record<string, unknown>)
-              : null;
-          const plLogId = typeof plData?.logbookId === 'string' ? plData.logbookId : null;
-          let plRefLogExists: boolean | string | null = null;
-          if (plLogId) {
-            try {
-              const refLog = await getDocFromServer(doc(db, 'logbook', plLogId));
-              plRefLogExists = refLog.exists();
-            } catch (e) {
-              plRefLogExists = String(e);
-            }
-          }
-          const existingDiagSnap =
-            !lastExistingLogData && currentEntry
-              ? await getDocFromServer(doc(db, 'logbook', currentEntry.id)).catch(() => null)
-              : null;
-          const existingDoc =
-            lastExistingLogData ||
-            (existingDiagSnap && existingDiagSnap.exists()
-              ? (existingDiagSnap.data() as Record<string, unknown>)
-              : null);
-          const updPayload = lastUpdatePayload as Record<string, unknown> | null;
-          const crtPayload = lastCreatePayload as Record<string, unknown> | null;
-          const isUpdateOp = Boolean(currentEntry && updPayload);
-          const p: Record<string, unknown> | null = isUpdateOp
-            ? { ...(existingDoc || {}), ...(updPayload || {}) }
-            : crtPayload;
-          const failedChecks: string[] = [];
-          let keysCount = 0;
-          const pShape: Record<string, unknown> = {};
-          if (p) {
-            keysCount = Object.keys(p).length;
-            const reqKeys = [
-              'nurseId', 'nurseName', 'nurseNip', 'patientId', 'patientName', 'patientRm',
-              'machineId', 'machineNumber', 'doctorId', 'doctorName', 'actionCategory',
-              'date', 'monthKey', 'shift', 'startTime', 'endTime',
-              'preWeight', 'postWeight', 'preBp', 'postBp', 'ufGoal', 'ufAchieved',
-              'vascularAccess', 'heparinType', 'complications', 'nursingNotes',
-              'verificationStatus', 'createdAt', 'updatedAt',
-            ];
-            const allowedKeys = new Set([
-              ...reqKeys,
-              'targetVerifierRole', 'targetVerifierId', 'targetVerifierName',
-              'verifiedBy', 'verifiedByName', 'verificationNote', 'verifiedAt',
-              'dutyDoctorId', 'dutyDoctorName', 'wizardDetails',
-            ]);
-            for (const rk of reqKeys) {
-              if (!(rk in p) || p[rk] === undefined) failedChecks.push(`missing:${rk}`);
-            }
-            for (const k of Object.keys(p)) {
-              if (!isUpdateOp && !allowedKeys.has(k)) failedChecks.push(`extraKey:${k}`);
-              if (p[k] === undefined) failedChecks.push(`undef:${k}`);
-              const v = p[k];
-              if (typeof v === 'string') {
-                pShape[k] = `str(${v.length})`;
-              } else if (typeof v === 'number') {
-                pShape[k] = Number.isNaN(v) ? 'NaN' : v;
-              } else if (v === null) {
-                pShape[k] = 'null';
-              } else if (k === 'wizardDetails' && v && typeof v === 'object') {
-                const wdObj = v as Record<string, unknown>;
-                const spoObj = wdObj.spoChecklist as Record<string, unknown> | undefined;
-                pShape[k] = {
-                  keys: Object.keys(wdObj),
-                  s7: wdObj.section7 ?? null,
-                  spoLen: spoObj ? Object.keys(spoObj).length : null,
-                };
-              } else if (v && typeof v === 'object') {
-                pShape[k] = `obj(${Object.keys(v as Record<string, unknown>).join(',')})`;
-              } else {
-                pShape[k] = typeof v;
-              }
-            }
-            const isValidRuleId = (v: unknown) =>
-              typeof v === 'string' && v.length > 0 && v.length <= 128 && /^[a-zA-Z0-9_-]+$/.test(v);
-            if (isUpdateOp && currentEntry && !isValidRuleId(currentEntry.id)) failedChecks.push('docId');
-            if (!isValidRuleId(p.nurseId)) failedChecks.push('nurseId');
-            if (typeof p.nurseName !== 'string' || p.nurseName.trim().length < 1 || p.nurseName.length > 120) failedChecks.push('nurseName');
-            if (typeof p.nurseNip !== 'string' || p.nurseNip.length > 40) failedChecks.push('nurseNip');
-            if (typeof p.patientId !== 'string' || p.patientId.length < 1 || p.patientId.length > 128) failedChecks.push('patientId');
-            if (typeof p.patientName !== 'string' || p.patientName.length < 1 || p.patientName.length > 120) failedChecks.push('patientName');
-            if (typeof p.patientRm !== 'string' || p.patientRm.length > 40) failedChecks.push('patientRm');
-            if (typeof p.machineId !== 'string' || p.machineId.length < 1 || p.machineId.length > 128) failedChecks.push('machineId');
-            if (typeof p.machineNumber !== 'string' || p.machineNumber.length < 1 || p.machineNumber.length > 40) failedChecks.push('machineNumber');
-            if (typeof p.doctorId !== 'string' || p.doctorId.length < 1 || p.doctorId.length > 128) failedChecks.push('doctorId');
-            if (typeof p.doctorName !== 'string' || p.doctorName.length < 1 || p.doctorName.length > 120) failedChecks.push('doctorName');
-            if (p.dutyDoctorId != null && (typeof p.dutyDoctorId !== 'string' || p.dutyDoctorId.length > 128)) failedChecks.push('dutyDoctorId');
-            if (p.dutyDoctorName != null && (typeof p.dutyDoctorName !== 'string' || p.dutyDoctorName.length > 120)) failedChecks.push('dutyDoctorName');
-            if (typeof p.actionCategory !== 'string' || p.actionCategory.length < 1 || p.actionCategory.length > 80) failedChecks.push('actionCategory');
-            if (typeof p.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(p.date)) failedChecks.push('date');
-            if (typeof p.monthKey !== 'string' || !/^\d{4}-\d{2}$/.test(p.monthKey)) failedChecks.push('monthKey');
-            if (!['Pagi', 'Siang', 'Malam'].includes(String(p.shift))) failedChecks.push('shift');
-            if (typeof p.startTime !== 'string' || p.startTime.length > 10) failedChecks.push('startTime');
-            if (typeof p.endTime !== 'string' || p.endTime.length > 10) failedChecks.push('endTime');
-            if (typeof p.preWeight !== 'number' || Number.isNaN(p.preWeight) || p.preWeight < 0 || p.preWeight > 300) failedChecks.push('preWeight');
-            if (typeof p.postWeight !== 'number' || Number.isNaN(p.postWeight) || p.postWeight < 0 || p.postWeight > 300) failedChecks.push('postWeight');
-            if (typeof p.preBp !== 'string' || p.preBp.length > 20) failedChecks.push('preBp');
-            if (typeof p.postBp !== 'string' || p.postBp.length > 20) failedChecks.push('postBp');
-            if (typeof p.ufGoal !== 'number' || Number.isNaN(p.ufGoal) || p.ufGoal < 0 || p.ufGoal > 10000) failedChecks.push('ufGoal');
-            if (typeof p.ufAchieved !== 'number' || Number.isNaN(p.ufAchieved) || p.ufAchieved < 0 || p.ufAchieved > 10000) failedChecks.push('ufAchieved');
-            if (!['AV Shunt', 'AV Fistula', 'CDL', 'Femoral', 'AVG', 'CVC'].includes(String(p.vascularAccess))) failedChecks.push('vascularAccess');
-            if (!['Standar', 'Minimal', 'Bebas Heparin', 'Heparin', 'LMWH'].includes(String(p.heparinType))) failedChecks.push('heparinType');
-            if (typeof p.complications !== 'string' || p.complications.length > 300) failedChecks.push('complications');
-            if (typeof p.nursingNotes !== 'string' || p.nursingNotes.length > 1000) failedChecks.push('nursingNotes');
-            if (
-              isUpdateOp
-                ? !['Draft', 'Pending', 'Revision'].includes(String(p.verificationStatus))
-                : !['Draft', 'Pending'].includes(String(p.verificationStatus))
-            ) {
-              failedChecks.push('verificationStatus');
-            }
-            if (p.targetVerifierRole != null && !['PJ Shift', 'Kepala Ruang'].includes(String(p.targetVerifierRole))) failedChecks.push('targetVerifierRole');
-            if (p.targetVerifierId != null && (typeof p.targetVerifierId !== 'string' || p.targetVerifierId.length > 128)) failedChecks.push('targetVerifierId');
-            if (p.targetVerifierName != null && (typeof p.targetVerifierName !== 'string' || p.targetVerifierName.length > 120)) failedChecks.push('targetVerifierName');
-            if (p.verifiedBy != null && (typeof p.verifiedBy !== 'string' || p.verifiedBy.length > 128)) failedChecks.push('verifiedBy');
-            if (p.verifiedByName != null && (typeof p.verifiedByName !== 'string' || p.verifiedByName.length > 120)) failedChecks.push('verifiedByName');
-            if (p.verificationNote != null && (typeof p.verificationNote !== 'string' || p.verificationNote.length > 500)) failedChecks.push('verificationNote');
-            if (p.verifiedAt != null && !isFirestoreTimestamp(p.verifiedAt)) failedChecks.push('verifiedAt');
-            if (
-              !isFirestoreTimestamp(p.createdAt) &&
-              !(isUpdateOp && updPayload && 'createdAt' in updPayload) &&
-              !(!isUpdateOp && crtPayload && 'createdAt' in crtPayload)
-            ) {
-              failedChecks.push('createdAt');
-            }
-
-            if (isUpdateOp && updPayload) {
-              const allowedUpdateKeys = new Set([
-                'nurseName', 'nurseNip', 'patientId', 'patientName', 'patientRm', 'machineId', 'machineNumber',
-                'doctorId', 'doctorName', 'dutyDoctorId', 'dutyDoctorName', 'actionCategory', 'date', 'monthKey', 'shift',
-                'startTime', 'endTime', 'preWeight', 'postWeight', 'preBp', 'postBp',
-                'ufGoal', 'ufAchieved', 'vascularAccess', 'heparinType', 'complications',
-                'nursingNotes', 'verificationStatus', 'targetVerifierRole', 'targetVerifierId', 'targetVerifierName',
-                'wizardDetails', 'createdAt', 'updatedAt',
-              ]);
-              for (const uk of Object.keys(updPayload)) {
-                if (!allowedUpdateKeys.has(uk)) failedChecks.push(`updKey:${uk}`);
-              }
-              if (existingDoc) {
-                const prevStatus = String(existingDoc.verificationStatus || '');
-                const prevNurseId = String(existingDoc.nurseId || '');
-                const nextStatus = String(p.verificationStatus || '');
-                if (
-                  typeof existingDoc.nurseName === 'string' &&
-                  existingDoc.nurseName.trim().length > 0 &&
-                  existingDoc.nurseName.length <= 120 &&
-                  Object.prototype.hasOwnProperty.call(updPayload, 'nurseName') &&
-                  updPayload.nurseName !== existingDoc.nurseName
-                ) {
-                  failedChecks.push('nurseNameImmutable');
-                }
-                if (
-                  !isAdminRole &&
-                  !canVerifierEditCurrent &&
-                  prevNurseId !== auth.currentUser?.uid
-                ) {
-                  failedChecks.push('prevOwnerMismatch');
-                }
-                if (
-                  !isAdminRole &&
-                  !canVerifierEditCurrent &&
-                  !(
-                    (prevStatus === 'Draft' && ['Draft', 'Pending'].includes(nextStatus)) ||
-                    (prevStatus === 'Revision' && ['Revision', 'Pending'].includes(nextStatus))
-                  )
-                ) {
-                  failedChecks.push(`prevStatus:${prevStatus}->${nextStatus}`);
-                }
-              }
-            }
-
-            const wd = p.wizardDetails as Record<string, unknown> | undefined;
-            if (wd) {
-              const allowedWdKeys = new Set([
-                'section1',
-                'section2',
-                'section3',
-                'section4',
-                'section5',
-                'section6',
-                'section7',
-                'spoChecklist',
-                'customResponses',
-              ]);
-              for (const wk of Object.keys(wd)) {
-                if (!allowedWdKeys.has(wk)) failedChecks.push(`wdKey:${wk}`);
-              }
-              const s7 = wd.section7 as Record<string, unknown> | undefined;
-              if (s7) {
-                if (typeof s7.transfusionGiven !== 'boolean' || typeof s7.epoGiven !== 'boolean') {
-                  failedChecks.push('section7.bool');
-                }
-                if (typeof s7.transfusionNote !== 'string' || s7.transfusionNote.length > 300) failedChecks.push('section7.tNote');
-                if (typeof s7.epoNote !== 'string' || s7.epoNote.length > 300) failedChecks.push('section7.eNote');
-              }
-              const spo = wd.spoChecklist as Record<string, unknown> | undefined;
-              if (spo && Object.keys(spo).length > 120) {
-                failedChecks.push(`spoChecklist.size:${Object.keys(spo).length}`);
-              }
-              const cust = wd.customResponses as Record<string, unknown> | undefined;
-              if (cust && Object.keys(cust).length > 120) {
-                failedChecks.push(`customResponses.size:${Object.keys(cust).length}`);
-              }
-            }
-          } else {
-            failedChecks.push('noPayloadCaptured');
-          }
-          extraDiag.failedChecks = failedChecks;
-          extraDiag.keysCount = keysCount;
-          extraDiag.pShape = pShape;
-          extraDiag.refs = {
-            dbId: ACTIVE_FIREBASE_DATABASE_ID,
-            authUid: auth.currentUser?.uid ?? null,
-            uidMatch: auth.currentUser?.uid === userProfile.uid,
-            uOk: Boolean(uData && uData.isActive === true && uData.role),
-            uRole: uData?.role ?? null,
-            uKeys: uData ? Object.keys(uData) : null,
-            ownerMatch: existingDoc ? existingDoc.nurseId === auth.currentUser?.uid : null,
-            prevStatus: existingDoc ? String(existingDoc.verificationStatus ?? '') : null,
-            nextStatus: submitStatus,
-            pat: existsFlag(pSnap),
-            mach: existsFlag(mSnap),
-            doc: existsFlag(dSnap),
-            pl: existsFlag(plSnap),
-            ml: existsFlag(mlSnap),
-            testConn: existsFlag(testSnap),
-            testV2: existsFlag(testV2Snap),
-            plLogId,
-            plRefLogExists,
-            patId: pat.id,
-            machId: mach.id,
-            docId: docObj.id,
-          };
-        } catch (diagErr) {
-          extraDiag.diagError = String(diagErr);
-        }
-        console.error('Logbook save transaction failed:', {
-          refs: extraDiag.refs,
-          failedChecks: extraDiag.failedChecks,
+        console.error('Logbook save failed:', {
+          projectId: SUPABASE_PROJECT_ID,
           lastOp: txOp,
           lastPath: txPath,
           queuedTxOps,
-          diag: {
-            dbId: ACTIVE_FIREBASE_DATABASE_ID,
-            role: userProfile.role,
-            hasNip: Boolean(userProfile.nip),
-            date: safeDate,
-            shift: safeShift,
-            vascularAccess: safeVascularAccess,
-            heparinType: safeHeparinType,
-            verificationStatus: submitStatus,
-            targetVerifierRole: safeTargetVerifierRole,
-            hasDutyDoctor: Boolean(dutyDoctorId),
-            isEdit: Boolean(currentEntry),
-            ...txDiag,
-          },
-          keysCount: extraDiag.keysCount,
-          pShape: extraDiag.pShape,
-          diagError: extraDiag.diagError,
+          role: userProfile.role,
+          isEdit: Boolean(currentEntry),
+          submitStatus,
           err,
         });
-        const refsDiag = (extraDiag.refs || {}) as Record<string, unknown>;
-        const checksDiag = Array.isArray(extraDiag.failedChecks)
-          ? (extraDiag.failedChecks as string[])
-          : [];
-        const errCode =
-          err && typeof err === 'object' && 'code' in err
-            ? String((err as { code?: unknown }).code)
-            : 'unknown';
-        const statusDiag = refsDiag.prevStatus
-          ? `${String(refsDiag.prevStatus)}->${submitStatus}`
-          : submitStatus;
-        setErrorMsg(
-          `Gagal menyimpan logbook (${txOp} pada ${txPath}, db: ${ACTIVE_FIREBASE_DATABASE_ID}, status: ${statusDiag}, kode: ${errCode}, probe: ${String(
-            refsDiag.testConn ?? 'unknown'
-          )}, probeV2: ${String(refsDiag.testV2 ?? 'unknown')}, role: ${String(
-            refsDiag.uRole ?? 'unknown'
-          )}, ownerMatch: ${String(refsDiag.ownerMatch ?? 'unknown')}, uidMatch: ${String(
-            refsDiag.uidMatch ?? 'unknown'
-          )}, uOk: ${String(refsDiag.uOk ?? 'unknown')}, checks: ${
-            checksDiag.length ? checksDiag.join('|') : 'ok'
-          }). Silakan muat ulang halaman dan coba lagi.`
+        const friendlyMsg = getUserFriendlyDbError(
+          err,
+          `Gagal menyimpan logbook (${txOp} pada ${txPath}). Silakan muat ulang halaman dan coba lagi.`
         );
+        if (isPermissionDeniedError(err)) {
+          setErrorMsg(
+            `${friendlyMsg} (Peran: ${userProfile.role}, status target: ${submitStatus}).`
+          );
+        } else {
+          setErrorMsg(friendlyMsg);
+        }
         if (keepOpen) {
           setAutoSaveInfo((prev) => ({ ...prev, status: prev.timeLabel ? 'saved' : 'idle' }));
         }
-        formatFirestoreError(err, txOp, txPath);
+        formatDbError(err, txOp, txPath);
       }
       if (keepOpen) {
         setAutoSaveInfo((prev) => ({ ...prev, status: prev.timeLabel ? 'saved' : 'idle' }));

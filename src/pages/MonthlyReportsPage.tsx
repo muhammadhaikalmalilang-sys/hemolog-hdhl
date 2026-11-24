@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { doc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import {
   Activity,
   ArrowLeft,
@@ -13,7 +12,8 @@ import {
   ShieldCheck,
   UserCheck,
 } from 'lucide-react';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { handleDbError, OperationType } from '../lib/supabase';
+import { toReportRow, updateRowByColumn, upsertRow } from '../lib/db';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { useLiveClock } from '../hooks/useLiveClock';
@@ -226,6 +226,8 @@ function formatSignatureTimestamp(ts: unknown): string {
   let dateObj: Date | null = null;
   if (ts instanceof Date) {
     dateObj = ts;
+  } else if (typeof ts === 'string' || typeof ts === 'number') {
+    dateObj = new Date(ts);
   } else if (
     typeof ts === 'object' &&
     ts !== null &&
@@ -993,39 +995,47 @@ export function MonthlyReportsPage({
     setSignFeedback(null);
     setSigningSlot('nurse');
     const reportDocId = activeMonthlyReport?.id || `monthly_${monthKey}_${effectiveNurseId}`;
+    const nowIso = new Date().toISOString();
     try {
       if (activeMonthlyReport) {
-        await updateDoc(doc(db, 'reports', reportDocId), {
-          nurseSignedBy: userProfile.uid,
-          nurseSignedByName: clampString(userProfile.fullName, 120),
-          nurseSignedRole: clampString(userProfile.role, 40),
-          nurseSignedAt: serverTimestamp(),
-          totalTreatments: nurseMonthAllLogs.length,
-          approvedTreatments: verifiedLogs.length,
-          updatedAt: serverTimestamp(),
-        });
+        await updateRowByColumn(
+          'reports',
+          'id',
+          reportDocId,
+          toReportRow({
+            nurseSignedBy: userProfile.uid,
+            nurseSignedByName: clampString(userProfile.fullName, 120),
+            nurseSignedRole: clampString(userProfile.role, 40),
+            nurseSignedAt: nowIso,
+            totalTreatments: nurseMonthAllLogs.length,
+            approvedTreatments: verifiedLogs.length,
+          })
+        );
       } else {
-        await setDoc(doc(db, 'reports', reportDocId), {
-          reportType: 'monthly_unit',
-          date: `${monthKey}-01`,
-          monthKey,
-          authorId: userProfile.uid,
-          authorName: clampString(userProfile.fullName, 120),
-          authorRole: clampString(userProfile.role, 40),
-          targetNurseId: selectedNurse.uid,
-          targetNurseName: clampString(selectedNurse.fullName, 120),
-          targetNurseNip: clampString(selectedNurse.nip || '-', 40),
-          targetNurseRole: clampString(String(selectedNurse.role || 'Perawat Pelaksana'), 40),
-          nurseSignedBy: userProfile.uid,
-          nurseSignedByName: clampString(userProfile.fullName, 120),
-          nurseSignedRole: clampString(userProfile.role, 40),
-          nurseSignedAt: serverTimestamp(),
-          totalTreatments: nurseMonthAllLogs.length,
-          approvedTreatments: verifiedLogs.length,
-          status: 'Draft',
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
+        await upsertRow(
+          'reports',
+          toReportRow({
+            id: reportDocId,
+            reportType: 'monthly_unit',
+            date: `${monthKey}-01`,
+            monthKey,
+            authorId: userProfile.uid,
+            authorName: clampString(userProfile.fullName, 120),
+            authorRole: clampString(userProfile.role, 40),
+            targetNurseId: selectedNurse.uid,
+            targetNurseName: clampString(selectedNurse.fullName, 120),
+            targetNurseNip: clampString(selectedNurse.nip || '-', 40),
+            targetNurseRole: clampString(String(selectedNurse.role || 'Perawat Pelaksana'), 40),
+            nurseSignedBy: userProfile.uid,
+            nurseSignedByName: clampString(userProfile.fullName, 120),
+            nurseSignedRole: clampString(userProfile.role, 40),
+            nurseSignedAt: nowIso,
+            totalTreatments: nurseMonthAllLogs.length,
+            approvedTreatments: verifiedLogs.length,
+            status: 'Draft',
+          }),
+          'id'
+        );
       }
       setSignFeedback({
         type: 'success',
@@ -1038,7 +1048,7 @@ export function MonthlyReportsPage({
         message: 'Gagal menyimpan pengesahan digital perawat.',
       });
       showToast('Gagal menyimpan pengesahan digital perawat.', 'error');
-      handleFirestoreError(err, OperationType.UPDATE, `reports/${reportDocId}`);
+      handleDbError(err, OperationType.UPDATE, `reports/${reportDocId}`);
     } finally {
       setSigningSlot(null);
     }
@@ -1049,38 +1059,46 @@ export function MonthlyReportsPage({
     setSignFeedback(null);
     setSigningSlot('karu');
     const reportDocId = activeMonthlyReport?.id || `monthly_${monthKey}_${effectiveNurseId}`;
+    const nowIso = new Date().toISOString();
     try {
       if (activeMonthlyReport) {
-        await updateDoc(doc(db, 'reports', reportDocId), {
-          karuSignedBy: userProfile.uid,
-          karuSignedByName: clampString(userProfile.fullName, 120),
-          karuSignedAt: serverTimestamp(),
-          status: 'Final',
-          totalTreatments: nurseMonthAllLogs.length,
-          approvedTreatments: verifiedLogs.length,
-          updatedAt: serverTimestamp(),
-        });
+        await updateRowByColumn(
+          'reports',
+          'id',
+          reportDocId,
+          toReportRow({
+            karuSignedBy: userProfile.uid,
+            karuSignedByName: clampString(userProfile.fullName, 120),
+            karuSignedAt: nowIso,
+            status: 'Final',
+            totalTreatments: nurseMonthAllLogs.length,
+            approvedTreatments: verifiedLogs.length,
+          })
+        );
       } else {
-        await setDoc(doc(db, 'reports', reportDocId), {
-          reportType: 'monthly_unit',
-          date: `${monthKey}-01`,
-          monthKey,
-          authorId: userProfile.uid,
-          authorName: clampString(userProfile.fullName, 120),
-          authorRole: clampString(userProfile.role, 40),
-          targetNurseId: selectedNurse.uid,
-          targetNurseName: clampString(selectedNurse.fullName, 120),
-          targetNurseNip: clampString(selectedNurse.nip || '-', 40),
-          targetNurseRole: clampString(String(selectedNurse.role || 'Perawat Pelaksana'), 40),
-          karuSignedBy: userProfile.uid,
-          karuSignedByName: clampString(userProfile.fullName, 120),
-          karuSignedAt: serverTimestamp(),
-          totalTreatments: nurseMonthAllLogs.length,
-          approvedTreatments: verifiedLogs.length,
-          status: 'Final',
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
+        await upsertRow(
+          'reports',
+          toReportRow({
+            id: reportDocId,
+            reportType: 'monthly_unit',
+            date: `${monthKey}-01`,
+            monthKey,
+            authorId: userProfile.uid,
+            authorName: clampString(userProfile.fullName, 120),
+            authorRole: clampString(userProfile.role, 40),
+            targetNurseId: selectedNurse.uid,
+            targetNurseName: clampString(selectedNurse.fullName, 120),
+            targetNurseNip: clampString(selectedNurse.nip || '-', 40),
+            targetNurseRole: clampString(String(selectedNurse.role || 'Perawat Pelaksana'), 40),
+            karuSignedBy: userProfile.uid,
+            karuSignedByName: clampString(userProfile.fullName, 120),
+            karuSignedAt: nowIso,
+            totalTreatments: nurseMonthAllLogs.length,
+            approvedTreatments: verifiedLogs.length,
+            status: 'Final',
+          }),
+          'id'
+        );
       }
       setSignFeedback({
         type: 'success',
@@ -1096,7 +1114,7 @@ export function MonthlyReportsPage({
         message: 'Gagal menyimpan pengesahan digital Kepala Ruang.',
       });
       showToast('Gagal menyimpan pengesahan digital Kepala Ruang.', 'error');
-      handleFirestoreError(err, OperationType.UPDATE, `reports/${reportDocId}`);
+      handleDbError(err, OperationType.UPDATE, `reports/${reportDocId}`);
     } finally {
       setSigningSlot(null);
     }

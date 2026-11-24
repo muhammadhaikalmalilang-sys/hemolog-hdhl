@@ -7,7 +7,7 @@ import { useIdleTimeout } from './hooks/useIdleTimeout';
 import { RoleGuard } from './components/auth/RoleGuard';
 import { SidebarLayout } from './components/layout/SidebarLayout';
 import { OfflineIndicator } from './components/ui/OfflineIndicator';
-import { reconnectFirestore } from './lib/firebase';
+import { reconnectSupabase, SUPABASE_PROJECT_ID } from './lib/supabase';
 import { isLogbookAssignedToVerifier } from './lib/formatters';
 import { ROLE_MENUS, type MenuId } from './types';
 
@@ -92,7 +92,7 @@ class ErrorBoundary extends Component<
               <button
                 type="button"
                 onClick={() => {
-                  void reconnectFirestore(true);
+                  void reconnectSupabase(true);
                   this.setState({ hasError: false, message: '' });
                 }}
                 className="rounded-lg bg-teal-600 px-4 py-2 text-xs font-semibold text-white hover:bg-teal-700"
@@ -117,16 +117,17 @@ class ErrorBoundary extends Component<
 
 function WorkspaceShell() {
   const {
-    firebaseUser,
+    authUser,
     userProfile,
     authReady,
     profileLoading,
+    supabaseConfigured,
     logout,
     logoutDueToIdle,
   } = useAuth();
   const [activeMenu, setActiveMenu] = useState<MenuId>('dashboard');
 
-  const isAuthenticated = authReady && !profileLoading && Boolean(firebaseUser && userProfile);
+  const isAuthenticated = authReady && !profileLoading && Boolean(authUser && userProfile);
   const { showWarning, remainingSeconds, resetActivity } = useIdleTimeout({
     enabled: isAuthenticated,
     onTimeout: logoutDueToIdle,
@@ -204,6 +205,43 @@ function WorkspaceShell() {
     [allLogbooks, userProfile]
   );
 
+  if (!supabaseConfigured) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+        <div className="max-w-lg w-full rounded-xl border border-amber-200 bg-white p-6 shadow-sm space-y-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
+              <AlertTriangle className="h-5 w-5" />
+            </div>
+            <div>
+              <h2 className="font-display text-base font-bold text-slate-900">
+                Menunggu Konfigurasi Supabase ({SUPABASE_PROJECT_ID})
+              </h2>
+              <p className="text-xs text-slate-500">
+                Firebase telah diputuskan dari aplikasi HemoLog HDHL.
+              </p>
+            </div>
+          </div>
+          <p className="text-xs text-slate-600 leading-relaxed">
+            Tambahkan environment variable{' '}
+            <code className="font-mono bg-slate-100 px-1.5 py-0.5 rounded">
+              VITE_SUPABASE_ANON_KEY
+            </code>{' '}
+            untuk project Supabase{' '}
+            <code className="font-mono bg-slate-100 px-1.5 py-0.5 rounded">
+              {SUPABASE_PROJECT_ID}
+            </code>{' '}
+            dan jalankan file{' '}
+            <code className="font-mono bg-slate-100 px-1.5 py-0.5 rounded">
+              supabase/schema.sql
+            </code>{' '}
+            di Supabase SQL Editor agar autentikasi dan database aktif.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (!authReady || profileLoading) {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center gap-3">
@@ -217,7 +255,7 @@ function WorkspaceShell() {
     );
   }
 
-  if (!firebaseUser || !userProfile) {
+  if (!authUser || !userProfile) {
     return (
       <Suspense
         fallback={

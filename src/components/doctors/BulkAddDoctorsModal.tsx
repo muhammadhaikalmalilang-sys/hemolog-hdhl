@@ -1,5 +1,4 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { collection, doc, serverTimestamp, writeBatch } from 'firebase/firestore';
 import {
   AlertCircle,
   CheckCircle2,
@@ -11,7 +10,8 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
+import { handleDbError, OperationType } from '../../lib/supabase';
+import { generateRecordId, insertRows, toDoctorRow } from '../../lib/db';
 import { clampString, exportToCsv } from '../../lib/formatters';
 import type { Doctor, DoctorStatus } from '../../types';
 
@@ -393,33 +393,24 @@ export function BulkAddDoctorsModal({
 
     setSaving(true);
     try {
-      const BATCH_LIMIT = 400;
-      const doctorsRef = collection(db, 'doctors');
-
-      for (let i = 0; i < validEntries.length; i += BATCH_LIMIT) {
-        const chunk = validEntries.slice(i, i + BATCH_LIMIT);
-        const batch = writeBatch(db);
-
-        chunk.forEach(({ row }) => {
-          const doctorRef = doc(doctorsRef);
-          batch.set(doctorRef, {
+      await insertRows(
+        'doctors',
+        validEntries.map(({ row }) =>
+          toDoctorRow({
+            id: generateRecordId(),
             fullName: clampString(row.fullName, 120),
             sipNumber: clampString(row.sipNumber, 60),
             specialization: clampString(row.specialization || defaultCategory, 80),
             phone: clampString(normalizePhone(row.phone), 30),
             status: row.status,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-        });
-
-        await batch.commit();
-      }
+          })
+        )
+      );
 
       onSuccess(validEntries.length);
     } catch (err) {
       setSubmitError('Gagal menyimpan data dokter massal. Periksa koneksi atau hak akses admin.');
-      handleFirestoreError(err, OperationType.CREATE, 'doctors');
+      handleDbError(err, OperationType.CREATE, 'doctors');
     } finally {
       setSaving(false);
     }

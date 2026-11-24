@@ -1,170 +1,13 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import express from 'express';
+import { createClient } from '@supabase/supabase-js';
 
-const BOOTSTRAP_ADMIN_EMAILS = new Set([
-  'muhammadhaikalmalilang@gmail.com',
-]);
+const SUPABASE_PROJECT_ID = 'wowaehkpbefqbaebbask';
+const DEFAULT_SUPABASE_URL = `https://${SUPABASE_PROJECT_ID}.supabase.co`;
+
+const BOOTSTRAP_ADMIN_EMAILS = new Set(['muhammadhaikalmalilang@gmail.com']);
 
 function isBootstrapAdminEmail(email) {
   return Boolean(email && BOOTSTRAP_ADMIN_EMAILS.has(String(email).trim().toLowerCase()));
-}
-
-function loadAppletFirebaseConfig() {
-  const candidates = [
-    path.resolve(process.cwd(), 'firebase-applet-config.json'),
-    path.resolve(process.cwd(), '..', 'firebase-applet-config.json'),
-  ];
-
-  for (const configPath of candidates) {
-    try {
-      if (fs.existsSync(configPath)) {
-        const raw = fs.readFileSync(configPath, 'utf-8');
-        return JSON.parse(raw);
-      }
-    } catch {
-      // Ignore invalid or unreadable local file and fall back to env variables
-    }
-  }
-
-  return {
-    projectId: process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || '',
-    firestoreDatabaseId:
-      process.env.FIREBASE_DATABASE_ID || process.env.VITE_FIREBASE_DATABASE_ID || '(default)',
-  };
-}
-
-const appletConfig = loadAppletFirebaseConfig();
-const targetProjectId =
-  process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || appletConfig.projectId;
-const targetDatabaseId =
-  process.env.FIREBASE_DATABASE_ID ||
-  process.env.VITE_FIREBASE_DATABASE_ID ||
-  appletConfig.firestoreDatabaseId ||
-  '(default)';
-
-function escapeControlCharsInJsonStrings(input) {
-  let out = '';
-  let inString = false;
-  let escaped = false;
-
-  for (let i = 0; i < input.length; i++) {
-    const ch = input[i];
-    if (escaped) {
-      out += ch;
-      escaped = false;
-      continue;
-    }
-    if (ch === '\\') {
-      out += ch;
-      if (inString) escaped = true;
-      continue;
-    }
-    if (ch === '"') {
-      inString = !inString;
-      out += ch;
-      continue;
-    }
-    if (inString) {
-      if (ch === '\r') continue;
-      if (ch === '\n') {
-        out += '\\n';
-        continue;
-      }
-      if (ch === '\t') {
-        out += '\\t';
-        continue;
-      }
-    }
-    out += ch;
-  }
-
-  return out;
-}
-
-function tryParseJsonObject(raw) {
-  const candidates = [raw, escapeControlCharsInJsonStrings(raw)];
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate);
-      if (typeof parsed === 'string') {
-        const inner = parsed.trim();
-        if (inner.startsWith('{')) {
-          const innerParsed = JSON.parse(escapeControlCharsInJsonStrings(inner));
-          if (innerParsed && typeof innerParsed === 'object' && !Array.isArray(innerParsed)) {
-            return innerParsed;
-          }
-        }
-      }
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return parsed;
-      }
-    } catch {
-      // Try next candidate
-    }
-  }
-  return null;
-}
-
-function parseServiceAccountFromEnv(rawValue) {
-  let trimmed = String(rawValue || '').trim();
-  if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'"))
-  ) {
-    const inner = trimmed.slice(1, -1).trim();
-    if (inner.startsWith('{') || inner.startsWith('{\\')) {
-      trimmed = inner;
-    }
-  }
-
-  let jsonText = trimmed;
-  if (!trimmed.startsWith('{')) {
-    const decoded = Buffer.from(trimmed, 'base64').toString('utf-8').trim();
-    if (decoded.startsWith('{')) {
-      jsonText = decoded;
-    }
-  }
-
-  if (jsonText.includes('\\"') && !jsonText.includes('"type"')) {
-    jsonText = jsonText.replace(/\\"/g, '"');
-  }
-
-  const parsed = tryParseJsonObject(jsonText);
-  if (!parsed) {
-    throw new Error('Invalid Service Account JSON format.');
-  }
-
-  if (typeof parsed.private_key === 'string') {
-    parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
-  }
-  if (typeof parsed.privateKey === 'string') {
-    parsed.privateKey = parsed.privateKey.replace(/\\n/g, '\n');
-  }
-
-  const hasClientEmail = Boolean(parsed.client_email || parsed.clientEmail);
-  const hasPrivateKey = Boolean(parsed.private_key || parsed.privateKey);
-  if (!hasClientEmail || !hasPrivateKey) {
-    throw new Error('Service Account JSON missing client_email or private_key.');
-  }
-
-  return parsed;
-}
-
-function resolveLocalServiceAccountPath() {
-  if (!targetProjectId) return null;
-  const candidate = path.resolve(process.cwd(), '.secrets', `${targetProjectId}-adminsdk.json`);
-  try {
-    return fs.existsSync(candidate) ? candidate : null;
-  } catch {
-    return null;
-  }
-}
-
-function resolveAdminFirestore(getFirestoreFn, adminApp) {
-  return targetDatabaseId && targetDatabaseId !== '(default)'
-    ? getFirestoreFn(adminApp, targetDatabaseId)
-    : getFirestoreFn(adminApp);
 }
 
 function createTaggedError(message, code, statusCode) {
@@ -174,97 +17,30 @@ function createTaggedError(message, code, statusCode) {
   return err;
 }
 
-async function getFirebaseAdmin() {
-  const [{ cert, getApps, initializeApp }, { getAuth }, { FieldValue, getFirestore }] =
-    await Promise.all([
-      import('firebase-admin/app'),
-      import('firebase-admin/auth'),
-      import('firebase-admin/firestore'),
-    ]);
+function getSupabaseConfig() {
+  const url = String(
+    process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL
+  ).trim();
+  const serviceRoleKey = String(process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
+  return { url, serviceRoleKey };
+}
 
-  const existingApp = getApps().find((a) => a.name === 'hemolog-admin');
-  if (existingApp) {
-    return {
-      app: existingApp,
-      auth: getAuth(existingApp),
-      db: resolveAdminFirestore(getFirestore, existingApp),
-      FieldValue,
-    };
-  }
-
-  const rawServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  const envClientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim();
-  const envPrivateKey = process.env.FIREBASE_PRIVATE_KEY?.trim();
-  const localServiceAccountPath = resolveLocalServiceAccountPath();
-
-  let serviceAccount = null;
-
-  if (rawServiceAccount && rawServiceAccount.trim()) {
-    try {
-      serviceAccount = parseServiceAccountFromEnv(rawServiceAccount);
-    } catch {
-      throw createTaggedError(
-        'Format FIREBASE_SERVICE_ACCOUNT_JSON tidak valid. Pastikan berisi JSON Service Account utuh dari Firebase Console.',
-        'FIREBASE_ADMIN_INVALID_CREDENTIALS'
-      );
-    }
-  } else if (envClientEmail && envPrivateKey) {
-    serviceAccount = {
-      projectId: targetProjectId,
-      clientEmail: envClientEmail,
-      privateKey: envPrivateKey.replace(/\\n/g, '\n'),
-    };
-  } else if (localServiceAccountPath) {
-    try {
-      const fileRaw = fs.readFileSync(localServiceAccountPath, 'utf-8');
-      serviceAccount = parseServiceAccountFromEnv(fileRaw);
-    } catch {
-      throw createTaggedError(
-        'Gagal membaca file kredensial Service Account lokal.',
-        'FIREBASE_ADMIN_INVALID_CREDENTIALS'
-      );
-    }
-  }
-
-  if (!serviceAccount) {
+function getSupabaseAdmin() {
+  const { url, serviceRoleKey } = getSupabaseConfig();
+  if (!url || !serviceRoleKey) {
     throw createTaggedError(
-      'FIREBASE_SERVICE_ACCOUNT_JSON belum dikonfigurasi pada server.',
-      'FIREBASE_ADMIN_NOT_CONFIGURED'
+      'SUPABASE_SERVICE_ROLE_KEY belum dikonfigurasi pada server.',
+      'SUPABASE_ADMIN_NOT_CONFIGURED',
+      503
     );
   }
-
-  const resolvedProjectId =
-    targetProjectId || serviceAccount.project_id || serviceAccount.projectId || '';
-  const saProjectId = serviceAccount.project_id || serviceAccount.projectId;
-  if (resolvedProjectId && saProjectId && saProjectId !== resolvedProjectId) {
-    throw createTaggedError(
-      `Service Account JSON berasal dari project "${saProjectId}", sedangkan aplikasi terhubung ke "${resolvedProjectId}".`,
-      'FIREBASE_ADMIN_PROJECT_MISMATCH'
-    );
-  }
-
-  let adminApp;
-  try {
-    adminApp = initializeApp(
-      {
-        credential: cert(serviceAccount),
-        projectId: resolvedProjectId,
-      },
-      'hemolog-admin'
-    );
-  } catch {
-    throw createTaggedError(
-      'Kredensial FIREBASE_SERVICE_ACCOUNT_JSON gagal dimuat oleh Firebase Admin SDK. Pastikan private_key dan JSON utuh.',
-      'FIREBASE_ADMIN_INVALID_CREDENTIALS'
-    );
-  }
-
-  return {
-    app: adminApp,
-    auth: getAuth(adminApp),
-    db: resolveAdminFirestore(getFirestore, adminApp),
-    FieldValue,
-  };
+  return createClient(url, serviceRoleKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  });
 }
 
 const ALLOWED_ROLES = new Set([
@@ -275,24 +51,43 @@ const ALLOWED_ROLES = new Set([
   'Perawat Pelaksana',
 ]);
 
-async function verifyAdminCaller(req, services) {
+async function verifyAdminCaller(req, supabaseAdmin) {
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
   if (!token) return null;
 
-  const decoded = await services.auth.verifyIdToken(token);
-  const isBootstrapCaller =
-    decoded.email_verified === true && isBootstrapAdminEmail(decoded.email);
+  const { data: userData, error: userErr } = await supabaseAdmin.auth.getUser(token);
+  if (userErr || !userData?.user) {
+    throw createTaggedError(
+      'Sesi login Anda tidak valid atau sudah berakhir. Silakan login ulang.',
+      'UNAUTHORIZED',
+      401
+    );
+  }
 
-  if (isBootstrapCaller) return decoded;
+  const caller = userData.user;
+  const emailVerified = Boolean(caller.email_confirmed_at || caller.confirmed_at);
+  if (emailVerified && isBootstrapAdminEmail(caller.email)) {
+    return caller;
+  }
 
-  const callerSnap = await services.db.collection('users').doc(decoded.uid).get();
-  const callerData = callerSnap.data();
-  const isAdminCaller =
-    callerSnap.exists &&
-    callerData?.isActive === true &&
-    callerData?.role === 'Administrator';
+  const { data: profile, error: profileErr } = await supabaseAdmin
+    .from('users')
+    .select('uid, role, is_active')
+    .eq('uid', caller.id)
+    .maybeSingle();
 
+  if (profileErr) {
+    throw createTaggedError(
+      'Gagal memverifikasi otoritas Administrator.',
+      'FORBIDDEN',
+      403
+    );
+  }
+
+  const isAdminCaller = Boolean(
+    profile && profile.is_active === true && profile.role === 'Administrator'
+  );
   if (!isAdminCaller) {
     throw createTaggedError(
       'Hanya Administrator aktif yang berhak mengelola akun pengguna.',
@@ -301,21 +96,16 @@ async function verifyAdminCaller(req, services) {
     );
   }
 
-  return decoded;
+  return caller;
 }
 
 export function createApiApp() {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: '1mb' }));
 
   app.use((req, res, next) => {
     const p = req.path.toLowerCase();
-    if (
-      p.includes('.secrets') ||
-      p.includes('.env') ||
-      p.includes('firebase-adminsdk') ||
-      p.includes('service-account')
-    ) {
+    if (p.includes('.secrets') || p.includes('.env')) {
       res.status(404).end();
       return;
     }
@@ -323,48 +113,182 @@ export function createApiApp() {
   });
 
   app.get('/api/health', async (_req, res) => {
-    const hasJson = Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim());
-    const hasPair = Boolean(
-      process.env.FIREBASE_CLIENT_EMAIL?.trim() && process.env.FIREBASE_PRIVATE_KEY?.trim()
-    );
-    const hasLocalFile = Boolean(resolveLocalServiceAccountPath());
-
+    const { url, serviceRoleKey } = getSupabaseConfig();
     let adminReady = false;
     let adminErrorCode = null;
     let adminErrorMessage = null;
+
     try {
-      await getFirebaseAdmin();
-      adminReady = true;
+      const sbAdmin = getSupabaseAdmin();
+      const { error } = await sbAdmin.from('users').select('uid').limit(1);
+      if (error) {
+        adminErrorCode = error.code || 'SUPABASE_QUERY_ERROR';
+        adminErrorMessage = error.message;
+      } else {
+        adminReady = true;
+      }
     } catch (err) {
-      adminErrorCode = err?.code || 'FIREBASE_ADMIN_ERROR';
+      adminErrorCode = err?.code || 'SUPABASE_ADMIN_ERROR';
       adminErrorMessage = err instanceof Error ? err.message : String(err);
     }
 
     res.json({
       ok: true,
-      projectId: targetProjectId,
-      databaseId: targetDatabaseId,
-      adminConfigured: hasJson || hasPair || hasLocalFile,
+      projectId: SUPABASE_PROJECT_ID,
+      supabaseUrl: url,
+      adminConfigured: Boolean(url && serviceRoleKey),
       adminReady,
       adminErrorCode,
       adminErrorMessage,
     });
   });
 
-  app.post('/api/admin/users/bulk', async (req, res) => {
-    let services;
+  app.post('/api/admin/users', async (req, res) => {
+    let supabaseAdmin;
     try {
-      services = await getFirebaseAdmin();
+      supabaseAdmin = getSupabaseAdmin();
     } catch (err) {
       res.status(503).json({
-        error: err?.code || 'FIREBASE_ADMIN_NOT_CONFIGURED',
-        message: err instanceof Error ? err.message : 'Firebase Admin belum dikonfigurasi.',
+        error: err?.code || 'SUPABASE_ADMIN_NOT_CONFIGURED',
+        message: err instanceof Error ? err.message : 'Supabase Admin belum dikonfigurasi.',
       });
       return;
     }
 
     try {
-      const caller = await verifyAdminCaller(req, services);
+      const caller = await verifyAdminCaller(req, supabaseAdmin);
+      if (!caller) {
+        res.status(401).json({
+          error: 'UNAUTHORIZED',
+          message: 'Token autentikasi tidak ditemukan.',
+        });
+        return;
+      }
+    } catch (err) {
+      res.status(err?.statusCode || 401).json({
+        error: err?.code || 'UNAUTHORIZED',
+        message:
+          (err instanceof Error && err.message) || 'Gagal memverifikasi otoritas Administrator.',
+      });
+      return;
+    }
+
+    const body = req.body || {};
+    const fullName = String(body.fullName || '').trim().slice(0, 120);
+    const nip = String(body.nip || '').trim().slice(0, 40);
+    const email = String(body.email || '').trim().toLowerCase().slice(0, 200);
+    const password = String(body.password || '');
+    const role = String(body.role || 'Perawat Pelaksana').trim();
+    const phone = String(body.phone || '').trim().slice(0, 30);
+    const specialization =
+      String(body.specialization || 'Perawat Hemodialisa').trim().slice(0, 100) ||
+      'Perawat Hemodialisa';
+
+    if (fullName.length < 2) {
+      res.status(400).json({ error: 'INVALID_NAME', message: 'Nama minimal 2 karakter.' });
+      return;
+    }
+    if (!nip) {
+      res.status(400).json({ error: 'INVALID_NIP', message: 'NIP wajib diisi.' });
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      res.status(400).json({ error: 'INVALID_EMAIL', message: 'Format email tidak valid.' });
+      return;
+    }
+    if (password.length < 6 || password.length > 128) {
+      res.status(400).json({ error: 'INVALID_PASSWORD', message: 'Password harus 6–128 karakter.' });
+      return;
+    }
+    if (!ALLOWED_ROLES.has(role)) {
+      res.status(400).json({ error: 'INVALID_ROLE', message: `Role "${role}" tidak valid.` });
+      return;
+    }
+
+    let createdUid = null;
+    try {
+      const { data: created, error: createErr } = await supabaseAdmin.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true,
+        user_metadata: {
+          full_name: fullName,
+          nip,
+        },
+      });
+
+      if (createErr || !created?.user) {
+        const msg = createErr?.message || 'Gagal membuat user di Supabase Auth.';
+        const isDuplicate = msg.toLowerCase().includes('already') || msg.toLowerCase().includes('exists');
+        res.status(isDuplicate ? 409 : 400).json({
+          error: isDuplicate ? 'EMAIL_EXISTS' : 'AUTH_CREATE_FAILED',
+          message: isDuplicate ? 'Email sudah terdaftar di Supabase Authentication.' : msg,
+        });
+        return;
+      }
+
+      createdUid = created.user.id;
+      const nowIso = new Date().toISOString();
+
+      const [{ error: userInsertErr }, { error: dirInsertErr }] = await Promise.all([
+        supabaseAdmin.from('users').upsert(
+          {
+            uid: createdUid,
+            email,
+            full_name: fullName,
+            nip,
+            role,
+            is_active: true,
+            phone,
+            specialization,
+            created_at: nowIso,
+            updated_at: nowIso,
+          },
+          { onConflict: 'uid' }
+        ),
+        supabaseAdmin.from('staff_directory').upsert(
+          {
+            uid: createdUid,
+            full_name: fullName,
+            nip,
+            role,
+            is_active: true,
+            updated_at: nowIso,
+          },
+          { onConflict: 'uid' }
+        ),
+      ]);
+
+      if (userInsertErr || dirInsertErr) {
+        throw userInsertErr || dirInsertErr;
+      }
+
+      res.json({ ok: true, uid: createdUid });
+    } catch (err) {
+      if (createdUid) {
+        await supabaseAdmin.auth.admin.deleteUser(createdUid).catch(() => undefined);
+      }
+      res.status(500).json({
+        error: err?.code || 'CREATE_USER_FAILED',
+        message: err instanceof Error ? err.message : 'Gagal menyimpan profil akun pengguna.',
+      });
+    }
+  });
+
+  app.post('/api/admin/users/bulk', async (req, res) => {
+    let supabaseAdmin;
+    try {
+      supabaseAdmin = getSupabaseAdmin();
+    } catch (err) {
+      res.status(503).json({
+        error: err?.code || 'SUPABASE_ADMIN_NOT_CONFIGURED',
+        message: err instanceof Error ? err.message : 'Supabase Admin belum dikonfigurasi.',
+      });
+      return;
+    }
+
+    try {
+      const caller = await verifyAdminCaller(req, supabaseAdmin);
       if (!caller) {
         res.status(401).json({
           error: 'UNAUTHORIZED',
@@ -449,35 +373,55 @@ export function createApiApp() {
 
       let createdUid = null;
       try {
-        const userRecord = await services.auth.createUser({
+        const { data: created, error: createErr } = await supabaseAdmin.auth.admin.createUser({
           email,
           password,
-          displayName: fullName,
-          emailVerified: false,
+          email_confirm: true,
+          user_metadata: {
+            full_name: fullName,
+            nip,
+          },
         });
-        createdUid = userRecord.uid;
 
-        const batch = services.db.batch();
-        batch.set(services.db.collection('users').doc(createdUid), {
-          uid: createdUid,
-          email,
-          fullName,
-          nip,
-          role,
-          isActive: true,
-          phone,
-          specialization,
-          createdAt: services.FieldValue.serverTimestamp(),
-          updatedAt: services.FieldValue.serverTimestamp(),
-        });
-        batch.set(services.db.collection('staff_directory').doc(createdUid), {
-          uid: createdUid,
-          fullName,
-          role,
-          isActive: true,
-          updatedAt: services.FieldValue.serverTimestamp(),
-        });
-        await batch.commit();
+        if (createErr || !created?.user) {
+          throw createErr || new Error('Gagal membuat akun.');
+        }
+
+        createdUid = created.user.id;
+        const nowIso = new Date().toISOString();
+
+        const [{ error: userErr }, { error: dirErr }] = await Promise.all([
+          supabaseAdmin.from('users').upsert(
+            {
+              uid: createdUid,
+              email,
+              full_name: fullName,
+              nip,
+              role,
+              is_active: true,
+              phone,
+              specialization,
+              created_at: nowIso,
+              updated_at: nowIso,
+            },
+            { onConflict: 'uid' }
+          ),
+          supabaseAdmin.from('staff_directory').upsert(
+            {
+              uid: createdUid,
+              full_name: fullName,
+              nip,
+              role,
+              is_active: true,
+              updated_at: nowIso,
+            },
+            { onConflict: 'uid' }
+          ),
+        ]);
+
+        if (userErr || dirErr) {
+          throw userErr || dirErr;
+        }
 
         results.push({
           rowIndex,
@@ -488,15 +432,16 @@ export function createApiApp() {
         });
       } catch (err) {
         if (createdUid) {
-          await services.auth.deleteUser(createdUid).catch(() => undefined);
+          await supabaseAdmin.auth.admin.deleteUser(createdUid).catch(() => undefined);
         }
-        const code = err?.code || '';
-        let message = err instanceof Error ? err.message : 'Gagal membuat akun.';
-        if (code === 'auth/email-already-exists') {
-          message = 'Email sudah terdaftar di Firebase Authentication.';
-        } else if (code === 'auth/invalid-password') {
+        const rawMsg = err instanceof Error ? err.message : 'Gagal membuat akun.';
+        const lower = rawMsg.toLowerCase();
+        let message = rawMsg;
+        if (lower.includes('already') || lower.includes('exists') || lower.includes('registered')) {
+          message = 'Email sudah terdaftar di Supabase Authentication.';
+        } else if (lower.includes('password')) {
           message = 'Password minimal 6 karakter.';
-        } else if (code === 'auth/invalid-email') {
+        } else if (lower.includes('email')) {
           message = 'Format email tidak valid.';
         }
         results.push({
@@ -530,20 +475,20 @@ export function createApiApp() {
       return;
     }
 
-    let services;
+    let supabaseAdmin;
     try {
-      services = await getFirebaseAdmin();
+      supabaseAdmin = getSupabaseAdmin();
     } catch (err) {
       res.status(503).json({
-        error: err?.code || 'FIREBASE_ADMIN_NOT_CONFIGURED',
-        message: err instanceof Error ? err.message : 'Firebase Admin belum dikonfigurasi.',
+        error: err?.code || 'SUPABASE_ADMIN_NOT_CONFIGURED',
+        message: err instanceof Error ? err.message : 'Supabase Admin belum dikonfigurasi.',
       });
       return;
     }
 
     try {
-      const decoded = await verifyAdminCaller(req, services);
-      if (!decoded) {
+      const caller = await verifyAdminCaller(req, supabaseAdmin);
+      if (!caller) {
         res.status(401).json({
           error: 'UNAUTHORIZED',
           message: 'Token autentikasi tidak ditemukan.',
@@ -551,7 +496,7 @@ export function createApiApp() {
         return;
       }
 
-      if (decoded.uid === targetUid) {
+      if (caller.id === targetUid) {
         res.status(400).json({
           error: 'SELF_DELETE_FORBIDDEN',
           message: 'Anda tidak dapat menghapus akun Anda sendiri yang sedang aktif.',
@@ -559,8 +504,13 @@ export function createApiApp() {
         return;
       }
 
-      const targetUserSnap = await services.db.collection('users').doc(targetUid).get();
-      const targetEmail = String(targetUserSnap.data()?.email || '').toLowerCase();
+      const { data: targetUser } = await supabaseAdmin
+        .from('users')
+        .select('email')
+        .eq('uid', targetUid)
+        .maybeSingle();
+
+      const targetEmail = String(targetUser?.email || '').toLowerCase();
       if (isBootstrapAdminEmail(targetEmail)) {
         res.status(403).json({
           error: 'BOOTSTRAP_ADMIN_PROTECTED',
@@ -570,21 +520,24 @@ export function createApiApp() {
       }
 
       let authDeleted = true;
-      try {
-        await services.auth.deleteUser(targetUid);
-      } catch (authErr) {
-        const code = authErr?.code;
-        if (code === 'auth/user-not-found') {
+      const { error: delAuthErr } = await supabaseAdmin.auth.admin.deleteUser(targetUid);
+      if (delAuthErr) {
+        const msg = delAuthErr.message.toLowerCase();
+        if (msg.includes('not found') || delAuthErr.status === 404) {
           authDeleted = false;
         } else {
-          throw authErr;
+          throw delAuthErr;
         }
       }
 
-      await Promise.all([
-        services.db.collection('users').doc(targetUid).delete(),
-        services.db.collection('staff_directory').doc(targetUid).delete(),
+      const [{ error: delUserErr }, { error: delDirErr }] = await Promise.all([
+        supabaseAdmin.from('users').delete().eq('uid', targetUid),
+        supabaseAdmin.from('staff_directory').delete().eq('uid', targetUid),
       ]);
+
+      if (delUserErr || delDirErr) {
+        throw delUserErr || delDirErr;
+      }
 
       res.json({
         ok: true,
@@ -592,12 +545,12 @@ export function createApiApp() {
         authDeleted,
       });
     } catch (err) {
-      console.error('Failed to delete Firebase user:', err);
+      console.error('Failed to delete Supabase user:', err);
       res.status(err?.statusCode || 500).json({
         error: err?.code || 'DELETE_USER_FAILED',
         message:
           (err instanceof Error && err.message) ||
-          'Gagal menghapus akun dari Firebase Authentication.',
+          'Gagal menghapus akun dari Supabase Authentication.',
       });
     }
   });

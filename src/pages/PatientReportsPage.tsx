@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { Download, Eye, Plus, Printer, Search, X } from 'lucide-react';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { handleDbError, OperationType } from '../lib/supabase';
+import { generateRecordId, insertRow, toReportRow } from '../lib/db';
 import {
   clampString,
   exportToCsv,
@@ -632,29 +632,31 @@ export function PatientReportsPage({
 
     setSaving(true);
     try {
-      await addDoc(collection(db, 'reports'), {
-        reportType: 'patient_care',
-        date: soapDate,
-        monthKey: soapDate.slice(0, 7),
-        authorId: userProfile.uid,
-        authorName: clampString(userProfile.fullName, 120),
-        authorRole: userProfile.role,
-        patientId: pat.id,
-        patientName: clampString(pat.fullName, 120),
-        patientRm: clampString(pat.mrn, 40),
-        soapSubjective: clampString(soapS || '-', 800),
-        soapObjective: clampString(soapO || '-', 800),
-        soapAssessment: clampString(soapA || '-', 800),
-        soapPlan: clampString(soapP || '-', 800),
-        medicalOrder: clampString(medicalOrder || '-', 800),
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      await insertRow(
+        'reports',
+        toReportRow({
+          id: generateRecordId(),
+          reportType: 'patient_care',
+          date: soapDate,
+          monthKey: soapDate.slice(0, 7),
+          authorId: userProfile.uid,
+          authorName: clampString(userProfile.fullName, 120),
+          authorRole: userProfile.role,
+          patientId: pat.id,
+          patientName: clampString(pat.fullName, 120),
+          patientRm: clampString(pat.mrn, 40),
+          soapSubjective: clampString(soapS || '-', 800),
+          soapObjective: clampString(soapO || '-', 800),
+          soapAssessment: clampString(soapA || '-', 800),
+          soapPlan: clampString(soapP || '-', 800),
+          medicalOrder: clampString(medicalOrder || '-', 800),
+        })
+      );
       setShowSoapModal(false);
       showToast(`Catatan SOAP ${pat.fullName} berhasil disimpan.`, 'success');
     } catch (err) {
       showToast('Gagal menyimpan catatan SOAP pasien.', 'error');
-      handleFirestoreError(err, OperationType.CREATE, 'reports');
+      handleDbError(err, OperationType.CREATE, 'reports');
     } finally {
       setSaving(false);
     }

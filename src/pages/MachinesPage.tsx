@@ -1,7 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { addDoc, collection, deleteDoc, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { Layers, Pencil, Plus, Trash2, X } from 'lucide-react';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import {
+  deleteRowByColumn,
+  insertRow,
+  toMachineRow,
+  updateRowByColumn,
+} from '../lib/db';
 import { clampString } from '../lib/formatters';
 import { useLiveClock } from '../hooks/useLiveClock';
 import { MachineStatusBadge } from '../components/ui/StatusBadge';
@@ -70,21 +74,14 @@ export function MachinesPage({ machines }: MachinesPageProps) {
   };
 
   const handleQuickStatus = async (m: Machine, nextStatus: MachineStatus) => {
-    try {
-      await updateDoc(doc(db, 'machines', m.id), {
-        status: nextStatus,
-        updatedAt: serverTimestamp(),
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `machines/${m.id}`);
-    }
+    await updateRowByColumn('machines', 'id', m.id, toMachineRow({ status: nextStatus }));
   };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     try {
-      const payload = {
+      const payload = toMachineRow({
         machineNumber: clampString(machineNumber, 40),
         brand: clampString(brand, 80),
         serialNumber: clampString(serialNumber, 80),
@@ -92,19 +89,13 @@ export function MachinesPage({ machines }: MachinesPageProps) {
         status,
         lastMaintenanceDate: clampString(lastMaintenanceDate, 20),
         notes: clampString(notes, 500),
-        updatedAt: serverTimestamp(),
-      };
+      });
       if (editing) {
-        await updateDoc(doc(db, 'machines', editing.id), payload);
+        await updateRowByColumn('machines', 'id', editing.id, payload);
       } else {
-        await addDoc(collection(db, 'machines'), {
-          ...payload,
-          createdAt: serverTimestamp(),
-        });
+        await insertRow('machines', payload);
       }
       setShowModal(false);
-    } catch (err) {
-      handleFirestoreError(err, editing ? OperationType.UPDATE : OperationType.CREATE, 'machines');
     } finally {
       setSaving(false);
     }
@@ -112,12 +103,8 @@ export function MachinesPage({ machines }: MachinesPageProps) {
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
-    try {
-      await deleteDoc(doc(db, 'machines', deleteTarget.id));
-      setDeleteTargetId(null);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `machines/${deleteTarget.id}`);
-    }
+    await deleteRowByColumn('machines', 'id', deleteTarget.id);
+    setDeleteTargetId(null);
   };
 
   const statusCounts = {
@@ -163,7 +150,7 @@ export function MachinesPage({ machines }: MachinesPageProps) {
 
       {bulkSuccessCount !== null && (
         <div className="flex items-center justify-between rounded-lg border border-teal-200 bg-teal-50 px-4 py-3 text-xs font-medium text-teal-800">
-          <span>{bulkSuccessCount} data mesin HD berhasil ditambahkan secara massal ke Firestore.</span>
+          <span>{bulkSuccessCount} data mesin HD berhasil ditambahkan secara massal ke database Supabase.</span>
           <button
             type="button"
             onClick={() => setBulkSuccessCount(null)}

@@ -5,7 +5,7 @@ import { RoleBadge } from '../components/ui/StatusBadge';
 
 export function MyAccountPage() {
   const {
-    firebaseUser,
+    authUser,
     userProfile,
     updateOwnProfile,
     changeUserPassword,
@@ -47,11 +47,10 @@ export function MyAccountPage() {
   const [passMsg, setPassMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [verifyMsg, setVerifyMsg] = useState<string | null>(null);
 
-  if (!userProfile || !firebaseUser) return null;
+  if (!userProfile || !authUser) return null;
 
-  const isPasswordProvider = firebaseUser.providerData.some(
-    (p) => p.providerId === 'password'
-  );
+  const isPasswordProvider =
+    authUser.providerIds.includes('email') || authUser.providerIds.includes('password');
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -87,8 +86,11 @@ export function MyAccountPage() {
       setNewPassword('');
       setConfirmPassword('');
     } catch (err: unknown) {
-      const code = (err as { code?: string })?.code || '';
-      if (code === 'auth/wrong-password' || code === 'auth/invalid-credential') {
+      const code = String((err as { code?: string })?.code || '').toLowerCase();
+      if (
+        code === 'invalid_current_password' ||
+        code === 'invalid_credentials'
+      ) {
         setPassMsg({ type: 'err', text: 'Password saat ini salah.' });
       } else {
         setPassMsg({
@@ -120,14 +122,14 @@ export function MyAccountPage() {
         </p>
       </div>
 
-      {!firebaseUser.emailVerified && (
+      {!authUser.emailVerified && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-xs text-amber-900">
           <div className="flex items-start gap-2.5">
             <MailCheck className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
             <div>
               <p className="font-semibold">Email Belum Terverifikasi</p>
               <p className="mt-0.5 text-amber-800">
-                Verifikasi alamat email <strong>{firebaseUser.email}</strong> untuk keamanan penuh akun Anda.
+                Verifikasi alamat email <strong>{authUser.email}</strong> untuk keamanan penuh akun Anda.
               </p>
               {verifyMsg && <p className="mt-1 font-semibold text-teal-700">{verifyMsg}</p>}
             </div>

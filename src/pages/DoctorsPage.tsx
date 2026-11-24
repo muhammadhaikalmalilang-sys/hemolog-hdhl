@@ -1,7 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { addDoc, collection, deleteDoc, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { Pencil, Plus, Trash2, Users, X } from 'lucide-react';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import {
+  deleteRowByColumn,
+  insertRow,
+  toDoctorRow,
+  updateRowByColumn,
+} from '../lib/db';
 import { clampString } from '../lib/formatters';
 import { BulkAddDoctorsModal } from '../components/doctors/BulkAddDoctorsModal';
 import type { Doctor, DoctorStatus } from '../types';
@@ -64,25 +68,19 @@ export function DoctorsPage({ doctors }: DoctorsPageProps) {
     e.preventDefault();
     setSaving(true);
     try {
-      const payload = {
+      const payload = toDoctorRow({
         fullName: clampString(fullName, 120),
         sipNumber: clampString(sipNumber, 60),
         specialization: clampString(specialization, 80),
         phone: clampString(phone, 30),
         status,
-        updatedAt: serverTimestamp(),
-      };
+      });
       if (editing) {
-        await updateDoc(doc(db, 'doctors', editing.id), payload);
+        await updateRowByColumn('doctors', 'id', editing.id, payload);
       } else {
-        await addDoc(collection(db, 'doctors'), {
-          ...payload,
-          createdAt: serverTimestamp(),
-        });
+        await insertRow('doctors', payload);
       }
       setShowModal(false);
-    } catch (err) {
-      handleFirestoreError(err, editing ? OperationType.UPDATE : OperationType.CREATE, 'doctors');
     } finally {
       setSaving(false);
     }
@@ -90,12 +88,8 @@ export function DoctorsPage({ doctors }: DoctorsPageProps) {
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
-    try {
-      await deleteDoc(doc(db, 'doctors', deleteTarget.id));
-      setDeleteTargetId(null);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `doctors/${deleteTarget.id}`);
-    }
+    await deleteRowByColumn('doctors', 'id', deleteTarget.id);
+    setDeleteTargetId(null);
   };
 
   return (
@@ -134,7 +128,7 @@ export function DoctorsPage({ doctors }: DoctorsPageProps) {
 
       {bulkSuccessCount !== null && (
         <div className="flex items-center justify-between rounded-lg border border-teal-200 bg-teal-50 px-4 py-3 text-xs font-medium text-teal-800">
-          <span>{bulkSuccessCount} data dokter berhasil ditambahkan secara massal ke Firestore.</span>
+          <span>{bulkSuccessCount} data dokter berhasil ditambahkan secara massal ke database.</span>
           <button
             type="button"
             onClick={() => setBulkSuccessCount(null)}

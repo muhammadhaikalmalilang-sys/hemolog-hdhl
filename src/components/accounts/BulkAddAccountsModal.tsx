@@ -524,7 +524,7 @@ export function BulkAddAccountsModal({
 
       if (response.createdCount > 0) {
         setSubmitInfo(
-          `${response.createdCount} akun berhasil dibuat di Firebase Authentication & Firestore.`
+          `${response.createdCount} akun berhasil dibuat di Supabase Authentication & Database.`
         );
       }
       setSubmitError(
@@ -548,7 +548,7 @@ export function BulkAddAccountsModal({
             </div>
             <div>
               <h3 className="font-display text-base font-bold text-slate-900">
-                Buat Banyak Akun Staf (Firebase Auth + Data Akun)
+                Buat Banyak Akun Staf (Supabase Auth + Data Akun)
               </h3>
               <p className="text-xs text-slate-500">
                 Format kolom mengikuti spreadsheet: NO, NAMA LENGKAP &amp; GELAR, NIP, EMAIL LOGIN,
@@ -765,7 +765,7 @@ export function BulkAddAccountsModal({
               <p className="text-[11px] text-slate-500">
                 Tips: Anda bisa langsung <strong>Ctrl+V / Paste</strong> salinan tabel dari Google
                 Sheets atau Excel ke kolom <strong>NAMA LENGKAP &amp; GELAR</strong>. Setiap baris
-                otomatis dibuatkan akun di <strong>Firebase Authentication</strong> &amp;{' '}
+                otomatis dibuatkan akun di <strong>Supabase Authentication</strong> &amp;{' '}
                 <strong>Data Akun</strong>.
               </p>
 
@@ -909,7 +909,7 @@ export function BulkAddAccountsModal({
           )}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-[11px] text-slate-500">
-              Akun yang dibuat otomatis aktif dan terdaftar di Firebase Authentication.
+              Akun yang dibuat otomatis aktif dan terdaftar di Supabase Authentication.
             </p>
             <div className="flex items-center gap-2.5">
               <button

@@ -1,5 +1,4 @@
 import React, { useMemo, useState } from 'react';
-import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
 import {
   Activity,
   AlertCircle,
@@ -17,7 +16,8 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
+import { handleDbError, OperationType } from '../../lib/supabase';
+import { toFormTemplateRow, upsertRow } from '../../lib/db';
 import { clampString } from '../../lib/formatters';
 import {
   DEFAULT_LOGBOOK_TEMPLATE,
@@ -307,12 +307,13 @@ export function LogbookTemplateEditorModal({
     setFeedback(null);
     try {
       const sanitized = sanitizeTemplateForSave(draft);
-      await setDoc(doc(db, 'form_templates', LOGBOOK_TEMPLATE_DOC_ID), {
+      const templateRow = toFormTemplateRow({
         ...sanitized,
         updatedBy: userProfile.uid,
         updatedByName: clampString(userProfile.fullName, 120),
-        updatedAt: serverTimestamp(),
       });
+      templateRow.id = LOGBOOK_TEMPLATE_DOC_ID;
+      await upsertRow('form_templates', templateRow, 'id');
       setFeedback({
         type: 'success',
         message:
@@ -323,7 +324,7 @@ export function LogbookTemplateEditorModal({
         type: 'error',
         message: 'Gagal menyimpan konfigurasi logbook. Periksa koneksi atau izin akses.',
       });
-      handleFirestoreError(err, OperationType.WRITE, `form_templates/${LOGBOOK_TEMPLATE_DOC_ID}`);
+      handleDbError(err, OperationType.WRITE, `form_templates/${LOGBOOK_TEMPLATE_DOC_ID}`);
     } finally {
       setSaving(false);
     }

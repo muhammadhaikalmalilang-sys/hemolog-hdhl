@@ -109,26 +109,51 @@ export function LoginPage() {
         if (password.length < 6) {
           throw new Error('Kata sandi minimal 6 karakter.');
         }
-        await registerWithEmail({ email: resolvedEmail, password, fullName, nip });
+        const regRes = await registerWithEmail({ email: resolvedEmail, password, fullName, nip });
+        if (regRes.requiresEmailConfirmation) {
+          setSuccessMsg(
+            `Pendaftaran berhasil! Tautan verifikasi telah dikirim ke ${resolvedEmail}. Silakan konfirmasi email Anda lalu masuk ke sistem.`
+          );
+          setMode('login');
+          setPassword('');
+        }
       }
     } catch (err: unknown) {
-      const code = (err as { code?: string })?.code || '';
+      const code = String((err as { code?: string })?.code || '').toLowerCase();
       const message = err instanceof Error ? err.message : 'Gagal melakukan autentikasi.';
-      if (code === 'auth/operation-not-allowed') {
+      const lowerMsg = message.toLowerCase();
+      if (
+        code === 'signup_disabled' ||
+        code === 'email_provider_disabled' ||
+        lowerMsg.includes('signups not allowed') ||
+        lowerMsg.includes('email logins are disabled')
+      ) {
         setShowEnableEmailGuide(true);
         setErrorMsg(
-          'Metode login Email/Password belum diaktifkan pada proyek Firebase Anda. Aktifkan di Firebase Console atau gunakan Masuk dengan Akun Google.'
+          'Metode login Email/Password belum diaktifkan pada proyek Supabase Anda. Aktifkan di Supabase Dashboard atau gunakan Masuk dengan Akun Google.'
         );
       } else if (
-        code === 'auth/invalid-credential' ||
-        code === 'auth/wrong-password' ||
-        code === 'auth/user-not-found' ||
-        code === 'auth/invalid-email'
+        code === 'invalid_credentials' ||
+        lowerMsg.includes('invalid login credentials') ||
+        lowerMsg.includes('invalid_credentials')
       ) {
         setErrorMsg('Email / ID Akun atau kata sandi tidak sesuai. Silakan periksa kembali.');
-      } else if (code === 'auth/email-already-in-use') {
+      } else if (
+        lowerMsg.includes('email not confirmed')
+      ) {
+        setErrorMsg('Email Anda belum dikonfirmasi. Periksa kotak masuk atau folder spam email Anda.');
+      } else if (
+        code === 'email_exists' ||
+        code === 'user_already_exists' ||
+        lowerMsg.includes('already registered') ||
+        lowerMsg.includes('sudah terdaftar')
+      ) {
         setErrorMsg('Email sudah terdaftar. Silakan masuk melalui formulir login.');
-      } else if (code === 'auth/too-many-requests') {
+      } else if (
+        code === 'over_request_rate_limit' ||
+        code === 'over_email_send_rate_limit' ||
+        lowerMsg.includes('rate limit')
+      ) {
         setErrorMsg('Terlalu banyak percobaan login. Silakan tunggu beberapa saat.');
       } else {
         setErrorMsg(message);
@@ -240,12 +265,12 @@ export function LoginPage() {
                 <p className="font-medium leading-relaxed">{blockedMessage || errorMsg}</p>
                 {showEnableEmailGuide && (
                   <ol className="mt-2 list-decimal pl-4 space-y-1 text-rose-700">
-                    <li>Buka Firebase Console dan pilih proyek aplikasi ini.</li>
+                    <li>Buka Supabase Dashboard dan pilih project wowaehkpbefqbaebbask.</li>
                     <li>
-                      Masuk ke menu <strong>Authentication &rarr; Sign-in method</strong>.
+                      Masuk ke menu <strong>Authentication &rarr; Providers</strong>.
                     </li>
                     <li>
-                      Aktifkan provider <strong>Email/Password</strong> lalu simpan.
+                      Aktifkan provider <strong>Email</strong> lalu simpan.
                     </li>
                   </ol>
                 )}
