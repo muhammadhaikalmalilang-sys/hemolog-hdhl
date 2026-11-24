@@ -280,6 +280,13 @@ export function PjShiftReportsPage({
   const [draftSectionDRow, setDraftSectionDRow] = useState<ReportSectionDItem | null>(null);
   const [savingSectionD, setSavingSectionD] = useState(false);
 
+  // Edit Maintenance Machines (Section B)
+  const [showMaintModal, setShowMaintModal] = useState(false);
+  const [maintCountInput, setMaintCountInput] = useState('0');
+  const [maintSelectedIds, setMaintSelectedIds] = useState<string[]>([]);
+  const [maintNotesInput, setMaintNotesInput] = useState('');
+  const [savingMaint, setSavingMaint] = useState(false);
+
   // Inline Edit Section E (SBAR)
   const [editingSbarKey, setEditingSbarKey] = useState<
     'situation' | 'background' | 'assessment' | 'recommendation' | null
@@ -451,18 +458,43 @@ export function PjShiftReportsPage({
     [staffDirectory]
   );
 
-  // Core shift report analytics computed strictly from verified logbooks + unit master data
+  // Core shift report analytics computed from logbooks + unit master data
   const shiftStats = useMemo(() => {
     const totalVerified = verifiedEntries.length;
     const dayName = getDayNameId(selectedDate);
+
+    // All logbooks inputted on selectedDate & shiftFilter (for nurse inputter count & rescheduled check)
+    const shiftInputtedLogbooks = logbooks.filter((item) => {
+      if (item.date !== selectedDate) return false;
+      if (shiftFilter !== 'ALL' && item.shift !== shiftFilter) return false;
+      return true;
+    });
 
     // Scheduled regular patients for this date & shift
     const activeRegularPatients = patients.filter(
       (p) => p.status === 'Aktif' && isRegularPatient(p)
     );
-    const scheduledPatientsCount = activeRegularPatients.filter((p) =>
+    const scheduledRegularPatients = activeRegularPatients.filter((p) =>
       isPatientScheduledOnDay(p.routineSchedule, dayName, shiftFilter)
-    ).length;
+    );
+    const scheduledPatientsCount = scheduledRegularPatients.length;
+
+    // Regular patients scheduled on this shift that have NO logbook inputted
+    const inputtedPatientIds = new Set(shiftInputtedLogbooks.map((l) => l.patientId).filter(Boolean));
+    const inputtedPatientMrs = new Set(
+      shiftInputtedLogbooks.map((l) => l.patientRm.trim().toLowerCase()).filter(Boolean)
+    );
+    const inputtedPatientNames = new Set(
+      shiftInputtedLogbooks.map((l) => l.patientName.trim().toLowerCase()).filter(Boolean)
+    );
+    const rescheduledCount = scheduledRegularPatients.filter((p) => {
+      if (inputtedPatientIds.has(p.id)) return false;
+      const mrnNorm = p.mrn.trim().toLowerCase();
+      if (mrnNorm && inputtedPatientMrs.has(mrnNorm)) return false;
+      const nameNorm = p.fullName.trim().toLowerCase();
+      if (nameNorm && inputtedPatientNames.has(nameNorm)) return false;
+      return true;
+    }).length;
 
     // Classification & Service Status
     let regulerCount = 0;
@@ -474,9 +506,17 @@ export function PjShiftReportsPage({
 
     // Vascular Access distribution
     let avfCount = 0;
-    let avgCount = 0;
-    let cdlNonTunnelCount = 0;
-    let cdlTunnelCount = 0;
+    let cdlCount = 0;
+    let femoralCount = 0;
+
+    // Transfusion & EPO therapy list (verified patients)
+    const therapyPatients: {
+      id: string;
+      patientName: string;
+      hasTransfusion: boolean;
+      hasEpo: boolean;
+      label: string;
+    }[] = [];
 
     // UF & Duration
     let ufMetCount = 0;
@@ -501,9 +541,8 @@ export function PjShiftReportsPage({
     // Staff & Doctors
     const pjVerifierNames = new Set<string>();
     const karuVerifierNames = new Set<string>();
-    const nurseNames = new Set<string>();
-    const dpjpNames = new Set<string>();
-    const dutyDoctorNames = new Set<string>();
+    const logbookDpjpNames = new Set<string>();
+    const logbookDutyDoctorNames = new Set<string>();
 
     for (const entry of verifiedEntries) {
       const pat = patientMap.get(entry.patientId);
@@ -511,11 +550,11 @@ export function PjShiftReportsPage({
       const sec2 = entry.wizardDetails?.section2;
       const sec3 = entry.wizardDetails?.section3;
       const sec6 = entry.wizardDetails?.section6;
+      const sec7 = entry.wizardDetails?.section7;
 
       // Staff & Verifiers
-      if (entry.nurseName) nurseNames.add(entry.nurseName);
-      if (entry.doctorName) dpjpNames.add(entry.doctorName);
-      if (entry.dutyDoctorName) dutyDoctorNames.add(entry.dutyDoctorName);
+      if (entry.doctorName) logbookDpjpNames.add(entry.doctorName);
+      if (entry.dutyDoctorName) logbookDutyDoctorNames.add(entry.dutyDoctorName);
 
       const vRole = getActualVerifierRole(entry);
       if (vRole === 'PJ Shift' && entry.verifiedByName) {
@@ -550,18 +589,28 @@ export function PjShiftReportsPage({
       else if (cat === 'Isolasi Hepatitis C/HIV') hepCHivCount += 1;
       else regulerCount += 1;
 
-      // Vascular access
-      if (entry.vascularAccess === 'AVG') {
-        avgCount += 1;
+      // Vascular access (AV Fistula/Cimino, CDL, Femoral)
+      if (entry.vascularAccess === 'Femoral') {
+        femoralCount += 1;
       } else if (entry.vascularAccess === 'CDL' || entry.vascularAccess === 'CVC') {
-        const cdlText = `${sec3?.cdlNote || ''} ${sec3?.accessDetailNote || ''} ${entry.nursingNotes || ''}`;
-        if (/tunnel|permcath/i.test(cdlText)) {
-          cdlTunnelCount += 1;
-        } else {
-          cdlNonTunnelCount += 1;
-        }
+        cdlCount += 1;
       } else {
         avfCount += 1;
+      }
+
+      // Transfusion & EPO
+      const hasTransfusion = Boolean(sec7?.transfusionGiven);
+      const hasEpo = Boolean(sec7?.epoGiven);
+      if (hasTransfusion || hasEpo) {
+        const tag =
+          hasTransfusion && hasEpo ? 'Transfusi & EPO' : hasTransfusion ? 'Transfusi' : 'EPO';
+        therapyPatients.push({
+          id: entry.id,
+          patientName: entry.patientName,
+          hasTransfusion,
+          hasEpo,
+          label: `${entry.patientName} (${tag})`,
+        });
       }
 
       // UF Goal evaluation
@@ -624,46 +673,52 @@ export function PjShiftReportsPage({
       }
     }
 
-    // Schedules for manpower & doctors on selectedDate & shiftFilter
-    const activeNurseSchedules = schedules.filter(
-      (s) =>
-        s.date === selectedDate &&
-        (shiftFilter === 'ALL' ? ['Pagi', 'Siang', 'Malam'].includes(s.shift) : s.shift === shiftFilter)
-    );
-    const scheduledNurseNames = Array.from(new Set(activeNurseSchedules.map((s) => s.nurseName)));
-    const assignedPjRosterNames =
-      shiftFilter === 'ALL'
-        ? assignedPjListForDate.map((a) => a.pjNurseName)
-        : assignedPjCurrent?.pjNurseName
-        ? [assignedPjCurrent.pjNurseName]
-        : [];
-    const allNurseRoster = Array.from(
-      new Set([...assignedPjRosterNames, ...scheduledNurseNames, ...nurseNames])
-    );
-
-    const pjInRoster = allNurseRoster.filter((name) => {
-      const match = staffDirectory.find((st) => st.fullName === name);
-      return match?.role === 'PJ Shift';
-    });
-    const pelaksanaCount = Math.max(0, allNurseRoster.length - pjInRoster.length);
-    const totalNursesDinas = allNurseRoster.length;
+    // Count unique nurses who inputted logbook on this shift
+    const nurseSourceEntries =
+      verifierFilter === 'ALL' ? shiftInputtedLogbooks : verifiedEntries;
+    const inputtingNurseMap = new Map<string, { name: string; role?: string }>();
+    for (const lb of nurseSourceEntries) {
+      const key = lb.nurseId || lb.nurseName;
+      if (!key || inputtingNurseMap.has(key)) continue;
+      const staffRole =
+        (lb.nurseId ? staffMap.get(lb.nurseId)?.role : undefined) ||
+        staffDirectory.find((st) => st.fullName === lb.nurseName)?.role;
+      inputtingNurseMap.set(key, {
+        name: lb.nurseName || staffMap.get(lb.nurseId)?.fullName || 'Perawat',
+        role: staffRole,
+      });
+    }
+    const allNurseRoster = Array.from(inputtingNurseMap.values()).map((n) => n.name);
+    const pjInputCount = Array.from(inputtingNurseMap.values()).filter(
+      (n) => n.role === 'PJ Shift'
+    ).length;
+    const totalNursesDinas = inputtingNurseMap.size;
+    const pelaksanaCount = Math.max(0, totalNursesDinas - pjInputCount);
     const ratioNum =
       totalNursesDinas > 0 && totalVerified > 0
         ? (totalVerified / totalNursesDinas).toFixed(1).replace(/\.0$/, '')
         : '0';
 
-    // Doctors fallback from doctor_schedules
+    // Scheduled Doctors prioritized from doctor_schedules, fallback to logbooks
     const docScheds = doctorSchedules.filter(
       (d) => d.date === selectedDate && (shiftFilter === 'ALL' || d.shift === shiftFilter)
     );
-    if (dpjpNames.size === 0) {
-      docScheds.forEach((d) => d.dpjpDoctorName && dpjpNames.add(d.dpjpDoctorName));
-    }
-    if (dutyDoctorNames.size === 0) {
-      docScheds.forEach((d) => d.dutyDoctorName && dutyDoctorNames.add(d.dutyDoctorName));
-    }
+    const scheduledDpjpNames = new Set<string>();
+    const scheduledDutyDoctorNames = new Set<string>();
+    docScheds.forEach((d) => {
+      if (d.dpjpDoctorName) scheduledDpjpNames.add(d.dpjpDoctorName);
+      if (d.dutyDoctorName) scheduledDutyDoctorNames.add(d.dutyDoctorName);
+    });
+    const dpjpLabel =
+      Array.from(scheduledDpjpNames).join(', ') ||
+      Array.from(logbookDpjpNames).join(', ') ||
+      '-';
+    const dutyDoctorLabel =
+      Array.from(scheduledDutyDoctorNames).join(', ') ||
+      Array.from(logbookDutyDoctorNames).join(', ') ||
+      '-';
 
-    // PJ Shift & Ka Ruang names (prioritize Penugasan PJ Shift assignment)
+    // PJ Shift & Ka Ruang names (prioritize Penugasan PJ Shift / Jadwal Dinas PJ Shift)
     const assignedPjNameForBanner =
       shiftFilter === 'ALL'
         ? assignedPjListForDate.map((a) => `${a.shift}: ${a.pjNurseName}`).join(', ')
@@ -672,7 +727,9 @@ export function PjShiftReportsPage({
     const pjShiftName =
       activeSavedReport?.handoverSignedByName ||
       assignedPjNameForBanner ||
-      (scheduledPjCurrentList.length === 1 ? scheduledPjCurrentList[0].fullName : '') ||
+      (scheduledPjCurrentList.length > 0
+        ? scheduledPjCurrentList.map((s) => s.fullName).join(', ')
+        : '') ||
       (activeSavedReport?.authorRole === 'PJ Shift' ? activeSavedReport.authorName : '') ||
       Array.from(pjVerifierNames)[0] ||
       'Belum ditetapkan PJ Shift';
@@ -680,7 +737,9 @@ export function PjShiftReportsPage({
     const nextPjShiftName =
       activeSavedReport?.receivedSignedByName ||
       assignedPjNext?.pjNurseName ||
-      (scheduledPjNextList.length === 1 ? scheduledPjNextList[0].fullName : '') ||
+      (scheduledPjNextList.length > 0
+        ? scheduledPjNextList.map((s) => s.fullName).join(', ')
+        : '') ||
       'Belum ditetapkan PJ Shift';
 
     const kaRuangName =
@@ -688,14 +747,24 @@ export function PjShiftReportsPage({
       (userProfile?.role === 'Kepala Ruang' ? userProfile.fullName : '') ||
       Array.from(karuVerifierNames)[0] ||
       activeKaruList[0]?.fullName ||
-      'Kepala Ruang HD';
+      'TWIS FERTILIANTI PW';
 
     // Machines metrics
     const totalMachines = machines.length;
-    const operationalMachines = machines.filter(
-      (m) => m.status === 'Ready' || m.status === 'In Use'
-    ).length;
-    const maintenanceMachines = machines.filter((m) => m.status === 'Maintenance').length;
+    const liveMaintMachines = machines.filter((m) => m.status === 'Maintenance');
+    const savedMaintMeta = activeSavedReport?.sectionDItems?.find(
+      (it) => it.item === '__META_MAINTENANCE_MACHINES__'
+    );
+    const hasManualMaintenance = Boolean(savedMaintMeta);
+    const parsedMaintCount = savedMaintMeta ? Number(savedMaintMeta.parameter) : NaN;
+    const maintenanceMachines =
+      savedMaintMeta && Number.isFinite(parsedMaintCount) && parsedMaintCount >= 0
+        ? Math.min(totalMachines > 0 ? totalMachines : parsedMaintCount, Math.round(parsedMaintCount))
+        : liveMaintMachines.length;
+    const maintenanceNote = savedMaintMeta
+      ? savedMaintMeta.result || ''
+      : liveMaintMachines.map((m) => m.machineNumber).filter(Boolean).join(', ');
+    const operationalMachines = Math.max(0, totalMachines - maintenanceMachines);
     const hepBMachines = machines.filter(
       (m) => /hep\s*b/i.test(m.roomZone || '') || /hep\s*b/i.test(m.notes || '')
     ).length;
@@ -785,9 +854,7 @@ export function PjShiftReportsPage({
                 }.`
             )
             .join(' ')
-        : `Seluruh ${totalVerified} pasien terverifikasi menjalani tindakan HD sesuai resep DPJP dengan akses vaskular (${avfCount} AVF, ${avgCount} AVG, ${
-            cdlNonTunnelCount + cdlTunnelCount
-          } CDL) dalam kondisi paten.`;
+        : `Seluruh ${totalVerified} pasien terverifikasi menjalani tindakan HD sesuai resep DPJP dengan akses vaskular (${avfCount} Cimino/AVF, ${cdlCount} CDL, ${femoralCount} Femoral) dalam kondisi paten.`;
 
     const autoAssessment =
       totalVerified === 0
@@ -828,7 +895,7 @@ export function PjShiftReportsPage({
       scheduledPatientsCount,
       totalVerified,
       citoCount,
-      rescheduledCount: Math.max(0, scheduledPatientsCount - totalVerified),
+      rescheduledCount,
       regulerCount,
       hepBCount,
       hepCHivCount,
@@ -837,22 +904,24 @@ export function PjShiftReportsPage({
       totalMachines,
       operationalMachines,
       maintenanceMachines,
+      maintenanceNote,
+      hasManualMaintenance,
       hepBMachines,
       hepCMachines,
       avfCount,
-      avgCount,
-      cdlNonTunnelCount,
-      cdlTunnelCount,
+      cdlCount,
+      femoralCount,
+      therapyPatients,
       pjShiftName,
       nextPjShiftName,
       nextShiftName,
       kaRuangName,
-      dpjpLabel: Array.from(dpjpNames).join(', ') || '-',
-      dutyDoctorLabel: Array.from(dutyDoctorNames).join(', ') || '-',
+      dpjpLabel,
+      dutyDoctorLabel,
       allNurseRoster,
       totalNursesDinas,
-      pjCount: pjInRoster.length || (totalNursesDinas > 0 ? 1 : 0),
-      pelaksanaCount: pjInRoster.length > 0 ? pelaksanaCount : Math.max(0, totalNursesDinas - 1),
+      pjCount: pjInputCount,
+      pelaksanaCount,
       ratioNum,
       ufMetCount,
       underUfDetails,
@@ -889,15 +958,15 @@ export function PjShiftReportsPage({
       autoRecommendation,
     };
   }, [
+    logbooks,
     verifiedEntries,
+    verifierFilter,
     selectedDate,
-    handoverTargetDate,
     nextShiftName,
     shiftFilter,
     patients,
     patientMap,
     machines,
-    schedules,
     doctorSchedules,
     staffDirectory,
     staffMap,
@@ -1590,8 +1659,10 @@ export function PjShiftReportsPage({
   }, [shiftStats]);
 
   const sectionDRows = useMemo<ReportSectionDItem[]>(() => {
-    const saved = activeSavedReport?.sectionDItems;
-    if (!saved || saved.length === 0) return autoSectionDRows;
+    const saved = (activeSavedReport?.sectionDItems || []).filter(
+      (s) => !s.item.startsWith('__META_')
+    );
+    if (saved.length === 0) return autoSectionDRows;
     return autoSectionDRows.map((autoRow, idx) => {
       const matched = saved.find((s) => s.item === autoRow.item) || saved[idx];
       if (!matched) return autoRow;
@@ -1604,11 +1675,141 @@ export function PjShiftReportsPage({
     });
   }, [activeSavedReport, autoSectionDRows]);
 
+  const handleOpenMaintModal = () => {
+    if (!canEditContent) return;
+    const savedMeta = activeSavedReport?.sectionDItems?.find(
+      (it) => it.item === '__META_MAINTENANCE_MACHINES__'
+    );
+    if (savedMeta) {
+      setMaintCountInput(String(shiftStats.maintenanceMachines));
+      const existingNote = savedMeta.result || '';
+      setMaintNotesInput(existingNote);
+      const matchedIds = machines
+        .filter((m) =>
+          existingNote
+            .split(/[,;]+/)
+            .map((s) => s.trim().toLowerCase())
+            .includes(m.machineNumber.trim().toLowerCase())
+        )
+        .map((m) => m.id);
+      setMaintSelectedIds(matchedIds);
+    } else {
+      const liveMaint = machines.filter((m) => m.status === 'Maintenance');
+      setMaintCountInput(String(liveMaint.length));
+      setMaintSelectedIds(liveMaint.map((m) => m.id));
+      setMaintNotesInput(liveMaint.map((m) => m.machineNumber).filter(Boolean).join(', '));
+    }
+    setShowMaintModal(true);
+  };
+
+  const handleToggleMaintMachine = (machine: Machine) => {
+    setMaintSelectedIds((prev) => {
+      const exists = prev.includes(machine.id);
+      const nextIds = exists ? prev.filter((id) => id !== machine.id) : [...prev, machine.id];
+      const nextNames = machines
+        .filter((m) => nextIds.includes(m.id))
+        .map((m) => m.machineNumber)
+        .join(', ');
+      setMaintCountInput(String(nextIds.length));
+      setMaintNotesInput(nextNames);
+      return nextIds;
+    });
+  };
+
+  const handleSaveMaintenance = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!userProfile || shiftFilter === 'ALL') return;
+    const parsedCount = Math.max(0, Math.round(Number(maintCountInput) || 0));
+    const cappedCount =
+      shiftStats.totalMachines > 0 ? Math.min(shiftStats.totalMachines, parsedCount) : parsedCount;
+    const nextMetaItem: ReportSectionDItem = {
+      item: '__META_MAINTENANCE_MACHINES__',
+      parameter: String(cappedCount),
+      result: clampString(maintNotesInput, 300),
+      status: 'MANUAL',
+    };
+    const existingOtherItems = (activeSavedReport?.sectionDItems || []).filter(
+      (it) => it.item !== '__META_MAINTENANCE_MACHINES__'
+    );
+    const nextItems = [...existingOtherItems, nextMetaItem];
+    const nextOperational = Math.max(0, shiftStats.totalMachines - cappedCount);
+
+    setSavingMaint(true);
+    setSignFeedback(null);
+    try {
+      if (activeSavedReport) {
+        await updateRowByColumn(
+          'reports',
+          'id',
+          activeSavedReport.id,
+          toReportRow({
+            activeMachines: nextOperational,
+            sectionDItems: nextItems,
+          })
+        );
+      } else {
+        const base = getBaseNewReportPayload(shiftFilter);
+        if (base) {
+          await insertRow(
+            'reports',
+            toReportRow({
+              id: generateRecordId(),
+              ...base,
+              activeMachines: nextOperational,
+              sectionDItems: nextItems,
+            })
+          );
+        }
+      }
+      setShowMaintModal(false);
+      setSignFeedback({
+        type: 'success',
+        message: `Data Mesin Maintenance (${cappedCount} unit) berhasil disimpan.`,
+      });
+      showToast(`Mesin Maintenance shift disimpan (${cappedCount} unit).`, 'success');
+    } catch (err) {
+      showToast('Gagal menyimpan data Mesin Maintenance.', 'error');
+      handleDbError(err, OperationType.UPDATE, 'reports');
+    } finally {
+      setSavingMaint(false);
+    }
+  };
+
+  const handleResetMaintenance = async () => {
+    if (!activeSavedReport || !canEditContent) return;
+    const existingOtherItems = (activeSavedReport.sectionDItems || []).filter(
+      (it) => it.item !== '__META_MAINTENANCE_MACHINES__'
+    );
+    const liveMaintCount = machines.filter((m) => m.status === 'Maintenance').length;
+    setSavingMaint(true);
+    try {
+      await updateRowByColumn(
+        'reports',
+        'id',
+        activeSavedReport.id,
+        toReportRow({
+          activeMachines: Math.max(0, shiftStats.totalMachines - liveMaintCount),
+          sectionDItems: existingOtherItems,
+        })
+      );
+      setShowMaintModal(false);
+      showToast('Data Mesin Maintenance dikembalikan ke status live Data Mesin.', 'info');
+    } catch (err) {
+      showToast('Gagal mereset Mesin Maintenance.', 'error');
+      handleDbError(err, OperationType.UPDATE, `reports/${activeSavedReport.id}`);
+    } finally {
+      setSavingMaint(false);
+    }
+  };
+
   const handleSaveSectionDRow = async (idx: number) => {
     if (!userProfile || !draftSectionDRow || shiftFilter === 'ALL') return;
     setSavingSectionD(true);
     setSignFeedback(null);
-    const nextItems = sectionDRows.map((r, i) =>
+    const preservedMetaItems = (activeSavedReport?.sectionDItems || []).filter((it) =>
+      it.item.startsWith('__META_')
+    );
+    const nextSectionD = sectionDRows.map((r, i) =>
       i === idx
         ? {
             item: r.item,
@@ -1618,6 +1819,7 @@ export function PjShiftReportsPage({
           }
         : r
     );
+    const nextItems = [...nextSectionD, ...preservedMetaItems];
     try {
       if (activeSavedReport) {
         await updateRowByColumn(
@@ -1663,13 +1865,16 @@ export function PjShiftReportsPage({
   const handleResetSectionD = async () => {
     if (!activeSavedReport || !canEditContent) return;
     setSavingSectionD(true);
+    const preservedMetaItems = (activeSavedReport.sectionDItems || []).filter((it) =>
+      it.item.startsWith('__META_')
+    );
     try {
       await updateRowByColumn(
         'reports',
         'id',
         activeSavedReport.id,
         toReportRow({
-          sectionDItems: [],
+          sectionDItems: preservedMetaItems,
         })
       );
       setEditingSectionDIndex(null);
@@ -1924,7 +2129,7 @@ export function PjShiftReportsPage({
         shiftStats.otherIncidents.length > 0
       ),
       buildRow(
-        'Konsultasi Cito ke DPJP',
+        'Advis Dokter Umum & DPJP',
         shiftStats.consultIncidents.length > 0
           ? `${shiftStats.consultIncidents.length} Kali${
               shiftStats.dutyDoctorLabel !== '-' ? ` (${shiftStats.dutyDoctorLabel})` : ''
@@ -1941,6 +2146,15 @@ export function PjShiftReportsPage({
   }, [shiftStats]);
 
   const handleExportCsv = () => {
+    const therapyExportLabel =
+      shiftStats.therapyPatients.length > 0
+        ? `${shiftStats.therapyPatients.length} Pasien (${shiftStats.therapyPatients
+            .map((t) => t.label)
+            .join('; ')})`
+        : '0 Pasien (Nihil)';
+    const maintExportLabel = shiftStats.maintenanceNote
+      ? `${shiftStats.maintenanceMachines} (${shiftStats.maintenanceNote})`
+      : shiftStats.maintenanceMachines;
     const rows: (string | number)[][] = [
       ['BAGIAN A', 'INFORMASI UMUM SHIFT & KETENAGAAN', '', ''],
       ['Hari / Tanggal', formatFullDayDateId(selectedDate), 'Shift Dinas', getShiftTimeLabel(shiftFilter)],
@@ -1948,9 +2162,17 @@ export function PjShiftReportsPage({
       ['Kepala Ruangan HD', shiftStats.kaRuangName, 'Dokter Jaga Ruangan', shiftStats.dutyDoctorLabel],
       [
         'Jumlah Perawat Dinas',
-        `${shiftStats.totalNursesDinas} Orang (${shiftStats.pjCount} PJ Shift + ${shiftStats.pelaksanaCount} Perawat Pelaksana)`,
+        shiftStats.totalNursesDinas > 0
+          ? `${shiftStats.totalNursesDinas} Orang (${
+              shiftStats.pjCount > 0
+                ? `${shiftStats.pjCount} PJ Shift + ${shiftStats.pelaksanaCount} Perawat Pelaksana`
+                : `${shiftStats.allNurseRoster.join(', ')}`
+            })`
+          : activeSavedReport?.nursesOnDuty || '0 Orang',
         'Rasio Perawat : Pasien',
-        shiftStats.totalNursesDinas > 0 ? `1 : ${shiftStats.ratioNum}` : '-',
+        shiftStats.totalNursesDinas > 0 && shiftStats.totalVerified > 0
+          ? `1 : ${shiftStats.ratioNum} (${shiftStats.totalNursesDinas} Perawat : ${shiftStats.totalVerified} Pasien)`
+          : '-',
       ],
       [
         'Tenaga Pendukung Dinas',
@@ -1961,13 +2183,13 @@ export function PjShiftReportsPage({
       ['BAGIAN B', 'SENSUS PASIEN, AKSES VASKULAR & UTILISASI MESIN', '', ''],
       ['Pasien Terjadwal (Target Shift)', shiftStats.scheduledPatientsCount, 'Total Kapasitas Mesin HD', shiftStats.totalMachines],
       ['Pasien Hadir & Selesai HD', shiftStats.totalVerified, 'Mesin Beroperasi Siap Pakai', shiftStats.operationalMachines],
-      ['Pasien HD Cito / Emergency', shiftStats.citoCount, 'Mesin Maintenance / Perbaikan', shiftStats.maintenanceMachines],
+      ['Pasien HD Cito / Emergency', shiftStats.citoCount, 'Mesin Maintenance / Perbaikan', maintExportLabel],
       ['Pasien Batal / Tunda', shiftStats.rescheduledCount, 'Mesin Khusus Hepatitis B', shiftStats.hepBMachines],
       ['Kategori: Pasien Reguler', shiftStats.regulerCount, 'Mesin Khusus Hepatitis C', shiftStats.hepCMachines],
       ['Kategori: Isolasi Hepatitis B', shiftStats.hepBCount, 'Akses: AV Fistula (Cimino)', shiftStats.avfCount],
-      ['Kategori: Isolasi Hepatitis C / HIV', shiftStats.hepCHivCount, 'Akses: AV Graft', shiftStats.avgCount],
-      ['Status: Rawat Jalan', shiftStats.rajalCount, 'Akses: CDL Non-Tunnel', shiftStats.cdlNonTunnelCount],
-      ['Status: Rawat Inap', shiftStats.ranapCount, 'Akses: CDL Tunneling (Permcath)', shiftStats.cdlTunnelCount],
+      ['Kategori: Isolasi Hepatitis C / HIV', shiftStats.hepCHivCount, 'Akses: Double Lumen (CDL)', shiftStats.cdlCount],
+      ['Status: Rawat Jalan', shiftStats.rajalCount, 'Akses: Femoral', shiftStats.femoralCount],
+      ['Status: Rawat Inap', shiftStats.ranapCount, 'Transfusi & Epo', therapyExportLabel],
       ['BAGIAN C', 'MONITORING ASUHAN KEPERAWATAN & PELAYANAN MEDIS', '', ''],
       ...sectionCRows.map((r) => [r.indicator, r.result, r.target, r.analysis]),
       ['BAGIAN D', 'AKUNTABILITAS NON-MEDIS, OPERASIONAL, WATER TREATMENT & K3', '', ''],
@@ -2199,17 +2421,26 @@ export function PjShiftReportsPage({
                 <td className="border border-slate-300 bg-[#edf3f8] px-3 py-1.5 font-semibold text-slate-800">
                   Jumlah Perawat Dinas
                 </td>
-                <td className="border border-slate-300 px-3 py-1.5 font-bold tabular-nums">
+                <td
+                  title={
+                    shiftStats.allNurseRoster.length > 0
+                      ? `Penginput logbook: ${shiftStats.allNurseRoster.join(', ')}`
+                      : undefined
+                  }
+                  className="border border-slate-300 px-3 py-1.5 font-bold tabular-nums"
+                >
                   {shiftStats.totalNursesDinas > 0
-                    ? `${shiftStats.totalNursesDinas} Orang (${shiftStats.pjCount} PJ Shift + ${shiftStats.pelaksanaCount} Perawat Pelaksana)`
-                    : activeSavedReport?.nursesOnDuty || '-'}
+                    ? shiftStats.pjCount > 0
+                      ? `${shiftStats.totalNursesDinas} Orang (${shiftStats.pjCount} PJ Shift + ${shiftStats.pelaksanaCount} Perawat Pelaksana)`
+                      : `${shiftStats.totalNursesDinas} Orang (${shiftStats.pelaksanaCount} Perawat Pelaksana)`
+                    : activeSavedReport?.nursesOnDuty || '0 Orang'}
                 </td>
                 <td className="border border-slate-300 bg-[#edf3f8] px-3 py-1.5 font-semibold text-slate-800">
                   Rasio Perawat : Pasien
                 </td>
                 <td className="border border-slate-300 px-3 py-1.5 font-bold tabular-nums">
                   {shiftStats.totalNursesDinas > 0 && shiftStats.totalVerified > 0
-                    ? `1 : ${shiftStats.ratioNum} (Standar PERNEFRI 1 : 3-4 Pasien)`
+                    ? `1 : ${shiftStats.ratioNum} (${shiftStats.totalNursesDinas} Perawat : ${shiftStats.totalVerified} Pasien)`
                     : '- (Standar PERNEFRI 1 : 3-4 Pasien)'}
                 </td>
               </tr>
@@ -2247,87 +2478,141 @@ export function PjShiftReportsPage({
               <tr className="bg-[#2c5e8f] text-white text-[10px] uppercase">
                 <th
                   colSpan={2}
-                  className="w-1/2 border border-[#3b6e9e] px-3 py-1.5 text-center font-bold"
+                  className="w-[48%] border border-[#3b6e9e] px-3 py-1.5 text-center font-bold"
                 >
                   SENSUS &amp; KLASIFIKASI PASIEN SHIFT INI
                 </th>
                 <th
                   colSpan={2}
-                  className="w-1/2 border border-[#3b6e9e] px-3 py-1.5 text-center font-bold"
+                  className="w-[52%] border border-[#3b6e9e] px-3 py-1.5 text-center font-bold"
                 >
-                  KAPASITAS MESIN &amp; DISTRIBUSI AKSES VASKULAR
+                  KAPASITAS MESIN, DISTRIBUSI AKSES VASKULAR &amp; PEMELIHARAAN HB
                 </th>
               </tr>
             </thead>
             <tbody>
               {[
                 {
+                  key: 'scheduled-total',
                   lLabel: 'Pasien Terjadwal (Target Shift)',
                   lVal: shiftStats.scheduledPatientsCount,
                   rLabel: 'Total Kapasitas Mesin HD',
                   rVal: shiftStats.totalMachines,
                 },
                 {
+                  key: 'hadir-ready',
                   lLabel: 'Pasien Hadir & Selesai HD',
                   lVal: shiftStats.totalVerified,
                   rLabel: 'Mesin Beroperasi Siap Pakai',
                   rVal: shiftStats.operationalMachines,
                 },
                 {
+                  key: 'cito-maint',
                   lLabel: 'Pasien HD Cito / Emergency (ICU/IGD)',
                   lVal: shiftStats.citoCount,
                   rLabel: 'Mesin Maintenance / Perbaikan',
                   rVal: shiftStats.maintenanceMachines,
+                  isMaintenanceRow: true,
                 },
                 {
+                  key: 'batal-hepb-machine',
                   lLabel: 'Pasien Batal / Tunda (Reschedule)',
                   lVal: shiftStats.rescheduledCount,
                   rLabel: 'Mesin Khusus Hepatitis B (Isolasi)',
                   rVal: shiftStats.hepBMachines,
                 },
                 {
+                  key: 'reguler-hepc-machine',
                   lLabel: 'Kategori: Pasien Reguler (Non-Hepatitis)',
                   lVal: shiftStats.regulerCount,
                   rLabel: 'Mesin Khusus Hepatitis C',
                   rVal: shiftStats.hepCMachines,
                 },
                 {
+                  key: 'hepb-avf',
                   lLabel: 'Kategori: Pasien Isolasi Hepatitis B',
                   lVal: shiftStats.hepBCount,
                   rLabel: 'Akses: AV Fistula (Cimino)',
                   rVal: shiftStats.avfCount,
                 },
                 {
+                  key: 'hepc-cdl',
                   lLabel: 'Kategori: Pasien Isolasi Hepatitis C / HIV',
                   lVal: shiftStats.hepCHivCount,
-                  rLabel: 'Akses: AV Graft',
-                  rVal: shiftStats.avgCount,
+                  rLabel: 'Akses: Double Lumen (CDL)',
+                  rVal: shiftStats.cdlCount,
                 },
                 {
+                  key: 'rajal-femoral',
                   lLabel: 'Status: Pasien Rawat Jalan',
                   lVal: shiftStats.rajalCount,
-                  rLabel: 'Akses: Double Lumen (CDL) Non-Tunnel',
-                  rVal: shiftStats.cdlNonTunnelCount,
+                  rLabel: 'Akses: Femoral',
+                  rVal: shiftStats.femoralCount,
                 },
                 {
+                  key: 'ranap-therapy',
                   lLabel: 'Status: Pasien Rawat Inap (Bangsal/ICU)',
                   lVal: shiftStats.ranapCount,
-                  rLabel: 'Akses: Double Lumen Tunneling (Permcath)',
-                  rVal: shiftStats.cdlTunnelCount,
+                  rLabel: 'Transfusi & Epo (Jumlah Pasien yang transfusi dan Epo)',
+                  rVal: shiftStats.therapyPatients.length,
+                  isTherapyRow: true,
                 },
               ].map((row, i) => (
-                <tr key={row.lLabel} className={i % 2 === 1 ? 'bg-slate-50/70' : 'bg-white'}>
-                  <td className="w-[38%] border border-slate-300 px-3 py-1.5 text-slate-800">
+                <tr key={row.key} className={i % 2 === 1 ? 'bg-slate-50/70' : 'bg-white'}>
+                  <td className="w-[36%] border border-slate-300 px-3 py-1.5 text-slate-800">
                     {row.lLabel}
                   </td>
                   <td className="w-[12%] border border-slate-300 px-3 py-1.5 text-center font-mono font-bold tabular-nums">
                     {row.lVal}
                   </td>
-                  <td className="w-[38%] border border-slate-300 px-3 py-1.5 text-slate-800">
+                  <td className="w-[30%] border border-slate-300 px-3 py-1.5 text-slate-800">
                     {row.rLabel}
                   </td>
-                  <td className="w-[12%] border border-slate-300 px-3 py-1.5 text-center font-mono font-bold tabular-nums">
-                    {row.rVal}
+                  <td className="w-[22%] border border-slate-300 px-3 py-1.5 text-center align-middle">
+                    {'isMaintenanceRow' in row && row.isMaintenanceRow ? (
+                      <div className="flex flex-col items-center justify-center gap-0.5">
+                        <div className="inline-flex items-center gap-1.5">
+                          <span className="font-mono font-bold tabular-nums">{row.rVal}</span>
+                          {canEditContent && (
+                            <button
+                              type="button"
+                              onClick={handleOpenMaintModal}
+                              title="Input / Edit Mesin Maintenance"
+                              className="no-print inline-flex items-center gap-0.5 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[9.5px] font-semibold text-slate-700 hover:border-[#0e4e78] hover:text-[#0e4e78]"
+                            >
+                              <Pencil className="h-2.5 w-2.5" />
+                              Input
+                            </button>
+                          )}
+                        </div>
+                        {shiftStats.maintenanceNote && (
+                          <span className="text-[10px] font-normal text-slate-600 leading-tight">
+                            ({shiftStats.maintenanceNote})
+                          </span>
+                        )}
+                      </div>
+                    ) : 'isTherapyRow' in row && row.isTherapyRow ? (
+                      shiftStats.therapyPatients.length === 0 ? (
+                        <span className="font-mono font-bold tabular-nums text-slate-700">
+                          0 Pasien (Nihil)
+                        </span>
+                      ) : (
+                        <div className="text-left space-y-0.5">
+                          <div className="font-mono font-bold tabular-nums text-center text-slate-900">
+                            {shiftStats.therapyPatients.length} Pasien
+                          </div>
+                          <div className="text-[10px] font-normal text-slate-700 leading-snug">
+                            {shiftStats.therapyPatients.map((tp, tpIdx) => (
+                              <div key={tp.id}>
+                                {tpIdx + 1}. {tp.label}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    ) : (
+                      <span className="font-mono font-bold tabular-nums">{row.rVal}</span>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -2785,12 +3070,12 @@ export function PjShiftReportsPage({
                       <p className="font-bold text-slate-900">({shiftStats.pjShiftName})</p>
                     </td>
 
-                    {/* Kolom 2: Yang Menerima (PJ Shift Berikutnya) - Tidak ditampilkan pada Shift Siang karena tidak ada Shift Malam */}
+                    {/* Kolom 2: Yang Menerima (PJ Shift Berikutnya) - Untuk Shift Pagi tampil 3 kolom (PJ Shift Pagi, PJ Shift Siang, Kepala Ruang). Tidak ditampilkan pada Shift Siang. */}
                     {showNextPjColumn && (
                       <td className="w-1/3 border border-slate-300 px-4 py-3 text-center align-top">
                         <p className="font-bold text-slate-900">Yang Menerima,</p>
                         <p className="font-bold text-slate-800">
-                          Perawat PJ Shift Berikutnya ({shiftStats.nextShiftName})
+                          Perawat Penanggung Jawab (PJ) Shift {shiftStats.nextShiftName}
                         </p>
                         <div className="pj-sig-box my-2.5 min-h-[78px] flex flex-col items-center justify-center gap-1.5">
                           {activeSavedReport?.receivedSignedBy ? (
@@ -3127,6 +3412,136 @@ export function PjShiftReportsPage({
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+      {/* Edit Mesin Maintenance / Perbaikan Modal */}
+      {showMaintModal && (
+        <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 overflow-y-auto">
+          <div className="w-full max-w-lg rounded-xl border border-slate-200 bg-white shadow-xl my-8">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
+              <div>
+                <h3 className="font-display text-sm font-bold text-slate-900">
+                  Input Mesin Maintenance / Perbaikan
+                </h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  {formatFullDayDateId(selectedDate)} · {getShiftTimeLabel(shiftFilter)}
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={savingMaint}
+                onClick={() => setShowMaintModal(false)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <form onSubmit={handleSaveMaintenance} className="p-5 space-y-4 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Jumlah Mesin Maintenance
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={shiftStats.totalMachines || 99}
+                    required
+                    value={maintCountInput}
+                    onChange={(e) => setMaintCountInput(e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-xs focus:border-[#0e4e78] focus:outline-none"
+                  />
+                  <p className="mt-1 text-[10.5px] text-slate-500">
+                    Mesin Siap Pakai otomatis:{' '}
+                    <strong>
+                      {Math.max(
+                        0,
+                        shiftStats.totalMachines - Math.max(0, Math.round(Number(maintCountInput) || 0))
+                      )}
+                    </strong>{' '}
+                    / {shiftStats.totalMachines}
+                  </p>
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Nomor Mesin / Keterangan
+                  </label>
+                  <input
+                    type="text"
+                    value={maintNotesInput}
+                    onChange={(e) => setMaintNotesInput(e.target.value)}
+                    placeholder="cth: HD-05, HD-12"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs focus:border-[#0e4e78] focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {machines.length > 0 && (
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1.5">
+                    Pilih Cepat dari Daftar Mesin HD (Opsional)
+                  </label>
+                  <div className="max-h-40 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50/70 p-2.5 grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                    {machines.map((m) => {
+                      const checked = maintSelectedIds.includes(m.id);
+                      return (
+                        <label
+                          key={m.id}
+                          className={`flex items-center gap-1.5 rounded border px-2 py-1 text-[11px] cursor-pointer transition-colors ${
+                            checked
+                              ? 'border-[#0e4e78] bg-sky-50 text-[#0e4e78] font-semibold'
+                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => handleToggleMaintMachine(m)}
+                            className="h-3.5 w-3.5 rounded border-slate-300 text-[#0e4e78] focus:ring-[#0e4e78]"
+                          />
+                          <span className="truncate">{m.machineNumber}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200">
+                {shiftStats.hasManualMaintenance && activeSavedReport ? (
+                  <button
+                    type="button"
+                    disabled={savingMaint}
+                    onClick={handleResetMaintenance}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-1.5 text-[11px] font-semibold text-slate-600 hover:bg-slate-50"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    Ikuti Live Data Mesin
+                  </button>
+                ) : (
+                  <span />
+                )}
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={savingMaint}
+                    onClick={() => setShowMaintModal(false)}
+                    className="rounded-lg border border-slate-300 px-4 py-2 font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingMaint}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#0e4e78] px-4 py-2 font-semibold text-white hover:bg-[#093b5c] disabled:opacity-60"
+                  >
+                    <Save className="h-3.5 w-3.5" />
+                    {savingMaint ? 'Menyimpan...' : 'Simpan'}
+                  </button>
+                </div>
+              </div>
+            </form>
           </div>
         </div>
       )}
