@@ -8,8 +8,10 @@ import {
 } from '../lib/supabase';
 import {
   deleteRowByColumn,
+  fetchLogbookWizardDetailsByIds,
   fetchRowsPaginated,
   getRowByColumn,
+  LOGBOOK_SUMMARY_COLUMNS,
   mapActionCategoryRow,
   mapDoctorRow,
   mapDoctorScheduleRow,
@@ -52,6 +54,36 @@ import type {
 
 const MONTH_KEY_RE = /^\d{4}-\d{2}$/;
 
+function shiftDateStr(dateStr: string, deltaDays: number): string {
+  const parts = dateStr.split('-').map(Number);
+  if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) return dateStr;
+  const d = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2] + deltaDays));
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function mergeLogbooksPreservingDetails(
+  prev: LogbookEntry[],
+  incoming: LogbookEntry[]
+): LogbookEntry[] {
+  if (incoming.length === 0) return prev;
+  const map = new Map<string, LogbookEntry>();
+  for (const item of prev) {
+    map.set(item.id, item);
+  }
+  for (const item of incoming) {
+    const existing = map.get(item.id);
+    if (existing && item.wizardDetails === undefined && existing.wizardDetails !== undefined) {
+      map.set(item.id, { ...item, wizardDetails: existing.wizardDetails });
+    } else {
+      map.set(item.id, item);
+    }
+  }
+  return Array.from(map.values());
+}
+
 function mergeListByKey<T>(
   prev: T[],
   nextItem: T,
@@ -90,7 +122,7 @@ function mergeManyByKey<T>(
 
 export function useUnitData() {
   const { authReady, authUser, userProfile } = useAuth();
-  const { currentMonthKey: activeMonthKey } = useLiveClock();
+  const { todayDate, currentMonthKey: activeMonthKey } = useLiveClock();
 
   const [patients, setPatients] = useState<Patient[]>([]);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
@@ -122,6 +154,9 @@ export function useUnitData() {
   const inflightMonthsRef = useRef<Map<string, Promise<void>>>(new Map());
   const allArchivesLoadedRef = useRef(false);
   const inflightAllArchivesRef = useRef<Promise<void> | null>(null);
+  const hydratedLogbookIdsRef = useRef<Set<string>>(new Set());
+  const inflightDetailPromisesRef = useRef<Map<string, Promise<void>>>(new Map());
+  const allLogbooksRawRef = useRef<LogbookEntry[]>([]);
 
   const prunedLockIdsRef = useRef<Set<string>>(new Set());
   const prunedMachineLockIdsRef = useRef<Set<string>>(new Set());
@@ -136,12 +171,15 @@ export function useUnitData() {
 
   const sessionKeyRef = useRef<string | null>(null);
   const activeMonthKeyRef = useRef(activeMonthKey);
+  const todayDateRef = useRef(todayDate);
   const authUidRef = useRef<string | null>(authUser?.uid ?? null);
   const isLeaderOrAdminRef = useRef(isLeaderOrAdmin);
 
   activeMonthKeyRef.current = activeMonthKey;
+  todayDateRef.current = todayDate;
   authUidRef.current = authUser?.uid ?? null;
   isLeaderOrAdminRef.current = isLeaderOrAdmin;
+  allLogbooksRawRef.current = allLogbooksRaw;
 
   const loadMonthData = useCallback(async (monthKey: string, forceRefresh = false) => {
     if (!supabase || !MONTH_KEY_RE.test(monthKey)) return;
@@ -154,11 +192,15 @@ export function useUnitData() {
       setArchiveRequestCount((n) => n + 1);
       try {
         const [lbRows, repRows, schedRows, docSchedRows, pjRows] = await Promise.all([
-          fetchRowsPaginated('logbook', mapLogbookRow, (q) =>
-            q
-              .eq('month_key', monthKey)
-              .order('date', { ascending: false })
-              .order('id', { ascending: true })
+          fetchRowsPaginated(
+            'logbook',
+            mapLogbookRow,
+            (q) =>
+              q
+                .eq('month_key', monthKey)
+                .order('date', { ascending: false })
+                .order('id', { ascending: true }),
+            { columns: LOGBOOK_SUMMARY_COLUMNS }
           ),
           fetchRowsPaginated('reports', mapReportRow, (q) =>
             q
@@ -190,13 +232,23 @@ export function useUnitData() {
         if (sessionKeyRef.current !== capturedSessionKey) return;
 
         if (forceRefresh) {
-          setAllLogbooksRaw((prev) =>
-            mergeManyByKey(
+          setAllLogbooksRaw((prev) => {
+            const existingDetailMap = new Map<string, LogbookEntry['wizardDetails']>();
+            for (const item of prev) {
+              if (item.monthKey === monthKey && item.wizardDetails !== undefined) {
+                existingDetailMap.set(item.id, item.wizardDetails);
+              }
+            }
+            const preservedLbRows = lbRows.map((item) =>
+              item.wizardDetails === undefined && existingDetailMap.has(item.id)
+                ? { ...item, wizardDetails: existingDetailMap.get(item.id) }
+                : item
+            );
+            return mergeLogbooksPreservingDetails(
               prev.filter((item) => item.monthKey !== monthKey),
-              lbRows,
-              (l) => l.id
-            )
-          );
+              preservedLbRows
+            );
+          });
           setAllReportsRaw((prev) =>
             mergeManyByKey(
               prev.filter((item) => item.monthKey !== monthKey),
@@ -226,7 +278,7 @@ export function useUnitData() {
             )
           );
         } else {
-          setAllLogbooksRaw((prev) => mergeManyByKey(prev, lbRows, (l) => l.id));
+          setAllLogbooksRaw((prev) => mergeLogbooksPreservingDetails(prev, lbRows));
           setAllReportsRaw((prev) => mergeManyByKey(prev, repRows, (r) => r.id));
           setSchedules((prev) => mergeManyByKey(prev, schedRows, (s) => s.id));
           setDoctorSchedules((prev) => mergeManyByKey(prev, docSchedRows, (d) => d.id));
@@ -287,11 +339,15 @@ export function useUnitData() {
       setArchiveRequestCount((n) => n + 1);
       try {
         const [lbRows, repRows, schedRows, docSchedRows, pjRows] = await Promise.all([
-          fetchRowsPaginated('logbook', mapLogbookRow, (q) =>
-            q
-              .neq('month_key', currentActiveMonth)
-              .order('date', { ascending: false })
-              .order('id', { ascending: true })
+          fetchRowsPaginated(
+            'logbook',
+            mapLogbookRow,
+            (q) =>
+              q
+                .neq('month_key', currentActiveMonth)
+                .order('date', { ascending: false })
+                .order('id', { ascending: true }),
+            { columns: LOGBOOK_SUMMARY_COLUMNS }
           ),
           fetchRowsPaginated('reports', mapReportRow, (q) =>
             q
@@ -322,7 +378,7 @@ export function useUnitData() {
 
         if (sessionKeyRef.current !== capturedSessionKey) return;
 
-        setAllLogbooksRaw((prev) => mergeManyByKey(prev, lbRows, (l) => l.id));
+        setAllLogbooksRaw((prev) => mergeLogbooksPreservingDetails(prev, lbRows));
         setAllReportsRaw((prev) => mergeManyByKey(prev, repRows, (r) => r.id));
         setSchedules((prev) => mergeManyByKey(prev, schedRows, (s) => s.id));
         setDoctorSchedules((prev) => mergeManyByKey(prev, docSchedRows, (d) => d.id));
@@ -349,6 +405,90 @@ export function useUnitData() {
     inflightAllArchivesRef.current = task;
     return task;
   }, []);
+
+  const ensureLogbookDetailsByIds = useCallback(async (ids: string[]) => {
+    if (!supabase || ids.length === 0) return;
+    const uid = authUidRef.current;
+    const capturedSessionKey = sessionKeyRef.current;
+    if (!uid || !capturedSessionKey) return;
+
+    const pendingPromises: Promise<void>[] = [];
+    const missingIds: string[] = [];
+    for (const id of ids) {
+      if (!id || hydratedLogbookIdsRef.current.has(id)) continue;
+      const inflight = inflightDetailPromisesRef.current.get(id);
+      if (inflight) {
+        pendingPromises.push(inflight);
+      } else if (!missingIds.includes(id)) {
+        missingIds.push(id);
+      }
+    }
+
+    if (missingIds.length === 0) {
+      if (pendingPromises.length > 0) {
+        await Promise.all(pendingPromises);
+      }
+      return;
+    }
+
+    const fetchTask = (async () => {
+      setArchiveRequestCount((n) => n + 1);
+      try {
+        const detailsMap = await fetchLogbookWizardDetailsByIds(missingIds);
+        if (sessionKeyRef.current !== capturedSessionKey) return;
+
+        for (const id of missingIds) {
+          hydratedLogbookIdsRef.current.add(id);
+        }
+
+        if (detailsMap.size > 0) {
+          setAllLogbooksRaw((prev) =>
+            prev.map((lb) =>
+              detailsMap.has(lb.id) ? { ...lb, wizardDetails: detailsMap.get(lb.id) } : lb
+            )
+          );
+        }
+      } catch (err) {
+        if (!isTransientDbError(err)) {
+          console.warn('Gagal memuat detail SPO logbook:', err);
+        }
+      } finally {
+        setArchiveRequestCount((n) => Math.max(0, n - 1));
+        for (const id of missingIds) {
+          inflightDetailPromisesRef.current.delete(id);
+        }
+      }
+    })();
+
+    for (const id of missingIds) {
+      inflightDetailPromisesRef.current.set(id, fetchTask);
+    }
+
+    await Promise.all([...pendingPromises, fetchTask]);
+  }, []);
+
+  const ensureMonthDetailsLoaded = useCallback(
+    async (monthKey: string) => {
+      await ensureMonthLoaded(monthKey);
+      const ids = allLogbooksRawRef.current
+        .filter((lb) => lb.monthKey === monthKey && !hydratedLogbookIdsRef.current.has(lb.id))
+        .map((lb) => lb.id);
+      if (ids.length > 0) {
+        await ensureLogbookDetailsByIds(ids);
+      }
+    },
+    [ensureMonthLoaded, ensureLogbookDetailsByIds]
+  );
+
+  const ensureAllArchiveDetailsLoaded = useCallback(async () => {
+    await ensureAllArchivesLoaded();
+    const ids = allLogbooksRawRef.current
+      .filter((lb) => !hydratedLogbookIdsRef.current.has(lb.id))
+      .map((lb) => lb.id);
+    if (ids.length > 0) {
+      await ensureLogbookDetailsByIds(ids);
+    }
+  }, [ensureAllArchivesLoaded, ensureLogbookDetailsByIds]);
 
   // Keep cross-month local mutations (e.g. approving yesterday's carry-over or signing last month's report) synced immediately
   useEffect(() => {
@@ -393,7 +533,11 @@ export function useUnitData() {
       if ((event.op === 'insert' || event.op === 'upsert') && event.row) {
         const row = event.row;
         if (event.table === 'logbook') {
-          setAllLogbooksRaw((prev) => mergeListByKey(prev, mapLogbookRow(row), (l) => l.id));
+          const mapped = mapLogbookRow(row);
+          if ('wizard_details' in row) {
+            hydratedLogbookIdsRef.current.add(mapped.id);
+          }
+          setAllLogbooksRaw((prev) => mergeLogbooksPreservingDetails(prev, [mapped]));
         } else if (event.table === 'reports') {
           setAllReportsRaw((prev) => mergeListByKey(prev, mapReportRow(row), (r) => r.id));
         } else if (event.table === 'schedules') {
@@ -438,7 +582,11 @@ export function useUnitData() {
 
         void (async () => {
           try {
-            const query = sb.from(event.table).select('*');
+            const cols =
+              event.table === 'logbook' && targetValues.length > 1
+                ? LOGBOOK_SUMMARY_COLUMNS
+                : '*';
+            const query = sb.from(event.table).select(cols);
             const { data, error } =
               targetValues.length === 1
                 ? await query.eq(event.col!, targetValues[0])
@@ -446,9 +594,13 @@ export function useUnitData() {
             if (error || !data || data.length === 0) return;
 
             if (event.table === 'logbook') {
-              setAllLogbooksRaw((prev) =>
-                mergeManyByKey(prev, data.map(mapLogbookRow), (l) => l.id)
-              );
+              const mapped = data.map(mapLogbookRow);
+              if (cols === '*') {
+                for (const lb of mapped) {
+                  hydratedLogbookIdsRef.current.add(lb.id);
+                }
+              }
+              setAllLogbooksRaw((prev) => mergeLogbooksPreservingDetails(prev, mapped));
             } else if (event.table === 'reports') {
               setAllReportsRaw((prev) =>
                 mergeManyByKey(prev, data.map(mapReportRow), (r) => r.id)
@@ -484,6 +636,8 @@ export function useUnitData() {
       inflightMonthsRef.current.clear();
       inflightAllArchivesRef.current = null;
       allArchivesLoadedRef.current = false;
+      hydratedLogbookIdsRef.current.clear();
+      inflightDetailPromisesRef.current.clear();
       setAllArchivesLoaded(false);
       setLoading(false);
       return;
@@ -504,6 +658,8 @@ export function useUnitData() {
       inflightMonthsRef.current.clear();
       inflightAllArchivesRef.current = null;
       allArchivesLoadedRef.current = false;
+      hydratedLogbookIdsRef.current.clear();
+      inflightDetailPromisesRef.current.clear();
       setAllArchivesLoaded(false);
       prunedLockIdsRef.current.clear();
       prunedMachineLockIdsRef.current.clear();
@@ -515,6 +671,7 @@ export function useUnitData() {
 
     const loadActiveTables = async () => {
       try {
+        const recentStartDate = shiftDateStr(todayDateRef.current, -1);
         const [
           patRows,
           docRows,
@@ -522,7 +679,8 @@ export function useUnitData() {
           catRows,
           staffRows,
           userRows,
-          activeLbRows,
+          recentAndOpenLbRows,
+          olderApprovedLbRows,
           carryOverLbRows,
           plRows,
           mlRows,
@@ -552,11 +710,26 @@ export function useUnitData() {
                 q.order('full_name', { ascending: true }).order('uid', { ascending: true })
               )
             : Promise.resolve([] as UserProfile[]),
+          // Active window (hari ini + kemarin + seluruh Draft/Pending/Revision bulan berjalan) dengan detail SPO lengkap
           fetchRowsPaginated('logbook', mapLogbookRow, (q) =>
             q
               .eq('month_key', activeMonthKey)
+              .or(`date.gte.${recentStartDate},verification_status.in.(Draft,Pending,Revision)`)
               .order('date', { ascending: false })
               .order('id', { ascending: true })
+          ),
+          // Hari-hari sebelumnya di bulan berjalan yang sudah Approved: hanya kolom ringkasan (tanpa wizard_details)
+          fetchRowsPaginated(
+            'logbook',
+            mapLogbookRow,
+            (q) =>
+              q
+                .eq('month_key', activeMonthKey)
+                .lt('date', recentStartDate)
+                .eq('verification_status', 'Approved')
+                .order('date', { ascending: false })
+                .order('id', { ascending: true }),
+            { columns: LOGBOOK_SUMMARY_COLUMNS }
           ),
           fetchRowsPaginated('logbook', mapLogbookRow, (q) =>
             q
@@ -601,6 +774,13 @@ export function useUnitData() {
 
         if (cancelled) return;
 
+        for (const item of recentAndOpenLbRows) {
+          hydratedLogbookIdsRef.current.add(item.id);
+        }
+        for (const item of carryOverLbRows) {
+          hydratedLogbookIdsRef.current.add(item.id);
+        }
+
         setPatients(patRows);
         setDoctors(docRows);
         setMachines(machRows);
@@ -608,7 +788,10 @@ export function useUnitData() {
         setStaffDirectory(staffRows);
         setAllUsers(isAdmin ? userRows : []);
 
-        const freshLogbooks = mergeManyByKey(activeLbRows, carryOverLbRows, (l) => l.id);
+        const freshLogbooks = mergeLogbooksPreservingDetails(
+          olderApprovedLbRows,
+          mergeLogbooksPreservingDetails(recentAndOpenLbRows, carryOverLbRows)
+        );
         if (isInitialSessionLoad) {
           setAllLogbooksRaw(freshLogbooks);
           setSchedules(schedRows);
@@ -616,17 +799,17 @@ export function useUnitData() {
           setPjShiftAssignments(pjRows);
           setAllReportsRaw(repRows);
         } else {
-          // Preserve already-loaded archive months across reconnects or month rollovers
+          // Preserve already-loaded archive months & hydrated details across reconnects or month rollovers
           setAllLogbooksRaw((prev) =>
-            mergeManyByKey(
+            mergeLogbooksPreservingDetails(
               prev.filter(
                 (lb) =>
-                  lb.monthKey !== activeMonthKey &&
-                  lb.verificationStatus === 'Approved' &&
-                  loadedMonthsRef.current.has(lb.monthKey)
+                  (lb.monthKey !== activeMonthKey &&
+                    lb.verificationStatus === 'Approved' &&
+                    loadedMonthsRef.current.has(lb.monthKey)) ||
+                  (lb.monthKey === activeMonthKey && lb.wizardDetails !== undefined)
               ),
-              freshLogbooks,
-              (l) => l.id
+              freshLogbooks
             )
           );
           setSchedules((prev) =>
@@ -786,9 +969,11 @@ export function useUnitData() {
         { event: 'INSERT', schema: 'public', table: 'logbook', filter: activeMonthFilter },
         (payload) => {
           if (cancelled || !payload.new) return;
-          setAllLogbooksRaw((prev) =>
-            mergeListByKey(prev, mapLogbookRow(payload.new), (l) => l.id)
-          );
+          const mapped = mapLogbookRow(payload.new);
+          if ('wizard_details' in payload.new) {
+            hydratedLogbookIdsRef.current.add(mapped.id);
+          }
+          setAllLogbooksRaw((prev) => mergeLogbooksPreservingDetails(prev, [mapped]));
         }
       )
       .on(
@@ -796,9 +981,11 @@ export function useUnitData() {
         { event: 'UPDATE', schema: 'public', table: 'logbook', filter: activeMonthFilter },
         (payload) => {
           if (cancelled || !payload.new) return;
-          setAllLogbooksRaw((prev) =>
-            mergeListByKey(prev, mapLogbookRow(payload.new), (l) => l.id)
-          );
+          const mapped = mapLogbookRow(payload.new);
+          if ('wizard_details' in payload.new) {
+            hydratedLogbookIdsRef.current.add(mapped.id);
+          }
+          setAllLogbooksRaw((prev) => mergeLogbooksPreservingDetails(prev, [mapped]));
         }
       )
       .on(
@@ -1177,6 +1364,9 @@ export function useUnitData() {
     allArchivesLoaded,
     ensureMonthLoaded,
     ensureAllArchivesLoaded,
+    ensureLogbookDetailsByIds,
+    ensureMonthDetailsLoaded,
+    ensureAllArchiveDetailsLoaded,
     patients,
     doctors,
     machines,

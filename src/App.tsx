@@ -141,6 +141,9 @@ function WorkspaceShell() {
     archiveLoading,
     ensureMonthLoaded,
     ensureAllArchivesLoaded,
+    ensureLogbookDetailsByIds,
+    ensureMonthDetailsLoaded,
+    ensureAllArchiveDetailsLoaded,
     patients,
     doctors,
     machines,
@@ -403,6 +406,7 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_
             archiveLoading={archiveLoading}
             onEnsureMonthLoaded={ensureMonthLoaded}
             onEnsureAllArchivesLoaded={ensureAllArchivesLoaded}
+            onEnsureLogbookDetailsByIds={ensureLogbookDetailsByIds}
           />
         );
       case 'master_logbook':
@@ -424,6 +428,7 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_
             archiveLoading={archiveLoading}
             onEnsureMonthLoaded={ensureMonthLoaded}
             onEnsureAllArchivesLoaded={ensureAllArchivesLoaded}
+            onEnsureLogbookDetailsByIds={ensureLogbookDetailsByIds}
           />
         );
       case 'verifikasi':
@@ -441,6 +446,7 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_
             archiveLoading={archiveLoading}
             onEnsureMonthLoaded={ensureMonthLoaded}
             onEnsureAllArchivesLoaded={ensureAllArchivesLoaded}
+            onEnsureLogbookDetailsByIds={ensureLogbookDetailsByIds}
           />
         );
       case 'riwayat':
@@ -473,6 +479,9 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_
             archiveLoading={archiveLoading}
             onEnsureMonthLoaded={ensureMonthLoaded}
             onEnsureAllArchivesLoaded={ensureAllArchivesLoaded}
+            onEnsureMonthDetailsLoaded={ensureMonthDetailsLoaded}
+            onEnsureAllArchiveDetailsLoaded={ensureAllArchiveDetailsLoaded}
+            onEnsureLogbookDetailsByIds={ensureLogbookDetailsByIds}
           />
         );
       case 'laporan_pj_shift':
@@ -488,6 +497,7 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_
             pjShiftAssignments={pjShiftAssignments}
             archiveLoading={archiveLoading}
             onEnsureMonthLoaded={ensureMonthLoaded}
+            onEnsureLogbookDetailsByIds={ensureLogbookDetailsByIds}
           />
         );
       case 'laporan_bulanan':
@@ -498,7 +508,7 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_
             reports={allReports}
             formTemplate={formTemplate}
             archiveLoading={archiveLoading}
-            onEnsureMonthLoaded={ensureMonthLoaded}
+            onEnsureMonthLoaded={ensureMonthDetailsLoaded}
           />
         );
       case 'jadwal_dinas':

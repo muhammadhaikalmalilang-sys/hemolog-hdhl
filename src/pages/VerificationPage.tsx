@@ -47,6 +47,7 @@ interface VerificationPageProps {
   archiveLoading?: boolean;
   onEnsureMonthLoaded?: (monthKey: string) => Promise<void> | void;
   onEnsureAllArchivesLoaded?: () => Promise<void> | void;
+  onEnsureLogbookDetailsByIds?: (ids: string[]) => Promise<void> | void;
 }
 
 export function VerificationPage({
@@ -62,6 +63,7 @@ export function VerificationPage({
   archiveLoading = false,
   onEnsureMonthLoaded,
   onEnsureAllArchivesLoaded,
+  onEnsureLogbookDetailsByIds,
 }: VerificationPageProps) {
   const { authUser, userProfile } = useAuth();
   const { showToast } = useToast();
@@ -106,6 +108,16 @@ export function VerificationPage({
       void onEnsureAllArchivesLoaded?.();
     }
   }, [dateFilter, statusFilter, onEnsureMonthLoaded, onEnsureAllArchivesLoaded]);
+
+  useEffect(() => {
+    if (!dateFilter || !onEnsureLogbookDetailsByIds) return;
+    const missingIds = logbooks
+      .filter((lb) => lb.date === dateFilter && lb.wizardDetails === undefined)
+      .map((lb) => lb.id);
+    if (missingIds.length > 0) {
+      void onEnsureLogbookDetailsByIds(missingIds);
+    }
+  }, [dateFilter, logbooks, onEnsureLogbookDetailsByIds]);
 
   const selectedEntry = useMemo(
     () => (selectedEntryId ? logbooks.find((item) => item.id === selectedEntryId) || null : null),

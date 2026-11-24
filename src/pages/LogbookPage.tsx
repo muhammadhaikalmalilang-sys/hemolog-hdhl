@@ -101,6 +101,7 @@ interface LogbookPageProps {
   archiveLoading?: boolean;
   onEnsureMonthLoaded?: (monthKey: string) => Promise<void> | void;
   onEnsureAllArchivesLoaded?: () => Promise<void> | void;
+  onEnsureLogbookDetailsByIds?: (ids: string[]) => Promise<void> | void;
 }
 
 interface QueuedPatientSlot {
@@ -146,6 +147,7 @@ export function LogbookPage({
   archiveLoading = false,
   onEnsureMonthLoaded,
   onEnsureAllArchivesLoaded,
+  onEnsureLogbookDetailsByIds,
 }: LogbookPageProps) {
   const { userProfile } = useAuth();
   const isAdminMaster = mode === 'master' && userProfile?.role === 'Administrator';
@@ -263,6 +265,20 @@ export function LogbookPage({
       void onEnsureAllArchivesLoaded?.();
     }
   }, [dateFilter, monthFilter, onEnsureMonthLoaded, onEnsureAllArchivesLoaded]);
+
+  useEffect(() => {
+    if (!onEnsureLogbookDetailsByIds) return;
+    const missingIds = logbooks
+      .filter(
+        (lb) =>
+          lb.wizardDetails === undefined &&
+          (lb.date === inputDate || (dateFilter !== '' && lb.date === dateFilter))
+      )
+      .map((lb) => lb.id);
+    if (missingIds.length > 0) {
+      void onEnsureLogbookDetailsByIds(missingIds);
+    }
+  }, [inputDate, dateFilter, logbooks, onEnsureLogbookDetailsByIds]);
 
   useEffect(() => {
     if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {

@@ -39,6 +39,7 @@ import {
 } from '../../lib/supabase';
 import {
   deleteRowByColumn,
+  fetchLogbookWizardDetailsByIds,
   generateRecordId,
   getRowByColumn,
   insertRow,
@@ -768,6 +769,13 @@ export function LogbookWizardModal({
     timeLabel?: string;
     docStatus?: 'Draft' | 'Revision';
   }>({ status: 'idle' });
+  const [detailsLoading, setDetailsLoading] = useState<boolean>(
+    Boolean(editingEntry && editingEntry.wizardDetails === undefined)
+  );
+  const hydratedDetailsEntryIdRef = useRef<string | null>(
+    editingEntry?.wizardDetails !== undefined ? editingEntry.id : null
+  );
+  const lastSavedFingerprintRef = useRef<string | null>(null);
 
   // SPO Checklist state ("TIDAK DIKERJAKAN" / "DIKERJAKAN") for every point
   const [spoChecklist, setSpoChecklist] = useState<Record<string, SpoCheckStatus>>(() =>
@@ -1170,30 +1178,27 @@ export function LogbookWizardModal({
 
   const prevEntryMachineIdRef = useRef(editingEntry?.machineId || '');
 
-  // Real-time sync when viewing in readOnly mode (Detail / Verification Review modal)
-  useEffect(() => {
-    if (!readOnly || !editingEntry) return;
-    const d = editingEntry.wizardDetails;
+  const syncStateFromEntry = (entry: LogbookEntry, d: LogbookWizardDetails | undefined) => {
     setSpoChecklist(buildInitialSpoChecklist(d?.spoChecklist, resolvedTemplate.points));
     setCustomResponses(sanitizeCustomResponses(d?.customResponses));
-    setPatientId(editingEntry.patientId || '');
-    setRmSearch(editingEntry.patientRm || '');
-    setMachineId(editingEntry.machineId || '');
-    setDoctorId(editingEntry.doctorId || '');
+    setPatientId(entry.patientId || '');
+    setRmSearch(entry.patientRm || '');
+    setMachineId(entry.machineId || '');
+    setDoctorId(entry.doctorId || '');
     setDutyDoctorId(
-      editingEntry.dutyDoctorId || (editingEntry.dutyDoctorName ? '__manual__' : '')
+      entry.dutyDoctorId || (entry.dutyDoctorName ? '__manual__' : '')
     );
     setManualDutyDoctorName(
-      editingEntry.dutyDoctorId === '__manual__' ||
-        (!editingEntry.dutyDoctorId && editingEntry.dutyDoctorName)
-        ? editingEntry.dutyDoctorName || ''
+      entry.dutyDoctorId === '__manual__' ||
+        (!entry.dutyDoctorId && entry.dutyDoctorName)
+        ? entry.dutyDoctorName || ''
         : ''
     );
-    setActionCategory(editingEntry.actionCategory || 'HD Reguler');
-    setDate(editingEntry.date || getTodayDateStr());
-    setShift(editingEntry.shift || 'Pagi');
-    setStartTime(editingEntry.startTime || '07:30');
-    setEndTime(editingEntry.endTime || '12:00');
+    setActionCategory(entry.actionCategory || 'HD Reguler');
+    setDate(entry.date || getTodayDateStr());
+    setShift(entry.shift || 'Pagi');
+    setStartTime(entry.startTime || '07:30');
+    setEndTime(entry.endTime || '12:00');
 
     setRoStatus(d?.section1.roStatus || 'Baik');
     setRoAdequate(d?.section1.roAdequate ?? true);
@@ -1234,11 +1239,11 @@ export function LogbookWizardModal({
     );
     setPatientCategory(d?.section3.patientCategory || '');
     setDryWeight(d?.section3.dryWeight !== undefined ? String(d.section3.dryWeight) : '');
-    setPreWeight(String(editingEntry.preWeight ?? ''));
-    const bpParts = (editingEntry.preBp || '').split('/');
+    setPreWeight(String(entry.preWeight ?? ''));
+    const bpParts = (entry.preBp || '').split('/');
     setSystolicBp(bpParts[0] ? bpParts[0].trim() : '');
     setDiastolicBp(bpParts[1] ? bpParts[1].trim() : '');
-    setPreBp(editingEntry.preBp || '');
+    setPreBp(entry.preBp || '');
     setPrePulse(d?.section3.prePulse || '84');
     setPreResp(d?.section3.preResp || '20');
     setPreTemp(d?.section3.preTemp || '36.6');
@@ -1250,31 +1255,31 @@ export function LogbookWizardModal({
     setDialysisDurationHours(d?.section3.dialysisDurationHours || '');
     setBfr(d?.section3.bfr || '');
     setDfr(d?.section3.dfr || '');
-    setUfGoal(String(editingEntry.ufGoal ?? ''));
-    setVascularAccess(editingEntry.vascularAccess || 'AV Fistula');
+    setUfGoal(String(entry.ufGoal ?? ''));
+    setVascularAccess(entry.vascularAccess || 'AV Fistula');
     setSelectedAccessOption(
-      editingEntry.vascularAccess === 'CDL' || editingEntry.vascularAccess === 'CVC'
+      entry.vascularAccess === 'CDL' || entry.vascularAccess === 'CVC'
         ? 'CDL'
-        : editingEntry.vascularAccess === 'Femoral'
+        : entry.vascularAccess === 'Femoral'
         ? 'FEMORAL'
         : 'CIMINO'
     );
-    setVascularNurseId(d?.section3.vascularNurseId || editingEntry.nurseId || '');
+    setVascularNurseId(d?.section3.vascularNurseId || entry.nurseId || '');
     setCiminoNote(
       d?.section3.ciminoNote ||
-        (editingEntry.vascularAccess === 'AV Fistula' || editingEntry.vascularAccess === 'AV Shunt'
+        (entry.vascularAccess === 'AV Fistula' || entry.vascularAccess === 'AV Shunt'
           ? d?.section3.accessDetailNote || ''
           : '')
     );
     setCdlNote(
       d?.section3.cdlNote ||
-        (editingEntry.vascularAccess === 'CDL' || editingEntry.vascularAccess === 'CVC'
+        (entry.vascularAccess === 'CDL' || entry.vascularAccess === 'CVC'
           ? d?.section3.accessDetailNote || ''
           : '')
     );
     setFemoralNote(
       d?.section3.femoralNote ||
-        (editingEntry.vascularAccess === 'Femoral' ? d?.section3.accessDetailNote || '' : '')
+        (entry.vascularAccess === 'Femoral' ? d?.section3.accessDetailNote || '' : '')
     );
     setCannulationDone(d?.section3.cannulationDone ?? true);
 
@@ -1317,7 +1322,7 @@ export function LogbookWizardModal({
     setTmp(d?.section4.tmp || '85');
     setNoComplication(
       d?.section4.noComplication ??
-        (!editingEntry.complications || editingEntry.complications.toLowerCase() === 'tidak ada')
+        (!entry.complications || entry.complications.toLowerCase() === 'tidak ada')
     );
     setComplicationIncidents(
       (d?.section4.complicationIncidents || []).map((inc) => ({
@@ -1326,7 +1331,7 @@ export function LogbookWizardModal({
       }))
     );
     setComplicationFlags(d?.section4.complicationFlags || ['Tidak ada']);
-    setComplications(editingEntry.complications || 'Tidak ada');
+    setComplications(entry.complications || 'Tidak ada');
     setEffectiveCommunicationNotes(
       d?.section4.effectiveCommunicationNotes ||
         'Pasien kooperatif, dijelaskan tanda gejala hipotensi/kram agar segera melapor.'
@@ -1345,9 +1350,9 @@ export function LogbookWizardModal({
     setReinfusionDone(d?.section6.reinfusionDone ?? true);
     setHemostasisDone(d?.section6.hemostasisDone ?? true);
     setBleedingStopMinutes(d?.section6.bleedingStopMinutes || '10');
-    setPostWeight(String(editingEntry.postWeight ?? ''));
-    setUfAchieved(String(editingEntry.ufAchieved ?? ''));
-    setPostBp(editingEntry.postBp || '');
+    setPostWeight(String(entry.postWeight ?? ''));
+    setUfAchieved(String(entry.ufAchieved ?? ''));
+    setPostBp(entry.postBp || '');
     setKtv(d?.section6.ktv || '');
     setPostPulse(d?.section6.postPulse || '80');
     setPostResp(d?.section6.postResp || '18');
@@ -1355,7 +1360,7 @@ export function LogbookWizardModal({
     setPostSpo2(d?.section6.postSpo2 || '99');
     setWasteDecontaminated(d?.section6.wasteDecontaminated ?? true);
     setMachineDisinfectionType(d?.section6.machineDisinfectionType || 'Heat Disinfection');
-    setNursingNotes(editingEntry.nursingNotes || '');
+    setNursingNotes(entry.nursingNotes || '');
     setHandoverSummary(
       d?.section6.handoverSummary || 'Kondisi stabil pasca dialisis, siap pulang / timbang terima.'
     );
@@ -1374,11 +1379,63 @@ export function LogbookWizardModal({
     setEpoRoute(d?.section7?.epoRoute || 'Subkutan (SC)');
     setEpoNote(d?.section7?.epoNote || '');
 
-    setTargetVerifierRole(editingEntry.targetVerifierRole || 'Kepala Ruang');
-    setTargetVerifierId(editingEntry.targetVerifierId || '');
+    setTargetVerifierRole(entry.targetVerifierRole || 'Kepala Ruang');
+    setTargetVerifierId(entry.targetVerifierId || '');
     setSubmissionNote(d?.section6.handoverSummary || '');
-    setSubmissionConfirmed(editingEntry.verificationStatus !== 'Draft');
+    setSubmissionConfirmed(entry.verificationStatus !== 'Draft');
+  };
+
+  // Real-time sync when viewing in readOnly mode (Detail / Verification Review modal)
+  useEffect(() => {
+    if (!readOnly || !editingEntry) return;
+    if (editingEntry.wizardDetails !== undefined) {
+      hydratedDetailsEntryIdRef.current = editingEntry.id;
+      setDetailsLoading(false);
+    }
+    syncStateFromEntry(editingEntry, editingEntry.wizardDetails);
   }, [readOnly, editingEntry]);
+
+  // Lazy-fetch wizard_details when opening an older Approved/archived logbook loaded as summary
+  useEffect(() => {
+    if (!editingEntry) {
+      setDetailsLoading(false);
+      return;
+    }
+    if (editingEntry.wizardDetails !== undefined) {
+      if (hydratedDetailsEntryIdRef.current !== editingEntry.id) {
+        hydratedDetailsEntryIdRef.current = editingEntry.id;
+        syncStateFromEntry(editingEntry, editingEntry.wizardDetails);
+      }
+      setDetailsLoading(false);
+      return;
+    }
+    if (hydratedDetailsEntryIdRef.current === editingEntry.id) {
+      setDetailsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setDetailsLoading(true);
+    fetchLogbookWizardDetailsByIds([editingEntry.id])
+      .then((map) => {
+        if (cancelled) return;
+        const fetched = map.get(editingEntry.id);
+        hydratedDetailsEntryIdRef.current = editingEntry.id;
+        syncStateFromEntry(editingEntry, fetched);
+      })
+      .catch(() => {
+        // Fallback: keep summary values if offline
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setDetailsLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [editingEntry?.id, editingEntry?.wizardDetails]);
 
   // In editable mode, mirror external BED/Mesin updates without clobbering user edits
   useEffect(() => {
@@ -2896,6 +2953,26 @@ export function LogbookWizardModal({
       wizardDetails,
     };
 
+    const payloadFingerprint = JSON.stringify(payload);
+    if (
+      keepOpen &&
+      currentEntry &&
+      lastSavedFingerprintRef.current === payloadFingerprint &&
+      currentEntry.verificationStatus === submitStatus
+    ) {
+      const nowTime = new Date().toLocaleTimeString('id-ID', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      });
+      setAutoSaveInfo({
+        status: 'saved',
+        timeLabel: nowTime,
+        docStatus: submitStatus === 'Revision' ? 'Revision' : 'Draft',
+      });
+      return 'saved';
+    }
+
     setSaving(true);
     if (keepOpen) {
       setAutoSaveInfo((prev) => ({ ...prev, status: 'saving' }));
@@ -3018,7 +3095,12 @@ export function LogbookWizardModal({
       if (currentEntry) {
         txOp = OperationType.GET;
         txPath = `logbook/${savedDocId}`;
-        const existingLogRow = await getRowByColumn('logbook', 'id', savedDocId);
+        const existingLogRow = await getRowByColumn(
+          'logbook',
+          'id',
+          savedDocId,
+          'id,nurse_id,nurse_name,nurse_nip,verification_status'
+        );
         if (!existingLogRow) {
           throw new Error('LOGBOOK_MISSING');
         }
@@ -3357,6 +3439,7 @@ export function LogbookWizardModal({
       createdDraftLogId = null;
       createdPatientLockId = null;
       createdMachineLockId = null;
+      lastSavedFingerprintRef.current = payloadFingerprint;
 
       const savedOwnerId = entryOwnerId;
       const savedOwnerName = entryOwnerName;
@@ -3478,7 +3561,7 @@ export function LogbookWizardModal({
       }
     }
 
-    if (!readOnly && !isVerifierEdit) {
+    if (!readOnly && !isVerifierEdit && !detailsLoading) {
       const activeForAccess = editingEntry || autoSavedEntryRef.current;
       const switchAccess = getLogbookSubmissionAccess(date, shift, activeForAccess, Date.now());
       const revisionLocked =
@@ -4917,41 +5000,88 @@ export function LogbookWizardModal({
     return (
       <div
         key={pointId}
-        className={`rounded-xl border bg-white transition-colors ${
+        className={`rounded-xl border border-l-4 overflow-hidden transition-colors ${
           isDone
-            ? 'border-emerald-300 ring-1 ring-emerald-500/15'
-            : 'border-slate-200/90 hover:border-slate-300'
+            ? 'border-emerald-400 border-l-emerald-600 bg-emerald-50/65 shadow-xs'
+            : 'border-amber-300 border-l-amber-500 bg-amber-50/45 hover:border-amber-400'
         }`}
       >
         {/* SPO Indicator Header + Checklist */}
-        <div className={children ? 'p-4' : 'px-5 py-4'}>
+        <div
+          className={`${children ? 'p-4' : 'px-5 py-4'} transition-colors ${
+            isDone ? 'bg-emerald-50/85' : 'bg-amber-50/65'
+          }`}
+        >
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0 flex-1 space-y-1">
               <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-                <span className="font-bold text-slate-800">Poin {meta.id}</span>
-                <span className="text-slate-300" aria-hidden="true">·</span>
-                <span className="font-semibold text-[#0e4e78]">{meta.category}</span>
+                <span
+                  className={`inline-flex items-center rounded-md px-2 py-0.5 font-bold ${
+                    isDone
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-amber-500 text-white'
+                  }`}
+                >
+                  Poin {meta.id}
+                </span>
+                <span
+                  className={isDone ? 'text-emerald-300' : 'text-amber-300'}
+                  aria-hidden="true"
+                >
+                  ·
+                </span>
+                <span
+                  className={`font-semibold ${
+                    isDone ? 'text-emerald-800' : 'text-amber-900'
+                  }`}
+                >
+                  {meta.category}
+                </span>
               </div>
               <h5 className="text-[13px] font-bold text-slate-900 leading-snug">
                 {meta.statement}
               </h5>
               {meta.description && (
-                <p className="text-[11px] text-slate-500 leading-relaxed">{meta.description}</p>
+                <p
+                  className={`text-[11px] leading-relaxed ${
+                    isDone ? 'text-emerald-950/75' : 'text-slate-600'
+                  }`}
+                >
+                  {meta.description}
+                </p>
               )}
               {meta.standard && (
-                <p className="text-[11px] text-slate-400">
-                  <span className="font-semibold text-slate-500">Standar:</span> {meta.standard}
+                <p
+                  className={`text-[11px] ${
+                    isDone ? 'text-emerald-900/70' : 'text-slate-500'
+                  }`}
+                >
+                  <span className="font-semibold">Standar:</span> {meta.standard}
                 </p>
               )}
             </div>
 
             {children ? (
               /* Kolom Checklist: TIDAK DIKERJAKAN / DIKERJAKAN */
-              <div className="shrink-0 lg:border-l lg:border-slate-100 lg:pl-4 flex flex-col sm:flex-row lg:flex-col items-stretch sm:items-center lg:items-end gap-1.5">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 lg:text-right">
+              <div
+                className={`shrink-0 lg:border-l lg:pl-4 flex flex-col sm:flex-row lg:flex-col items-stretch sm:items-center lg:items-end gap-1.5 ${
+                  isDone ? 'lg:border-emerald-200' : 'lg:border-amber-200'
+                }`}
+              >
+                <span
+                  className={`text-[10px] font-bold uppercase tracking-wider lg:text-right ${
+                    isDone ? 'text-emerald-700' : 'text-amber-800'
+                  }`}
+                >
                   Checklist SPO
                 </span>
-                <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+                <div
+                  className={`inline-flex rounded-lg border p-0.5 ${
+                    isDone
+                      ? 'border-emerald-300 bg-white/80'
+                      : 'border-amber-300 bg-white/80'
+                  }`}
+                >
                   <button
                     type="button"
                     disabled={readOnly}
@@ -4959,11 +5089,13 @@ export function LogbookWizardModal({
                     aria-pressed={!isDone}
                     className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-bold transition-colors whitespace-nowrap ${
                       !isDone
-                        ? 'bg-white text-slate-700 shadow-xs ring-1 ring-slate-300/70'
-                        : 'text-slate-500 hover:text-slate-700'
+                        ? 'bg-amber-500 text-white shadow-xs'
+                        : 'text-slate-500 hover:text-amber-800'
                     } ${readOnly ? 'cursor-default' : ''}`}
                   >
-                    <Square className="h-3.5 w-3.5 text-slate-400" />
+                    <Square
+                      className={`h-3.5 w-3.5 ${!isDone ? 'text-white' : 'text-slate-400'}`}
+                    />
                     TIDAK DIKERJAKAN
                   </button>
                   <button
@@ -4974,7 +5106,7 @@ export function LogbookWizardModal({
                     className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-bold transition-colors whitespace-nowrap ${
                       isDone
                         ? 'bg-emerald-600 text-white shadow-xs'
-                        : 'text-slate-500 hover:text-emerald-700'
+                        : 'text-slate-600 hover:text-emerald-700'
                     } ${readOnly ? 'cursor-default' : ''}`}
                   >
                     <CheckSquare
@@ -4994,16 +5126,16 @@ export function LogbookWizardModal({
                     setSpoPointStatus(pointId, isDone ? 'TIDAK DIKERJAKAN' : 'DIKERJAKAN')
                   }
                   aria-pressed={isDone}
-                  className={`inline-flex items-center gap-2 rounded-lg border px-3.5 py-2 text-xs font-semibold transition-colors whitespace-nowrap ${
+                  className={`inline-flex items-center gap-2 rounded-lg border px-3.5 py-2 text-xs font-bold transition-colors whitespace-nowrap shadow-xs ${
                     isDone
-                      ? 'border-emerald-500 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-                      : 'border-slate-300 bg-slate-50/70 text-slate-600 hover:bg-slate-100'
+                      ? 'border-emerald-700 bg-emerald-600 text-white hover:bg-emerald-700'
+                      : 'border-amber-400 bg-white text-amber-900 hover:bg-amber-100/80'
                   } ${readOnly ? 'cursor-default hover:bg-opacity-100' : ''}`}
                 >
                   {isDone ? (
-                    <CheckSquare className="h-4 w-4 text-emerald-600" />
+                    <CheckSquare className="h-4 w-4 text-white" />
                   ) : (
-                    <Square className="h-4 w-4 text-slate-400" />
+                    <Square className="h-4 w-4 text-amber-600" />
                   )}
                   <span>{isDone ? 'DIKERJAKAN' : 'TIDAK DIKERJAKAN'}</span>
                 </button>
@@ -5012,7 +5144,11 @@ export function LogbookWizardModal({
           </div>
 
           {(inlineFooter || customBlocks) && (
-            <div className="mt-3.5 space-y-3">
+            <div
+              className={`mt-3.5 space-y-3 border-t pt-3 ${
+                isDone ? 'border-emerald-200/80' : 'border-amber-200/80'
+              }`}
+            >
               {inlineFooter}
               {customBlocks}
             </div>
@@ -5021,7 +5157,13 @@ export function LogbookWizardModal({
 
         {/* Clinical Inputs Body (rendered when children provided) */}
         {children && (
-          <div className="border-t border-slate-100 bg-slate-50/45 p-4 text-xs space-y-3 rounded-b-xl">
+          <div
+            className={`border-t p-4 text-xs space-y-3 rounded-b-xl ${
+              isDone
+                ? 'border-emerald-200 bg-white/75'
+                : 'border-amber-200 bg-white/80'
+            }`}
+          >
             {children}
           </div>
         )}
@@ -5289,6 +5431,14 @@ export function LogbookWizardModal({
             </div>
           )}
 
+          {detailsLoading ? (
+            <div className="rounded-xl border border-slate-200 bg-white p-10 text-center space-y-2">
+              <Clock className="mx-auto h-6 w-6 animate-spin text-[#0e4e78]" />
+              <p className="text-xs font-semibold text-slate-700">
+                Memuat rincian indikator SPO dan data klinis...
+              </p>
+            </div>
+          ) : (
           <fieldset disabled={readOnly} className="contents">
           {/* BAGIAN 1–6: Indikator SPO Dinamis sesuai Template */}
           {step >= 1 && step <= 6 && (
@@ -6105,6 +6255,7 @@ export function LogbookWizardModal({
             </div>
           )}
           </fieldset>
+          )}
 
           {readOnly &&
             verifierReview &&

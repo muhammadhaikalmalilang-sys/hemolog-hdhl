@@ -38,6 +38,9 @@ interface PatientReportsPageProps {
   archiveLoading?: boolean;
   onEnsureMonthLoaded?: (monthKey: string) => Promise<void> | void;
   onEnsureAllArchivesLoaded?: () => Promise<void> | void;
+  onEnsureMonthDetailsLoaded?: (monthKey: string) => Promise<void> | void;
+  onEnsureAllArchiveDetailsLoaded?: () => Promise<void> | void;
+  onEnsureLogbookDetailsByIds?: (ids: string[]) => Promise<void> | void;
 }
 
 function calcDurationHours(startTime: string, endTime: string): number | null {
@@ -87,6 +90,9 @@ export function PatientReportsPage({
   archiveLoading = false,
   onEnsureMonthLoaded,
   onEnsureAllArchivesLoaded,
+  onEnsureMonthDetailsLoaded,
+  onEnsureAllArchiveDetailsLoaded,
+  onEnsureLogbookDetailsByIds,
 }: PatientReportsPageProps) {
   const { userProfile } = useAuth();
   const { showToast } = useToast();
@@ -126,11 +132,28 @@ export function PatientReportsPage({
     if (dateFilter) {
       void onEnsureMonthLoaded?.(dateFilter.slice(0, 7));
     } else if (monthFilter) {
-      void onEnsureMonthLoaded?.(monthFilter);
+      void (onEnsureMonthDetailsLoaded || onEnsureMonthLoaded)?.(monthFilter);
     } else {
-      void onEnsureAllArchivesLoaded?.();
+      void (onEnsureAllArchiveDetailsLoaded || onEnsureAllArchivesLoaded)?.();
     }
-  }, [dateFilter, monthFilter, onEnsureMonthLoaded, onEnsureAllArchivesLoaded]);
+  }, [
+    dateFilter,
+    monthFilter,
+    onEnsureMonthLoaded,
+    onEnsureAllArchivesLoaded,
+    onEnsureMonthDetailsLoaded,
+    onEnsureAllArchiveDetailsLoaded,
+  ]);
+
+  useEffect(() => {
+    if (!dateFilter || !onEnsureLogbookDetailsByIds) return;
+    const missingIds = logbooks
+      .filter((lb) => lb.date === dateFilter && lb.wizardDetails === undefined)
+      .map((lb) => lb.id);
+    if (missingIds.length > 0) {
+      void onEnsureLogbookDetailsByIds(missingIds);
+    }
+  }, [dateFilter, logbooks, onEnsureLogbookDetailsByIds]);
 
   const [detailEntryId, setDetailEntryId] = useState<string | null>(null);
   const detailEntry = useMemo(

@@ -10,6 +10,7 @@ import type {
   LogbookEntry,
   LogbookFormTemplate,
   LogbookLock,
+  LogbookWizardDetails,
   Machine,
   MachineLock,
   Patient,
@@ -626,6 +627,48 @@ function emitDbMutation(event: DbMutationEvent) {
 
 export const DEFAULT_PAGE_SIZE = 800;
 
+export const LOGBOOK_SUMMARY_COLUMNS = [
+  'id',
+  'nurse_id',
+  'nurse_name',
+  'nurse_nip',
+  'patient_id',
+  'patient_name',
+  'patient_rm',
+  'machine_id',
+  'machine_number',
+  'doctor_id',
+  'doctor_name',
+  'duty_doctor_id',
+  'duty_doctor_name',
+  'action_category',
+  'date',
+  'month_key',
+  'shift',
+  'start_time',
+  'end_time',
+  'pre_weight',
+  'post_weight',
+  'pre_bp',
+  'post_bp',
+  'uf_goal',
+  'uf_achieved',
+  'vascular_access',
+  'heparin_type',
+  'complications',
+  'nursing_notes',
+  'verification_status',
+  'target_verifier_role',
+  'target_verifier_id',
+  'target_verifier_name',
+  'verified_by',
+  'verified_by_name',
+  'verification_note',
+  'verified_at',
+  'created_at',
+  'updated_at',
+].join(',');
+
 /**
  * Fetch all matching rows from Supabase in deterministic chunks (< 1,000 PostgREST limit).
  * Always pair with a deterministic `.order(...)` inside `configure` when querying large tables.
@@ -634,15 +677,21 @@ export async function fetchRowsPaginated<T>(
   table: string,
   mapper: (row: DbRow) => T,
   configure?: (query: any) => any,
-  pageSize = DEFAULT_PAGE_SIZE
+  pageSizeOrOptions: number | { pageSize?: number; columns?: string } = DEFAULT_PAGE_SIZE
 ): Promise<T[]> {
   const sb = requireSupabase();
+  const pageSize =
+    typeof pageSizeOrOptions === 'number'
+      ? pageSizeOrOptions
+      : (pageSizeOrOptions.pageSize ?? DEFAULT_PAGE_SIZE);
+  const columns =
+    typeof pageSizeOrOptions === 'number' ? '*' : (pageSizeOrOptions.columns ?? '*');
   const safePageSize = Math.max(50, Math.min(pageSize, 1000));
   const results: T[] = [];
   let from = 0;
 
   while (true) {
-    let query: any = sb.from(table).select('*');
+    let query: any = sb.from(table).select(columns);
     if (configure) {
       query = configure(query);
     }
@@ -793,12 +842,45 @@ export async function deleteRowsByColumnValues(
 export async function getRowByColumn(
   table: string,
   col: string,
-  value: string
+  value: string,
+  columns = '*'
 ): Promise<DbRow | null> {
   const sb = requireSupabase();
-  const { data, error } = await sb.from(table).select('*').eq(col, value).maybeSingle();
+  const { data, error } = await sb.from(table).select(columns).eq(col, value).maybeSingle();
   if (error) {
     handleDbError(error, OperationType.GET, `${table}/${value}`);
   }
   return (data as DbRow | null) ?? null;
+}
+
+/**
+ * Fetch only `id` and `wizard_details` for specific logbook entries in chunks.
+ * Used for on-demand hydration without re-downloading full table rows.
+ */
+export async function fetchLogbookWizardDetailsByIds(
+  ids: string[]
+): Promise<Map<string, LogbookWizardDetails | undefined>> {
+  const result = new Map<string, LogbookWizardDetails | undefined>();
+  const uniqueIds = Array.from(new Set(ids.filter((id) => Boolean(id))));
+  if (uniqueIds.length === 0) return result;
+
+  const sb = requireSupabase();
+  const chunkSize = 100;
+  for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+    const chunk = uniqueIds.slice(i, i + chunkSize);
+    const { data, error } = await sb
+      .from('logbook')
+      .select('id,wizard_details')
+      .in('id', chunk);
+    if (error) {
+      throw error;
+    }
+    const rows = (data as DbRow[] | null) ?? [];
+    for (const row of rows) {
+      if (typeof row.id === 'string') {
+        result.set(row.id, (row.wizard_details as LogbookWizardDetails | null) ?? undefined);
+      }
+    }
+  }
+  return result;
 }

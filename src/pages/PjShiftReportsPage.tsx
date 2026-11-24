@@ -50,6 +50,7 @@ interface PjShiftReportsPageProps {
   pjShiftAssignments?: PjShiftAssignmentEntry[];
   archiveLoading?: boolean;
   onEnsureMonthLoaded?: (monthKey: string) => Promise<void> | void;
+  onEnsureLogbookDetailsByIds?: (ids: string[]) => Promise<void> | void;
 }
 
 function calcDurationHours(startTime: string, endTime: string): number | null {
@@ -209,6 +210,7 @@ export function PjShiftReportsPage({
   pjShiftAssignments = [],
   archiveLoading = false,
   onEnsureMonthLoaded,
+  onEnsureLogbookDetailsByIds,
 }: PjShiftReportsPageProps) {
   const { userProfile } = useAuth();
   const { showToast } = useToast();
@@ -250,6 +252,21 @@ export function PjShiftReportsPage({
       }
     }
   }, [selectedDate, shiftFilter, onEnsureMonthLoaded]);
+
+  useEffect(() => {
+    if (!selectedDate || !onEnsureLogbookDetailsByIds) return;
+    const nextDate = shiftFilter === 'Malam' ? addDaysToDateStr(selectedDate, 1) : null;
+    const missingIds = allApprovedLogbooks
+      .filter(
+        (lb) =>
+          lb.wizardDetails === undefined &&
+          (lb.date === selectedDate || (nextDate !== null && lb.date === nextDate))
+      )
+      .map((lb) => lb.id);
+    if (missingIds.length > 0) {
+      void onEnsureLogbookDetailsByIds(missingIds);
+    }
+  }, [selectedDate, shiftFilter, allApprovedLogbooks, onEnsureLogbookDetailsByIds]);
 
   // Create/Save PJ Shift report modal
   const [showModal, setShowModal] = useState(false);
