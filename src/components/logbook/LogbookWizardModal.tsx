@@ -42,7 +42,7 @@ import {
   ACTIVE_FIREBASE_DATABASE_ID,
   auth,
   db,
-  handleFirestoreError,
+  formatFirestoreError,
   isTransientFirestoreError,
   OperationType,
 } from '../../lib/firebase';
@@ -3465,7 +3465,7 @@ export function LogbookWizardModal({
       } else {
         const extraDiag: Record<string, unknown> = {};
         try {
-          const [uSnap, pSnap, mSnap, dSnap, plSnap, mlSnap, testSnap] = await Promise.all([
+          const [uSnap, pSnap, mSnap, dSnap, plSnap, mlSnap, testSnap, testV2Snap] = await Promise.all([
             getDocFromServer(doc(db, 'users', userProfile.uid)).catch((e) => ({ err: String(e) })),
             getDocFromServer(doc(db, 'patients', pat.id)).catch((e) => ({ err: String(e) })),
             getDocFromServer(doc(db, 'machines', mach.id)).catch((e) => ({ err: String(e) })),
@@ -3473,6 +3473,7 @@ export function LogbookWizardModal({
             getDocFromServer(doc(db, 'logbook_locks', `${safeDate}_${pat.id}`)).catch((e) => ({ err: String(e) })),
             getDocFromServer(doc(db, 'machine_locks', `${safeDate}_${safeShift}_${mach.id}`)).catch((e) => ({ err: String(e) })),
             getDocFromServer(doc(db, 'test', 'connection')).catch((e) => ({ err: String(e) })),
+            getDocFromServer(doc(db, 'test', 'rules_v2')).catch((e) => ({ err: String(e) })),
           ]);
           const existsFlag = (s: unknown) =>
             s && typeof s === 'object' && 'exists' in s && typeof (s as { exists: unknown }).exists === 'function'
@@ -3701,6 +3702,7 @@ export function LogbookWizardModal({
             uOk: Boolean(uData && uData.isActive === true && uData.role),
             uRole: uData?.role ?? null,
             uKeys: uData ? Object.keys(uData) : null,
+            ownerMatch: existingDoc ? existingDoc.nurseId === auth.currentUser?.uid : null,
             prevStatus: existingDoc ? String(existingDoc.verificationStatus ?? '') : null,
             nextStatus: submitStatus,
             pat: existsFlag(pSnap),
@@ -3709,6 +3711,7 @@ export function LogbookWizardModal({
             pl: existsFlag(plSnap),
             ml: existsFlag(mlSnap),
             testConn: existsFlag(testSnap),
+            testV2: existsFlag(testV2Snap),
             plLogId,
             plRefLogExists,
             patId: pat.id,
@@ -3719,10 +3722,11 @@ export function LogbookWizardModal({
           extraDiag.diagError = String(diagErr);
         }
         console.error('Logbook save transaction failed:', {
-          ...extraDiag,
-          queuedTxOps,
+          refs: extraDiag.refs,
+          failedChecks: extraDiag.failedChecks,
           lastOp: txOp,
           lastPath: txPath,
+          queuedTxOps,
           diag: {
             dbId: ACTIVE_FIREBASE_DATABASE_ID,
             role: userProfile.role,
@@ -3737,6 +3741,9 @@ export function LogbookWizardModal({
             isEdit: Boolean(currentEntry),
             ...txDiag,
           },
+          keysCount: extraDiag.keysCount,
+          pShape: extraDiag.pShape,
+          diagError: extraDiag.diagError,
           err,
         });
         const refsDiag = (extraDiag.refs || {}) as Record<string, unknown>;
@@ -3753,14 +3760,18 @@ export function LogbookWizardModal({
         setErrorMsg(
           `Gagal menyimpan logbook (${txOp} pada ${txPath}, db: ${ACTIVE_FIREBASE_DATABASE_ID}, status: ${statusDiag}, kode: ${errCode}, probe: ${String(
             refsDiag.testConn ?? 'unknown'
-          )}, uidMatch: ${String(refsDiag.uidMatch ?? 'unknown')}, uOk: ${String(
-            refsDiag.uOk ?? 'unknown'
-          )}, checks: ${checksDiag.length ? checksDiag.join('|') : 'ok'}). Silakan muat ulang halaman dan coba lagi.`
+          )}, probeV2: ${String(refsDiag.testV2 ?? 'unknown')}, role: ${String(
+            refsDiag.uRole ?? 'unknown'
+          )}, ownerMatch: ${String(refsDiag.ownerMatch ?? 'unknown')}, uidMatch: ${String(
+            refsDiag.uidMatch ?? 'unknown'
+          )}, uOk: ${String(refsDiag.uOk ?? 'unknown')}, checks: ${
+            checksDiag.length ? checksDiag.join('|') : 'ok'
+          }). Silakan muat ulang halaman dan coba lagi.`
         );
         if (keepOpen) {
           setAutoSaveInfo((prev) => ({ ...prev, status: prev.timeLabel ? 'saved' : 'idle' }));
         }
-        handleFirestoreError(err, txOp, txPath);
+        formatFirestoreError(err, txOp, txPath);
       }
       if (keepOpen) {
         setAutoSaveInfo((prev) => ({ ...prev, status: prev.timeLabel ? 'saved' : 'idle' }));

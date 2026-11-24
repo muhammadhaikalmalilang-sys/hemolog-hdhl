@@ -1345,5 +1345,9 @@ service cloud.firestore {
     match /test/connection {
       allow get: if isSignedIn() && isActiveStaff();
     }
+
+    match /test/rules_v2 {
+      allow get: if isSignedIn() && isActiveStaff();
+    }
   }
 }
