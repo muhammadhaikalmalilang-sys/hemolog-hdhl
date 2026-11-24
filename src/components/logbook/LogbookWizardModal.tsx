@@ -39,6 +39,7 @@ import {
   X,
 } from 'lucide-react';
 import {
+  ACTIVE_FIREBASE_DATABASE_ID,
   auth,
   db,
   handleFirestoreError,
@@ -2900,19 +2901,24 @@ export function LogbookWizardModal({
     const queuedTxOps: string[] = [];
     let txDiag: Record<string, unknown> = {};
     let lastCreatePayload: Record<string, unknown> | null = null;
+    let lastUpdatePayload: Record<string, unknown> | null = null;
+    let lastExistingLogData: Record<string, unknown> | null = null;
     let createdDraftLogRef: ReturnType<typeof doc> | null = null;
     let createdPatientLockRef: ReturnType<typeof doc> | null = null;
     let createdMachineLockRef: ReturnType<typeof doc> | null = null;
+    const isAdminRole = userProfile.role === 'Administrator';
+    const isVerifierRole =
+      userProfile.role === 'Kepala Ruang' ||
+      userProfile.role === 'PJ Shift';
+    const isFirestoreTimestamp = (val: unknown): boolean =>
+      Boolean(val && typeof (val as { toMillis?: unknown }).toMillis === 'function');
+    let canVerifierEditCurrent = false;
     try {
       const monthKey = safeDate.slice(0, 7);
       const newMachineLockId = `${safeDate}_${safeShift}_${mach.id}`;
       const oldMachineLockId = currentEntry
         ? `${currentEntry.date}_${currentEntry.shift}_${currentEntry.machineId}`
         : '';
-      const isAdminRole = userProfile.role === 'Administrator';
-      const isVerifierRole =
-        userProfile.role === 'Kepala Ruang' ||
-        userProfile.role === 'PJ Shift';
       const safeLockPatientName = clampString(pat.fullName, 120) || 'Pasien HD';
       const safeLockNurseName = clampString(userProfile.fullName, 120) || 'Perawat HD';
       const existingLogbookIds = new Set(logbooks.map((lb) => lb.id));
@@ -2938,9 +2944,6 @@ export function LogbookWizardModal({
       } else {
         newPatientLockRef = doc(db, 'logbook_locks', `${safeDate}_${pat.id}`);
       }
-
-      const isFirestoreTimestamp = (val: unknown): boolean =>
-        Boolean(val && typeof (val as { toMillis?: unknown }).toMillis === 'function');
 
       const safeMachineNumber = clampString(mach.machineNumber, 40) || 'HD';
       const localMatchingMachineLock =
@@ -3017,7 +3020,6 @@ export function LogbookWizardModal({
 
       let entryOwnerId = userProfile.uid;
       let entryOwnerName = safeLockNurseName;
-      let canVerifierEditCurrent = false;
 
       // Phase 1: Write logbook entry (new entries start as Draft so rollback delete is always permitted)
       const initialCreateStatus = currentEntry ? submitStatus : 'Draft';
@@ -3030,6 +3032,7 @@ export function LogbookWizardModal({
             throw new Error('LOGBOOK_MISSING');
           }
           const currentLogData = existingLogSnap.data() as Partial<LogbookEntry>;
+          lastExistingLogData = currentLogData as Record<string, unknown>;
           const currentStatus = currentLogData.verificationStatus;
           canVerifierEditCurrent =
             isVerifierRole &&
@@ -3081,6 +3084,7 @@ export function LogbookWizardModal({
           ) {
             updatePayload.nurseName = entryOwnerName;
           }
+          lastUpdatePayload = updatePayload;
           tx.update(targetLogRef, updatePayload);
         });
       } else {
@@ -3492,7 +3496,21 @@ export function LogbookWizardModal({
               plRefLogExists = String(e);
             }
           }
-          const p = lastCreatePayload as Record<string, unknown> | null;
+          const existingDiagSnap =
+            !lastExistingLogData && currentEntry
+              ? await getDocFromServer(doc(db, 'logbook', currentEntry.id)).catch(() => null)
+              : null;
+          const existingDoc =
+            lastExistingLogData ||
+            (existingDiagSnap && existingDiagSnap.exists()
+              ? (existingDiagSnap.data() as Record<string, unknown>)
+              : null);
+          const updPayload = lastUpdatePayload as Record<string, unknown> | null;
+          const crtPayload = lastCreatePayload as Record<string, unknown> | null;
+          const isUpdateOp = Boolean(currentEntry && updPayload);
+          const p: Record<string, unknown> | null = isUpdateOp
+            ? { ...(existingDoc || {}), ...(updPayload || {}) }
+            : crtPayload;
           const failedChecks: string[] = [];
           let keysCount = 0;
           const pShape: Record<string, unknown> = {};
@@ -3516,7 +3534,7 @@ export function LogbookWizardModal({
               if (!(rk in p) || p[rk] === undefined) failedChecks.push(`missing:${rk}`);
             }
             for (const k of Object.keys(p)) {
-              if (!allowedKeys.has(k)) failedChecks.push(`extraKey:${k}`);
+              if (!isUpdateOp && !allowedKeys.has(k)) failedChecks.push(`extraKey:${k}`);
               if (p[k] === undefined) failedChecks.push(`undef:${k}`);
               const v = p[k];
               if (typeof v === 'string') {
@@ -3541,15 +3559,16 @@ export function LogbookWizardModal({
             }
             const isValidRuleId = (v: unknown) =>
               typeof v === 'string' && v.length > 0 && v.length <= 128 && /^[a-zA-Z0-9_-]+$/.test(v);
+            if (isUpdateOp && currentEntry && !isValidRuleId(currentEntry.id)) failedChecks.push('docId');
             if (!isValidRuleId(p.nurseId)) failedChecks.push('nurseId');
-            if (typeof p.nurseName !== 'string' || p.nurseName.length < 1 || p.nurseName.length > 120) failedChecks.push('nurseName');
+            if (typeof p.nurseName !== 'string' || p.nurseName.trim().length < 1 || p.nurseName.length > 120) failedChecks.push('nurseName');
             if (typeof p.nurseNip !== 'string' || p.nurseNip.length > 40) failedChecks.push('nurseNip');
-            if (!isValidRuleId(p.patientId)) failedChecks.push('patientId');
+            if (typeof p.patientId !== 'string' || p.patientId.length < 1 || p.patientId.length > 128) failedChecks.push('patientId');
             if (typeof p.patientName !== 'string' || p.patientName.length < 1 || p.patientName.length > 120) failedChecks.push('patientName');
             if (typeof p.patientRm !== 'string' || p.patientRm.length > 40) failedChecks.push('patientRm');
-            if (!isValidRuleId(p.machineId)) failedChecks.push('machineId');
+            if (typeof p.machineId !== 'string' || p.machineId.length < 1 || p.machineId.length > 128) failedChecks.push('machineId');
             if (typeof p.machineNumber !== 'string' || p.machineNumber.length < 1 || p.machineNumber.length > 40) failedChecks.push('machineNumber');
-            if (!isValidRuleId(p.doctorId)) failedChecks.push('doctorId');
+            if (typeof p.doctorId !== 'string' || p.doctorId.length < 1 || p.doctorId.length > 128) failedChecks.push('doctorId');
             if (typeof p.doctorName !== 'string' || p.doctorName.length < 1 || p.doctorName.length > 120) failedChecks.push('doctorName');
             if (p.dutyDoctorId != null && (typeof p.dutyDoctorId !== 'string' || p.dutyDoctorId.length > 128)) failedChecks.push('dutyDoctorId');
             if (p.dutyDoctorName != null && (typeof p.dutyDoctorName !== 'string' || p.dutyDoctorName.length > 120)) failedChecks.push('dutyDoctorName');
@@ -3569,10 +3588,73 @@ export function LogbookWizardModal({
             if (!['Standar', 'Minimal', 'Bebas Heparin', 'Heparin', 'LMWH'].includes(String(p.heparinType))) failedChecks.push('heparinType');
             if (typeof p.complications !== 'string' || p.complications.length > 300) failedChecks.push('complications');
             if (typeof p.nursingNotes !== 'string' || p.nursingNotes.length > 1000) failedChecks.push('nursingNotes');
-            if (!['Draft', 'Pending'].includes(String(p.verificationStatus))) failedChecks.push('verificationStatus');
+            if (
+              isUpdateOp
+                ? !['Draft', 'Pending', 'Revision'].includes(String(p.verificationStatus))
+                : !['Draft', 'Pending'].includes(String(p.verificationStatus))
+            ) {
+              failedChecks.push('verificationStatus');
+            }
             if (p.targetVerifierRole != null && !['PJ Shift', 'Kepala Ruang'].includes(String(p.targetVerifierRole))) failedChecks.push('targetVerifierRole');
             if (p.targetVerifierId != null && (typeof p.targetVerifierId !== 'string' || p.targetVerifierId.length > 128)) failedChecks.push('targetVerifierId');
             if (p.targetVerifierName != null && (typeof p.targetVerifierName !== 'string' || p.targetVerifierName.length > 120)) failedChecks.push('targetVerifierName');
+            if (p.verifiedBy != null && (typeof p.verifiedBy !== 'string' || p.verifiedBy.length > 128)) failedChecks.push('verifiedBy');
+            if (p.verifiedByName != null && (typeof p.verifiedByName !== 'string' || p.verifiedByName.length > 120)) failedChecks.push('verifiedByName');
+            if (p.verificationNote != null && (typeof p.verificationNote !== 'string' || p.verificationNote.length > 500)) failedChecks.push('verificationNote');
+            if (p.verifiedAt != null && !isFirestoreTimestamp(p.verifiedAt)) failedChecks.push('verifiedAt');
+            if (
+              !isFirestoreTimestamp(p.createdAt) &&
+              !(isUpdateOp && updPayload && 'createdAt' in updPayload) &&
+              !(!isUpdateOp && crtPayload && 'createdAt' in crtPayload)
+            ) {
+              failedChecks.push('createdAt');
+            }
+
+            if (isUpdateOp && updPayload) {
+              const allowedUpdateKeys = new Set([
+                'nurseName', 'nurseNip', 'patientId', 'patientName', 'patientRm', 'machineId', 'machineNumber',
+                'doctorId', 'doctorName', 'dutyDoctorId', 'dutyDoctorName', 'actionCategory', 'date', 'monthKey', 'shift',
+                'startTime', 'endTime', 'preWeight', 'postWeight', 'preBp', 'postBp',
+                'ufGoal', 'ufAchieved', 'vascularAccess', 'heparinType', 'complications',
+                'nursingNotes', 'verificationStatus', 'targetVerifierRole', 'targetVerifierId', 'targetVerifierName',
+                'wizardDetails', 'createdAt', 'updatedAt',
+              ]);
+              for (const uk of Object.keys(updPayload)) {
+                if (!allowedUpdateKeys.has(uk)) failedChecks.push(`updKey:${uk}`);
+              }
+              if (existingDoc) {
+                const prevStatus = String(existingDoc.verificationStatus || '');
+                const prevNurseId = String(existingDoc.nurseId || '');
+                const nextStatus = String(p.verificationStatus || '');
+                if (
+                  typeof existingDoc.nurseName === 'string' &&
+                  existingDoc.nurseName.trim().length > 0 &&
+                  existingDoc.nurseName.length <= 120 &&
+                  Object.prototype.hasOwnProperty.call(updPayload, 'nurseName') &&
+                  updPayload.nurseName !== existingDoc.nurseName
+                ) {
+                  failedChecks.push('nurseNameImmutable');
+                }
+                if (
+                  !isAdminRole &&
+                  !canVerifierEditCurrent &&
+                  prevNurseId !== auth.currentUser?.uid
+                ) {
+                  failedChecks.push('prevOwnerMismatch');
+                }
+                if (
+                  !isAdminRole &&
+                  !canVerifierEditCurrent &&
+                  !(
+                    (prevStatus === 'Draft' && ['Draft', 'Pending'].includes(nextStatus)) ||
+                    (prevStatus === 'Revision' && ['Revision', 'Pending'].includes(nextStatus))
+                  )
+                ) {
+                  failedChecks.push(`prevStatus:${prevStatus}->${nextStatus}`);
+                }
+              }
+            }
+
             const wd = p.wizardDetails as Record<string, unknown> | undefined;
             if (wd) {
               const allowedWdKeys = new Set([
@@ -3601,17 +3683,26 @@ export function LogbookWizardModal({
               if (spo && Object.keys(spo).length > 120) {
                 failedChecks.push(`spoChecklist.size:${Object.keys(spo).length}`);
               }
+              const cust = wd.customResponses as Record<string, unknown> | undefined;
+              if (cust && Object.keys(cust).length > 120) {
+                failedChecks.push(`customResponses.size:${Object.keys(cust).length}`);
+              }
             }
+          } else {
+            failedChecks.push('noPayloadCaptured');
           }
           extraDiag.failedChecks = failedChecks;
           extraDiag.keysCount = keysCount;
           extraDiag.pShape = pShape;
           extraDiag.refs = {
+            dbId: ACTIVE_FIREBASE_DATABASE_ID,
             authUid: auth.currentUser?.uid ?? null,
             uidMatch: auth.currentUser?.uid === userProfile.uid,
             uOk: Boolean(uData && uData.isActive === true && uData.role),
             uRole: uData?.role ?? null,
             uKeys: uData ? Object.keys(uData) : null,
+            prevStatus: existingDoc ? String(existingDoc.verificationStatus ?? '') : null,
+            nextStatus: submitStatus,
             pat: existsFlag(pSnap),
             mach: existsFlag(mSnap),
             doc: existsFlag(dSnap),
@@ -3633,6 +3724,7 @@ export function LogbookWizardModal({
           lastOp: txOp,
           lastPath: txPath,
           diag: {
+            dbId: ACTIVE_FIREBASE_DATABASE_ID,
             role: userProfile.role,
             hasNip: Boolean(userProfile.nip),
             date: safeDate,
@@ -3655,8 +3747,11 @@ export function LogbookWizardModal({
           err && typeof err === 'object' && 'code' in err
             ? String((err as { code?: unknown }).code)
             : 'unknown';
+        const statusDiag = refsDiag.prevStatus
+          ? `${String(refsDiag.prevStatus)}->${submitStatus}`
+          : submitStatus;
         setErrorMsg(
-          `Gagal menyimpan logbook (${txOp} pada ${txPath}, kode: ${errCode}, probe: ${String(
+          `Gagal menyimpan logbook (${txOp} pada ${txPath}, db: ${ACTIVE_FIREBASE_DATABASE_ID}, status: ${statusDiag}, kode: ${errCode}, probe: ${String(
             refsDiag.testConn ?? 'unknown'
           )}, uidMatch: ${String(refsDiag.uidMatch ?? 'unknown')}, uOk: ${String(
             refsDiag.uOk ?? 'unknown'

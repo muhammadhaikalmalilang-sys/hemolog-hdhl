@@ -79,6 +79,7 @@ export const db: Firestore = createFirestoreInstance(app, activeDatabaseId);
 export const auth: Auth = createAuthInstance(app);
 
 export const ACTIVE_FIREBASE_PROJECT_ID: string = firebaseConfig.projectId;
+export const ACTIVE_FIREBASE_DATABASE_ID: string = activeDatabaseId;
 export const BOOTSTRAP_ADMIN_EMAILS = [
   'muhammadhaikalmalilang@gmail.com',
 ] as const;
