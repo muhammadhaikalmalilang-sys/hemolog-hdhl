@@ -138,6 +138,9 @@ function WorkspaceShell() {
 
   const {
     loading,
+    archiveLoading,
+    ensureMonthLoaded,
+    ensureAllArchivesLoaded,
     patients,
     doctors,
     machines,
@@ -377,6 +380,8 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_
             staffDirectory={staffDirectory}
             schedules={schedules}
             onNavigate={setActiveMenu}
+            archiveLoading={archiveLoading}
+            onEnsureMonthLoaded={ensureMonthLoaded}
           />
         );
       case 'logbook':
@@ -395,6 +400,9 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_
             doctorSchedules={doctorSchedules}
             pjShiftAssignments={pjShiftAssignments}
             formTemplate={formTemplate}
+            archiveLoading={archiveLoading}
+            onEnsureMonthLoaded={ensureMonthLoaded}
+            onEnsureAllArchivesLoaded={ensureAllArchivesLoaded}
           />
         );
       case 'master_logbook':
@@ -413,6 +421,9 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_
             doctorSchedules={doctorSchedules}
             pjShiftAssignments={pjShiftAssignments}
             formTemplate={formTemplate}
+            archiveLoading={archiveLoading}
+            onEnsureMonthLoaded={ensureMonthLoaded}
+            onEnsureAllArchivesLoaded={ensureAllArchivesLoaded}
           />
         );
       case 'verifikasi':
@@ -427,6 +438,9 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_
             actionCategories={actionCategories}
             staffDirectory={staffDirectory}
             formTemplate={formTemplate}
+            archiveLoading={archiveLoading}
+            onEnsureMonthLoaded={ensureMonthLoaded}
+            onEnsureAllArchivesLoaded={ensureAllArchivesLoaded}
           />
         );
       case 'riwayat':
@@ -441,6 +455,9 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_
             staffDirectory={staffDirectory}
             machineLocks={machineLocks}
             formTemplate={formTemplate}
+            archiveLoading={archiveLoading}
+            onEnsureMonthLoaded={ensureMonthLoaded}
+            onEnsureAllArchivesLoaded={ensureAllArchivesLoaded}
           />
         );
       case 'laporan_pasien':
@@ -453,6 +470,9 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_
             staffDirectory={staffDirectory}
             pjShiftAssignments={pjShiftAssignments}
             formTemplate={formTemplate}
+            archiveLoading={archiveLoading}
+            onEnsureMonthLoaded={ensureMonthLoaded}
+            onEnsureAllArchivesLoaded={ensureAllArchivesLoaded}
           />
         );
       case 'laporan_pj_shift':
@@ -466,6 +486,8 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_
             doctorSchedules={doctorSchedules}
             staffDirectory={staffDirectory}
             pjShiftAssignments={pjShiftAssignments}
+            archiveLoading={archiveLoading}
+            onEnsureMonthLoaded={ensureMonthLoaded}
           />
         );
       case 'laporan_bulanan':
@@ -475,6 +497,8 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_
             staffDirectory={staffDirectory}
             reports={allReports}
             formTemplate={formTemplate}
+            archiveLoading={archiveLoading}
+            onEnsureMonthLoaded={ensureMonthLoaded}
           />
         );
       case 'jadwal_dinas':
@@ -485,6 +509,8 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_
             doctorSchedules={doctorSchedules}
             doctors={doctors}
             staffDirectory={staffDirectory}
+            archiveLoading={archiveLoading}
+            onEnsureMonthLoaded={ensureMonthLoaded}
           />
         );
       case 'data_pasien':

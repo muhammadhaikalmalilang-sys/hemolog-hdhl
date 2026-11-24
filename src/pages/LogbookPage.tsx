@@ -98,6 +98,9 @@ interface LogbookPageProps {
   doctorSchedules: DoctorScheduleEntry[];
   pjShiftAssignments?: PjShiftAssignmentEntry[];
   formTemplate?: LogbookFormTemplate;
+  archiveLoading?: boolean;
+  onEnsureMonthLoaded?: (monthKey: string) => Promise<void> | void;
+  onEnsureAllArchivesLoaded?: () => Promise<void> | void;
 }
 
 interface QueuedPatientSlot {
@@ -140,6 +143,9 @@ export function LogbookPage({
   doctorSchedules,
   pjShiftAssignments = [],
   formTemplate,
+  archiveLoading = false,
+  onEnsureMonthLoaded,
+  onEnsureAllArchivesLoaded,
 }: LogbookPageProps) {
   const { userProfile } = useAuth();
   const isAdminMaster = mode === 'master' && userProfile?.role === 'Administrator';
@@ -240,6 +246,23 @@ export function LogbookPage({
       setListFeedback(null);
     }
   }, [liveTodayDate, todayDate]);
+
+  useEffect(() => {
+    const mk = inputDate.slice(0, 7);
+    if (/^\d{4}-\d{2}$/.test(mk)) {
+      void onEnsureMonthLoaded?.(mk);
+    }
+  }, [inputDate, onEnsureMonthLoaded]);
+
+  useEffect(() => {
+    if (dateFilter) {
+      void onEnsureMonthLoaded?.(dateFilter.slice(0, 7));
+    } else if (monthFilter) {
+      void onEnsureMonthLoaded?.(monthFilter);
+    } else {
+      void onEnsureAllArchivesLoaded?.();
+    }
+  }, [dateFilter, monthFilter, onEnsureMonthLoaded, onEnsureAllArchivesLoaded]);
 
   useEffect(() => {
     if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
@@ -2354,6 +2377,11 @@ export function LogbookPage({
                         {dateFilter === todayDate
                           ? `Tanggal Aktif: ${formatDateId(dateFilter)}`
                           : `Tanggal: ${formatDateId(dateFilter)}`}
+                      </span>
+                    )}
+                    {archiveLoading && (
+                      <span className="text-[11px] font-medium text-[#0B5A8E]">
+                        Memuat arsip...
                       </span>
                     )}
                   </div>

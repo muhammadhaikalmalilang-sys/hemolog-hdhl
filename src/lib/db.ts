@@ -591,8 +591,78 @@ export function toFormTemplateRow(data: Partial<LogbookFormTemplate>): DbRow {
 }
 
 // ============================================================================
-// GENERIC CRUD HELPERS (PARAMETERIZED POSTGREST)
+// GENERIC CRUD HELPERS (PARAMETERIZED POSTGREST) & PAGINATION
 // ============================================================================
+
+export interface DbMutationEvent {
+  table: string;
+  op: 'insert' | 'upsert' | 'update' | 'delete';
+  col?: string;
+  value?: string;
+  values?: string[];
+  row?: DbRow;
+  rows?: DbRow[];
+}
+
+type DbMutationListener = (event: DbMutationEvent) => void;
+const dbMutationListeners = new Set<DbMutationListener>();
+
+export function onDbMutation(listener: DbMutationListener): () => void {
+  dbMutationListeners.add(listener);
+  return () => {
+    dbMutationListeners.delete(listener);
+  };
+}
+
+function emitDbMutation(event: DbMutationEvent) {
+  dbMutationListeners.forEach((listener) => {
+    try {
+      listener(event);
+    } catch {
+      // Ignore subscriber errors so DB writes never fail
+    }
+  });
+}
+
+export const DEFAULT_PAGE_SIZE = 800;
+
+/**
+ * Fetch all matching rows from Supabase in deterministic chunks (< 1,000 PostgREST limit).
+ * Always pair with a deterministic `.order(...)` inside `configure` when querying large tables.
+ */
+export async function fetchRowsPaginated<T>(
+  table: string,
+  mapper: (row: DbRow) => T,
+  configure?: (query: any) => any,
+  pageSize = DEFAULT_PAGE_SIZE
+): Promise<T[]> {
+  const sb = requireSupabase();
+  const safePageSize = Math.max(50, Math.min(pageSize, 1000));
+  const results: T[] = [];
+  let from = 0;
+
+  while (true) {
+    let query: any = sb.from(table).select('*');
+    if (configure) {
+      query = configure(query);
+    }
+    const to = from + safePageSize - 1;
+    const { data, error } = await query.range(from, to);
+    if (error) {
+      throw error;
+    }
+    const rows = (data as DbRow[] | null) ?? [];
+    for (const row of rows) {
+      results.push(mapper(row));
+    }
+    if (rows.length < safePageSize) {
+      break;
+    }
+    from += safePageSize;
+  }
+
+  return results;
+}
 
 export async function insertRow(table: string, row: DbRow): Promise<DbRow> {
   const sb = requireSupabase();
@@ -600,7 +670,9 @@ export async function insertRow(table: string, row: DbRow): Promise<DbRow> {
   if (error) {
     handleDbError(error, OperationType.CREATE, table);
   }
-  return data as DbRow;
+  const inserted = data as DbRow;
+  emitDbMutation({ table, op: 'insert', row: inserted });
+  return inserted;
 }
 
 export async function insertRows(table: string, rows: DbRow[]): Promise<void> {
@@ -614,6 +686,7 @@ export async function insertRows(table: string, rows: DbRow[]): Promise<void> {
       handleDbError(error, OperationType.CREATE, table);
     }
   }
+  emitDbMutation({ table, op: 'insert', rows });
 }
 
 export async function upsertRow(
@@ -630,7 +703,9 @@ export async function upsertRow(
   if (error) {
     handleDbError(error, OperationType.WRITE, `${table}/${row[onConflict] ?? ''}`);
   }
-  return data as DbRow;
+  const saved = data as DbRow;
+  emitDbMutation({ table, op: 'upsert', row: saved });
+  return saved;
 }
 
 export async function upsertRows(
@@ -648,6 +723,7 @@ export async function upsertRows(
       handleDbError(error, OperationType.WRITE, table);
     }
   }
+  emitDbMutation({ table, op: 'upsert', rows });
 }
 
 export async function updateRowByColumn(
@@ -661,6 +737,7 @@ export async function updateRowByColumn(
   if (error) {
     handleDbError(error, OperationType.UPDATE, `${table}/${value}`);
   }
+  emitDbMutation({ table, op: 'update', col, value });
 }
 
 export async function updateRowsByColumnValues(
@@ -679,6 +756,7 @@ export async function updateRowsByColumnValues(
       handleDbError(error, OperationType.UPDATE, table);
     }
   }
+  emitDbMutation({ table, op: 'update', col, values });
 }
 
 export async function deleteRowByColumn(
@@ -691,6 +769,7 @@ export async function deleteRowByColumn(
   if (error) {
     handleDbError(error, OperationType.DELETE, `${table}/${value}`);
   }
+  emitDbMutation({ table, op: 'delete', col, value });
 }
 
 export async function deleteRowsByColumnValues(
@@ -708,6 +787,7 @@ export async function deleteRowsByColumnValues(
       handleDbError(error, OperationType.DELETE, table);
     }
   }
+  emitDbMutation({ table, op: 'delete', col, values });
 }
 
 export async function getRowByColumn(

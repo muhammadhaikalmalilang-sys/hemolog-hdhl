@@ -44,6 +44,9 @@ interface VerificationPageProps {
   actionCategories: ActionCategory[];
   staffDirectory: StaffDirectoryEntry[];
   formTemplate?: LogbookFormTemplate;
+  archiveLoading?: boolean;
+  onEnsureMonthLoaded?: (monthKey: string) => Promise<void> | void;
+  onEnsureAllArchivesLoaded?: () => Promise<void> | void;
 }
 
 export function VerificationPage({
@@ -56,6 +59,9 @@ export function VerificationPage({
   actionCategories,
   staffDirectory,
   formTemplate,
+  archiveLoading = false,
+  onEnsureMonthLoaded,
+  onEnsureAllArchivesLoaded,
 }: VerificationPageProps) {
   const { authUser, userProfile } = useAuth();
   const { showToast } = useToast();
@@ -92,6 +98,14 @@ export function VerificationPage({
       setDateFilter((prev) => (prev === todayDate ? liveTodayDate : prev));
     }
   }, [liveTodayDate, todayDate]);
+
+  useEffect(() => {
+    if (dateFilter) {
+      void onEnsureMonthLoaded?.(dateFilter.slice(0, 7));
+    } else if (statusFilter === 'Approved') {
+      void onEnsureAllArchivesLoaded?.();
+    }
+  }, [dateFilter, statusFilter, onEnsureMonthLoaded, onEnsureAllArchivesLoaded]);
 
   const selectedEntry = useMemo(
     () => (selectedEntryId ? logbooks.find((item) => item.id === selectedEntryId) || null : null),
@@ -381,6 +395,11 @@ export function VerificationPage({
             <strong className="text-slate-700">
               {dateFilter ? formatFullDayDateId(dateFilter) : 'Semua Tanggal'}
             </strong>
+            {archiveLoading && (
+              <span className="ml-2 font-medium text-[#0B5A8E]">
+                (Memuat arsip...)
+              </span>
+            )}
           </span>
           {dateFilter && dateFilter !== todayDate && (
             <button

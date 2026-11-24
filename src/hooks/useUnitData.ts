@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   formatDbError,
   isTransientDbError,
@@ -8,6 +8,7 @@ import {
 } from '../lib/supabase';
 import {
   deleteRowByColumn,
+  fetchRowsPaginated,
   getRowByColumn,
   mapActionCategoryRow,
   mapDoctorRow,
@@ -23,8 +24,10 @@ import {
   mapScheduleRow,
   mapStaffDirectoryRow,
   mapUserRow,
+  onDbMutation,
 } from '../lib/db';
 import { useAuth } from '../context/AuthContext';
+import { useLiveClock } from './useLiveClock';
 import {
   DEFAULT_LOGBOOK_TEMPLATE,
   LOGBOOK_TEMPLATE_DOC_ID,
@@ -47,6 +50,8 @@ import type {
   UserProfile,
 } from '../types';
 
+const MONTH_KEY_RE = /^\d{4}-\d{2}$/;
+
 function mergeListByKey<T>(
   prev: T[],
   nextItem: T,
@@ -62,8 +67,30 @@ function mergeListByKey<T>(
   return next;
 }
 
+function mergeManyByKey<T>(
+  prev: T[],
+  incoming: T[],
+  getKey: (item: T) => string,
+  sortFn?: (a: T, b: T) => number
+): T[] {
+  if (incoming.length === 0) return prev;
+  const map = new Map<string, T>();
+  for (const item of prev) {
+    map.set(getKey(item), item);
+  }
+  for (const item of incoming) {
+    map.set(getKey(item), item);
+  }
+  const next = Array.from(map.values());
+  if (sortFn) {
+    next.sort(sortFn);
+  }
+  return next;
+}
+
 export function useUnitData() {
   const { authReady, authUser, userProfile } = useAuth();
+  const { currentMonthKey: activeMonthKey } = useLiveClock();
 
   const [patients, setPatients] = useState<Patient[]>([]);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
@@ -82,11 +109,20 @@ export function useUnitData() {
   const [allReportsRaw, setAllReportsRaw] = useState<ReportEntry[]>([]);
   const [formTemplate, setFormTemplate] = useState<LogbookFormTemplate>(DEFAULT_LOGBOOK_TEMPLATE);
   const [loading, setLoading] = useState(true);
+  const [archiveRequestCount, setArchiveRequestCount] = useState(0);
+  const [allArchivesLoaded, setAllArchivesLoaded] = useState(false);
 
   const [dataReady, setDataReady] = useState(false);
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [resubscribeEpoch, setResubscribeEpoch] = useState(0);
+
   const hydratedSessionKeyRef = useRef<string | null>(null);
+  const loadedActiveMonthRef = useRef<string | null>(null);
+  const loadedMonthsRef = useRef<Set<string>>(new Set());
+  const inflightMonthsRef = useRef<Map<string, Promise<void>>>(new Map());
+  const allArchivesLoadedRef = useRef(false);
+  const inflightAllArchivesRef = useRef<Promise<void> | null>(null);
+
   const prunedLockIdsRef = useRef<Set<string>>(new Set());
   const prunedMachineLockIdsRef = useRef<Set<string>>(new Set());
 
@@ -98,9 +134,357 @@ export function useUnitData() {
 
   const isAdmin = userProfile?.role === 'Administrator';
 
+  const sessionKeyRef = useRef<string | null>(null);
+  const activeMonthKeyRef = useRef(activeMonthKey);
+  const authUidRef = useRef<string | null>(authUser?.uid ?? null);
+  const isLeaderOrAdminRef = useRef(isLeaderOrAdmin);
+
+  activeMonthKeyRef.current = activeMonthKey;
+  authUidRef.current = authUser?.uid ?? null;
+  isLeaderOrAdminRef.current = isLeaderOrAdmin;
+
+  const loadMonthData = useCallback(async (monthKey: string, forceRefresh = false) => {
+    if (!supabase || !MONTH_KEY_RE.test(monthKey)) return;
+    const uid = authUidRef.current;
+    const leaderOrAdmin = isLeaderOrAdminRef.current;
+    const capturedSessionKey = sessionKeyRef.current;
+    if (!uid || !capturedSessionKey) return;
+
+    const task = (async () => {
+      setArchiveRequestCount((n) => n + 1);
+      try {
+        const [lbRows, repRows, schedRows, docSchedRows, pjRows] = await Promise.all([
+          fetchRowsPaginated('logbook', mapLogbookRow, (q) =>
+            q
+              .eq('month_key', monthKey)
+              .order('date', { ascending: false })
+              .order('id', { ascending: true })
+          ),
+          fetchRowsPaginated('reports', mapReportRow, (q) =>
+            q
+              .eq('month_key', monthKey)
+              .order('date', { ascending: false })
+              .order('id', { ascending: true })
+          ),
+          fetchRowsPaginated('schedules', mapScheduleRow, (q) => {
+            const scoped = leaderOrAdmin ? q : q.eq('nurse_id', uid);
+            return scoped
+              .eq('month_key', monthKey)
+              .order('date', { ascending: true })
+              .order('id', { ascending: true });
+          }),
+          fetchRowsPaginated('doctor_schedules', mapDoctorScheduleRow, (q) =>
+            q
+              .eq('month_key', monthKey)
+              .order('date', { ascending: true })
+              .order('id', { ascending: true })
+          ),
+          fetchRowsPaginated('pj_shift_assignments', mapPjShiftAssignmentRow, (q) =>
+            q
+              .eq('month_key', monthKey)
+              .order('date', { ascending: true })
+              .order('id', { ascending: true })
+          ),
+        ]);
+
+        if (sessionKeyRef.current !== capturedSessionKey) return;
+
+        if (forceRefresh) {
+          setAllLogbooksRaw((prev) =>
+            mergeManyByKey(
+              prev.filter((item) => item.monthKey !== monthKey),
+              lbRows,
+              (l) => l.id
+            )
+          );
+          setAllReportsRaw((prev) =>
+            mergeManyByKey(
+              prev.filter((item) => item.monthKey !== monthKey),
+              repRows,
+              (r) => r.id
+            )
+          );
+          setSchedules((prev) =>
+            mergeManyByKey(
+              prev.filter((item) => item.monthKey !== monthKey),
+              schedRows,
+              (s) => s.id
+            )
+          );
+          setDoctorSchedules((prev) =>
+            mergeManyByKey(
+              prev.filter((item) => item.monthKey !== monthKey),
+              docSchedRows,
+              (d) => d.id
+            )
+          );
+          setPjShiftAssignments((prev) =>
+            mergeManyByKey(
+              prev.filter((item) => item.monthKey !== monthKey),
+              pjRows,
+              (p) => p.id
+            )
+          );
+        } else {
+          setAllLogbooksRaw((prev) => mergeManyByKey(prev, lbRows, (l) => l.id));
+          setAllReportsRaw((prev) => mergeManyByKey(prev, repRows, (r) => r.id));
+          setSchedules((prev) => mergeManyByKey(prev, schedRows, (s) => s.id));
+          setDoctorSchedules((prev) => mergeManyByKey(prev, docSchedRows, (d) => d.id));
+          setPjShiftAssignments((prev) => mergeManyByKey(prev, pjRows, (p) => p.id));
+        }
+
+        loadedMonthsRef.current.add(monthKey);
+      } catch (err) {
+        if (!isTransientDbError(err)) {
+          console.warn(`Gagal memuat arsip periode ${monthKey}:`, err);
+        }
+      } finally {
+        setArchiveRequestCount((n) => Math.max(0, n - 1));
+        inflightMonthsRef.current.delete(monthKey);
+      }
+    })();
+
+    inflightMonthsRef.current.set(monthKey, task);
+    return task;
+  }, []);
+
+  const ensureMonthLoaded = useCallback(
+    async (monthKey: string) => {
+      if (!supabase || !MONTH_KEY_RE.test(monthKey)) return;
+      const uid = authUidRef.current;
+      if (!uid) return;
+      if (monthKey === activeMonthKeyRef.current && loadedMonthsRef.current.has(monthKey)) {
+        return;
+      }
+      if (loadedMonthsRef.current.has(monthKey)) {
+        return;
+      }
+      if (allArchivesLoadedRef.current && monthKey < activeMonthKeyRef.current) {
+        return;
+      }
+      const existing = inflightMonthsRef.current.get(monthKey);
+      if (existing) {
+        return existing;
+      }
+      return loadMonthData(monthKey, false);
+    },
+    [loadMonthData]
+  );
+
+  const ensureAllArchivesLoaded = useCallback(async () => {
+    if (!supabase) return;
+    const uid = authUidRef.current;
+    const leaderOrAdmin = isLeaderOrAdminRef.current;
+    const capturedSessionKey = sessionKeyRef.current;
+    const currentActiveMonth = activeMonthKeyRef.current;
+    if (!uid || !capturedSessionKey || allArchivesLoadedRef.current) return;
+
+    if (inflightAllArchivesRef.current) {
+      return inflightAllArchivesRef.current;
+    }
+
+    const task = (async () => {
+      setArchiveRequestCount((n) => n + 1);
+      try {
+        const [lbRows, repRows, schedRows, docSchedRows, pjRows] = await Promise.all([
+          fetchRowsPaginated('logbook', mapLogbookRow, (q) =>
+            q
+              .neq('month_key', currentActiveMonth)
+              .order('date', { ascending: false })
+              .order('id', { ascending: true })
+          ),
+          fetchRowsPaginated('reports', mapReportRow, (q) =>
+            q
+              .neq('month_key', currentActiveMonth)
+              .order('date', { ascending: false })
+              .order('id', { ascending: true })
+          ),
+          fetchRowsPaginated('schedules', mapScheduleRow, (q) => {
+            const scoped = leaderOrAdmin ? q : q.eq('nurse_id', uid);
+            return scoped
+              .neq('month_key', currentActiveMonth)
+              .order('date', { ascending: true })
+              .order('id', { ascending: true });
+          }),
+          fetchRowsPaginated('doctor_schedules', mapDoctorScheduleRow, (q) =>
+            q
+              .neq('month_key', currentActiveMonth)
+              .order('date', { ascending: true })
+              .order('id', { ascending: true })
+          ),
+          fetchRowsPaginated('pj_shift_assignments', mapPjShiftAssignmentRow, (q) =>
+            q
+              .neq('month_key', currentActiveMonth)
+              .order('date', { ascending: true })
+              .order('id', { ascending: true })
+          ),
+        ]);
+
+        if (sessionKeyRef.current !== capturedSessionKey) return;
+
+        setAllLogbooksRaw((prev) => mergeManyByKey(prev, lbRows, (l) => l.id));
+        setAllReportsRaw((prev) => mergeManyByKey(prev, repRows, (r) => r.id));
+        setSchedules((prev) => mergeManyByKey(prev, schedRows, (s) => s.id));
+        setDoctorSchedules((prev) => mergeManyByKey(prev, docSchedRows, (d) => d.id));
+        setPjShiftAssignments((prev) => mergeManyByKey(prev, pjRows, (p) => p.id));
+
+        for (const r of lbRows) loadedMonthsRef.current.add(r.monthKey);
+        for (const r of repRows) loadedMonthsRef.current.add(r.monthKey);
+        for (const r of schedRows) loadedMonthsRef.current.add(r.monthKey);
+        for (const r of docSchedRows) loadedMonthsRef.current.add(r.monthKey);
+        for (const r of pjRows) loadedMonthsRef.current.add(r.monthKey);
+
+        allArchivesLoadedRef.current = true;
+        setAllArchivesLoaded(true);
+      } catch (err) {
+        if (!isTransientDbError(err)) {
+          console.warn('Gagal memuat seluruh arsip riwayat/laporan:', err);
+        }
+      } finally {
+        setArchiveRequestCount((n) => Math.max(0, n - 1));
+        inflightAllArchivesRef.current = null;
+      }
+    })();
+
+    inflightAllArchivesRef.current = task;
+    return task;
+  }, []);
+
+  // Keep cross-month local mutations (e.g. approving yesterday's carry-over or signing last month's report) synced immediately
+  useEffect(() => {
+    if (!supabase || !authReady || !authUser || !userProfile?.isActive) return;
+    const sb = supabase;
+    const trackedTables = new Set([
+      'logbook',
+      'reports',
+      'schedules',
+      'doctor_schedules',
+      'pj_shift_assignments',
+      'logbook_locks',
+      'machine_locks',
+    ]);
+
+    return onDbMutation((event) => {
+      if (!trackedTables.has(event.table)) return;
+
+      if (event.op === 'delete' && event.col === 'id') {
+        const idsToDelete = new Set(
+          event.value ? [event.value] : event.values ? event.values : []
+        );
+        if (idsToDelete.size === 0) return;
+        if (event.table === 'logbook') {
+          setAllLogbooksRaw((prev) => prev.filter((item) => !idsToDelete.has(item.id)));
+        } else if (event.table === 'reports') {
+          setAllReportsRaw((prev) => prev.filter((item) => !idsToDelete.has(item.id)));
+        } else if (event.table === 'schedules') {
+          setSchedules((prev) => prev.filter((item) => !idsToDelete.has(item.id)));
+        } else if (event.table === 'doctor_schedules') {
+          setDoctorSchedules((prev) => prev.filter((item) => !idsToDelete.has(item.id)));
+        } else if (event.table === 'pj_shift_assignments') {
+          setPjShiftAssignments((prev) => prev.filter((item) => !idsToDelete.has(item.id)));
+        } else if (event.table === 'logbook_locks') {
+          setLogbookLocks((prev) => prev.filter((item) => !idsToDelete.has(item.id)));
+        } else if (event.table === 'machine_locks') {
+          setMachineLocks((prev) => prev.filter((item) => !idsToDelete.has(item.id)));
+        }
+        return;
+      }
+
+      if ((event.op === 'insert' || event.op === 'upsert') && event.row) {
+        const row = event.row;
+        if (event.table === 'logbook') {
+          setAllLogbooksRaw((prev) => mergeListByKey(prev, mapLogbookRow(row), (l) => l.id));
+        } else if (event.table === 'reports') {
+          setAllReportsRaw((prev) => mergeListByKey(prev, mapReportRow(row), (r) => r.id));
+        } else if (event.table === 'schedules') {
+          const mapped = mapScheduleRow(row);
+          if (isLeaderOrAdminRef.current || mapped.nurseId === authUidRef.current) {
+            setSchedules((prev) => mergeListByKey(prev, mapped, (s) => s.id));
+          }
+        } else if (event.table === 'doctor_schedules') {
+          setDoctorSchedules((prev) =>
+            mergeListByKey(prev, mapDoctorScheduleRow(row), (d) => d.id)
+          );
+        } else if (event.table === 'pj_shift_assignments') {
+          setPjShiftAssignments((prev) =>
+            mergeListByKey(prev, mapPjShiftAssignmentRow(row), (p) => p.id)
+          );
+        } else if (event.table === 'logbook_locks' && row.month_key === activeMonthKeyRef.current) {
+          setLogbookLocks((prev) => mergeListByKey(prev, mapLogbookLockRow(row), (l) => l.id));
+        } else if (event.table === 'machine_locks' && row.month_key === activeMonthKeyRef.current) {
+          setMachineLocks((prev) => mergeListByKey(prev, mapMachineLockRow(row), (l) => l.id));
+        }
+        return;
+      }
+
+      if ((event.op === 'insert' || event.op === 'upsert') && event.rows && event.rows.length > 0) {
+        const affectedMonths = new Set<string>();
+        for (const r of event.rows) {
+          if (typeof r.month_key === 'string' && MONTH_KEY_RE.test(r.month_key)) {
+            affectedMonths.add(r.month_key);
+          }
+        }
+        affectedMonths.forEach((mk) => {
+          if (mk === activeMonthKeyRef.current || loadedMonthsRef.current.has(mk)) {
+            void loadMonthData(mk, true);
+          }
+        });
+        return;
+      }
+
+      if (event.op === 'update' && event.col) {
+        const targetValues = event.value ? [event.value] : event.values || [];
+        if (targetValues.length === 0) return;
+
+        void (async () => {
+          try {
+            const query = sb.from(event.table).select('*');
+            const { data, error } =
+              targetValues.length === 1
+                ? await query.eq(event.col!, targetValues[0])
+                : await query.in(event.col!, targetValues);
+            if (error || !data || data.length === 0) return;
+
+            if (event.table === 'logbook') {
+              setAllLogbooksRaw((prev) =>
+                mergeManyByKey(prev, data.map(mapLogbookRow), (l) => l.id)
+              );
+            } else if (event.table === 'reports') {
+              setAllReportsRaw((prev) =>
+                mergeManyByKey(prev, data.map(mapReportRow), (r) => r.id)
+              );
+            } else if (event.table === 'schedules') {
+              const mapped = data
+                .map(mapScheduleRow)
+                .filter((s) => isLeaderOrAdminRef.current || s.nurseId === authUidRef.current);
+              setSchedules((prev) => mergeManyByKey(prev, mapped, (s) => s.id));
+            } else if (event.table === 'doctor_schedules') {
+              setDoctorSchedules((prev) =>
+                mergeManyByKey(prev, data.map(mapDoctorScheduleRow), (d) => d.id)
+              );
+            } else if (event.table === 'pj_shift_assignments') {
+              setPjShiftAssignments((prev) =>
+                mergeManyByKey(prev, data.map(mapPjShiftAssignmentRow), (p) => p.id)
+              );
+            }
+          } catch {
+            // Realtime or next sync will reconcile
+          }
+        })();
+      }
+    });
+  }, [authReady, authUser?.uid, userProfile?.isActive, loadMonthData]);
+
   useEffect(() => {
     if (!supabase || !authReady || !authUser || !userProfile?.isActive) {
       hydratedSessionKeyRef.current = null;
+      sessionKeyRef.current = null;
+      loadedActiveMonthRef.current = null;
+      loadedMonthsRef.current.clear();
+      inflightMonthsRef.current.clear();
+      inflightAllArchivesRef.current = null;
+      allArchivesLoadedRef.current = false;
+      setAllArchivesLoaded(false);
       setLoading(false);
       return;
     }
@@ -109,11 +493,18 @@ export function useUnitData() {
     const sessionKey = `${authUser.uid}:${userProfile.role}`;
     const isInitialSessionLoad = hydratedSessionKeyRef.current !== sessionKey;
     hydratedSessionKeyRef.current = sessionKey;
+    sessionKeyRef.current = sessionKey;
 
     setFatalError(null);
     if (isInitialSessionLoad) {
       setLoading(true);
       setDataReady(false);
+      loadedActiveMonthRef.current = null;
+      loadedMonthsRef.current.clear();
+      inflightMonthsRef.current.clear();
+      inflightAllArchivesRef.current = null;
+      allArchivesLoadedRef.current = false;
+      setAllArchivesLoaded(false);
       prunedLockIdsRef.current.clear();
       prunedMachineLockIdsRef.current.clear();
     }
@@ -122,87 +513,162 @@ export function useUnitData() {
     let retryTimer: number | null = null;
     let channel: ReturnType<typeof sb.channel> | null = null;
 
-    const loadAllTables = async () => {
+    const loadActiveTables = async () => {
       try {
         const [
-          patRes,
-          docRes,
-          machRes,
-          catRes,
-          staffRes,
-          usersRes,
-          lbRes,
-          plRes,
-          mlRes,
-          schedRes,
-          docSchedRes,
-          pjRes,
-          repRes,
+          patRows,
+          docRows,
+          machRows,
+          catRows,
+          staffRows,
+          userRows,
+          activeLbRows,
+          carryOverLbRows,
+          plRows,
+          mlRows,
+          schedRows,
+          docSchedRows,
+          pjRows,
+          repRows,
           tplRes,
         ] = await Promise.all([
-          sb.from('patients').select('*').order('full_name', { ascending: true }),
-          sb.from('doctors').select('*').order('full_name', { ascending: true }),
-          sb.from('machines').select('*').order('machine_number', { ascending: true }),
-          sb.from('action_categories').select('*').order('name', { ascending: true }),
-          sb.from('staff_directory').select('*').order('full_name', { ascending: true }),
+          fetchRowsPaginated('patients', mapPatientRow, (q) =>
+            q.order('full_name', { ascending: true }).order('id', { ascending: true })
+          ),
+          fetchRowsPaginated('doctors', mapDoctorRow, (q) =>
+            q.order('full_name', { ascending: true }).order('id', { ascending: true })
+          ),
+          fetchRowsPaginated('machines', mapMachineRow, (q) =>
+            q.order('machine_number', { ascending: true }).order('id', { ascending: true })
+          ),
+          fetchRowsPaginated('action_categories', mapActionCategoryRow, (q) =>
+            q.order('name', { ascending: true }).order('id', { ascending: true })
+          ),
+          fetchRowsPaginated('staff_directory', mapStaffDirectoryRow, (q) =>
+            q.order('full_name', { ascending: true }).order('uid', { ascending: true })
+          ),
           isAdmin
-            ? sb.from('users').select('*').order('full_name', { ascending: true })
-            : Promise.resolve({ data: [], error: null }),
-          sb.from('logbook').select('*').order('date', { ascending: false }),
-          sb.from('logbook_locks').select('*'),
-          sb.from('machine_locks').select('*'),
-          isLeaderOrAdmin
-            ? sb.from('schedules').select('*')
-            : sb.from('schedules').select('*').eq('nurse_id', authUser.uid),
-          sb.from('doctor_schedules').select('*'),
-          sb.from('pj_shift_assignments').select('*'),
-          sb.from('reports').select('*').order('date', { ascending: false }),
+            ? fetchRowsPaginated('users', mapUserRow, (q) =>
+                q.order('full_name', { ascending: true }).order('uid', { ascending: true })
+              )
+            : Promise.resolve([] as UserProfile[]),
+          fetchRowsPaginated('logbook', mapLogbookRow, (q) =>
+            q
+              .eq('month_key', activeMonthKey)
+              .order('date', { ascending: false })
+              .order('id', { ascending: true })
+          ),
+          fetchRowsPaginated('logbook', mapLogbookRow, (q) =>
+            q
+              .lt('month_key', activeMonthKey)
+              .in('verification_status', ['Draft', 'Pending', 'Revision'])
+              .order('date', { ascending: false })
+              .order('id', { ascending: true })
+          ),
+          fetchRowsPaginated('logbook_locks', mapLogbookLockRow, (q) =>
+            q.eq('month_key', activeMonthKey).order('id', { ascending: true })
+          ),
+          fetchRowsPaginated('machine_locks', mapMachineLockRow, (q) =>
+            q.eq('month_key', activeMonthKey).order('id', { ascending: true })
+          ),
+          fetchRowsPaginated('schedules', mapScheduleRow, (q) => {
+            const scoped = isLeaderOrAdmin ? q : q.eq('nurse_id', authUser.uid);
+            return scoped
+              .eq('month_key', activeMonthKey)
+              .order('date', { ascending: true })
+              .order('id', { ascending: true });
+          }),
+          fetchRowsPaginated('doctor_schedules', mapDoctorScheduleRow, (q) =>
+            q
+              .eq('month_key', activeMonthKey)
+              .order('date', { ascending: true })
+              .order('id', { ascending: true })
+          ),
+          fetchRowsPaginated('pj_shift_assignments', mapPjShiftAssignmentRow, (q) =>
+            q
+              .eq('month_key', activeMonthKey)
+              .order('date', { ascending: true })
+              .order('id', { ascending: true })
+          ),
+          fetchRowsPaginated('reports', mapReportRow, (q) =>
+            q
+              .eq('month_key', activeMonthKey)
+              .order('date', { ascending: false })
+              .order('id', { ascending: true })
+          ),
           sb.from('form_templates').select('*').eq('id', LOGBOOK_TEMPLATE_DOC_ID).maybeSingle(),
         ]);
 
         if (cancelled) return;
 
-        const firstErr =
-          patRes.error ||
-          docRes.error ||
-          machRes.error ||
-          catRes.error ||
-          staffRes.error ||
-          usersRes.error ||
-          lbRes.error ||
-          plRes.error ||
-          mlRes.error ||
-          schedRes.error ||
-          docSchedRes.error ||
-          pjRes.error ||
-          repRes.error;
+        setPatients(patRows);
+        setDoctors(docRows);
+        setMachines(machRows);
+        setActionCategories(catRows);
+        setStaffDirectory(staffRows);
+        setAllUsers(isAdmin ? userRows : []);
 
-        if (firstErr) {
-          if (isTransientDbError(firstErr)) {
-            console.warn('Sinkronisasi awal Supabase terganggu sementara, mencoba ulang...');
-            setLoading(false);
-            retryTimer = window.setTimeout(() => {
-              if (!cancelled) setResubscribeEpoch((e) => e + 1);
-            }, 3000);
-            return;
-          }
-          setFatalError(formatDbError(firstErr, OperationType.LIST, 'supabase_unit_data'));
-          return;
+        const freshLogbooks = mergeManyByKey(activeLbRows, carryOverLbRows, (l) => l.id);
+        if (isInitialSessionLoad) {
+          setAllLogbooksRaw(freshLogbooks);
+          setSchedules(schedRows);
+          setDoctorSchedules(docSchedRows);
+          setPjShiftAssignments(pjRows);
+          setAllReportsRaw(repRows);
+        } else {
+          // Preserve already-loaded archive months across reconnects or month rollovers
+          setAllLogbooksRaw((prev) =>
+            mergeManyByKey(
+              prev.filter(
+                (lb) =>
+                  lb.monthKey !== activeMonthKey &&
+                  lb.verificationStatus === 'Approved' &&
+                  loadedMonthsRef.current.has(lb.monthKey)
+              ),
+              freshLogbooks,
+              (l) => l.id
+            )
+          );
+          setSchedules((prev) =>
+            mergeManyByKey(
+              prev.filter(
+                (s) => s.monthKey !== activeMonthKey && loadedMonthsRef.current.has(s.monthKey)
+              ),
+              schedRows,
+              (s) => s.id
+            )
+          );
+          setDoctorSchedules((prev) =>
+            mergeManyByKey(
+              prev.filter(
+                (d) => d.monthKey !== activeMonthKey && loadedMonthsRef.current.has(d.monthKey)
+              ),
+              docSchedRows,
+              (d) => d.id
+            )
+          );
+          setPjShiftAssignments((prev) =>
+            mergeManyByKey(
+              prev.filter(
+                (p) => p.monthKey !== activeMonthKey && loadedMonthsRef.current.has(p.monthKey)
+              ),
+              pjRows,
+              (p) => p.id
+            )
+          );
+          setAllReportsRaw((prev) =>
+            mergeManyByKey(
+              prev.filter(
+                (r) => r.monthKey !== activeMonthKey && loadedMonthsRef.current.has(r.monthKey)
+              ),
+              repRows,
+              (r) => r.id
+            )
+          );
         }
 
-        setPatients((patRes.data || []).map(mapPatientRow));
-        setDoctors((docRes.data || []).map(mapDoctorRow));
-        setMachines((machRes.data || []).map(mapMachineRow));
-        setActionCategories((catRes.data || []).map(mapActionCategoryRow));
-        setStaffDirectory((staffRes.data || []).map(mapStaffDirectoryRow));
-        setAllUsers(isAdmin ? (usersRes.data || []).map(mapUserRow) : []);
-        setAllLogbooksRaw((lbRes.data || []).map(mapLogbookRow));
-        setLogbookLocks((plRes.data || []).map(mapLogbookLockRow));
-        setMachineLocks((mlRes.data || []).map(mapMachineLockRow));
-        setSchedules((schedRes.data || []).map(mapScheduleRow));
-        setDoctorSchedules((docSchedRes.data || []).map(mapDoctorScheduleRow));
-        setPjShiftAssignments((pjRes.data || []).map(mapPjShiftAssignmentRow));
-        setAllReportsRaw((repRes.data || []).map(mapReportRow));
+        setLogbookLocks(plRows);
+        setMachineLocks(mlRows);
 
         if (!tplRes.error && tplRes.data) {
           setFormTemplate(mergeWithDefaultTemplate(mapFormTemplateRow(tplRes.data)));
@@ -210,11 +676,14 @@ export function useUnitData() {
           setFormTemplate(DEFAULT_LOGBOOK_TEMPLATE);
         }
 
+        loadedMonthsRef.current.add(activeMonthKey);
+        loadedActiveMonthRef.current = activeMonthKey;
         setDataReady(true);
         setLoading(false);
       } catch (err) {
         if (cancelled) return;
         if (isTransientDbError(err)) {
+          console.warn('Sinkronisasi awal Supabase terganggu sementara, mencoba ulang...');
           setLoading(false);
           retryTimer = window.setTimeout(() => {
             if (!cancelled) setResubscribeEpoch((e) => e + 1);
@@ -225,10 +694,11 @@ export function useUnitData() {
       }
     };
 
-    void loadAllTables();
+    void loadActiveTables();
 
+    const activeMonthFilter = `month_key=eq.${activeMonthKey}`;
     const ch = sb
-      .channel(`hemolog-unit-${authUser.uid}-${resubscribeEpoch}`)
+      .channel(`hemolog-unit-${authUser.uid}-${activeMonthKey}-${resubscribeEpoch}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'patients' },
@@ -310,109 +780,228 @@ export function useUnitData() {
           }
         }
       )
+      // Scoped active-month realtime for clinical transactional tables (INSERT/UPDATE filtered by month_key, DELETE unfiltered for REPLICA IDENTITY DEFAULT safety)
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'logbook' },
+        { event: 'INSERT', schema: 'public', table: 'logbook', filter: activeMonthFilter },
         (payload) => {
-          if (cancelled) return;
-          if (payload.eventType === 'DELETE') {
-            const oldId = (payload.old as { id?: string })?.id;
-            if (oldId) setAllLogbooksRaw((prev) => prev.filter((l) => l.id !== oldId));
-          } else if (payload.new) {
-            setAllLogbooksRaw((prev) =>
-              mergeListByKey(prev, mapLogbookRow(payload.new), (l) => l.id)
-            );
-          }
+          if (cancelled || !payload.new) return;
+          setAllLogbooksRaw((prev) =>
+            mergeListByKey(prev, mapLogbookRow(payload.new), (l) => l.id)
+          );
         }
       )
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'logbook_locks' },
+        { event: 'UPDATE', schema: 'public', table: 'logbook', filter: activeMonthFilter },
         (payload) => {
-          if (cancelled) return;
-          if (payload.eventType === 'DELETE') {
-            const oldId = (payload.old as { id?: string })?.id;
-            if (oldId) setLogbookLocks((prev) => prev.filter((l) => l.id !== oldId));
-          } else if (payload.new) {
-            setLogbookLocks((prev) =>
-              mergeListByKey(prev, mapLogbookLockRow(payload.new), (l) => l.id)
-            );
-          }
+          if (cancelled || !payload.new) return;
+          setAllLogbooksRaw((prev) =>
+            mergeListByKey(prev, mapLogbookRow(payload.new), (l) => l.id)
+          );
         }
       )
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'machine_locks' },
+        { event: 'DELETE', schema: 'public', table: 'logbook' },
         (payload) => {
           if (cancelled) return;
-          if (payload.eventType === 'DELETE') {
-            const oldId = (payload.old as { id?: string })?.id;
-            if (oldId) setMachineLocks((prev) => prev.filter((l) => l.id !== oldId));
-          } else if (payload.new) {
-            setMachineLocks((prev) =>
-              mergeListByKey(prev, mapMachineLockRow(payload.new), (l) => l.id)
-            );
-          }
+          const oldId = (payload.old as { id?: string })?.id;
+          if (oldId) setAllLogbooksRaw((prev) => prev.filter((l) => l.id !== oldId));
         }
       )
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'schedules' },
+        { event: 'INSERT', schema: 'public', table: 'logbook_locks', filter: activeMonthFilter },
         (payload) => {
-          if (cancelled) return;
-          if (payload.eventType === 'DELETE') {
-            const oldId = (payload.old as { id?: string })?.id;
-            if (oldId) setSchedules((prev) => prev.filter((s) => s.id !== oldId));
-          } else if (payload.new) {
-            const item = mapScheduleRow(payload.new);
-            if (!isLeaderOrAdmin && item.nurseId !== authUser.uid) return;
-            setSchedules((prev) => mergeListByKey(prev, item, (s) => s.id));
-          }
+          if (cancelled || !payload.new) return;
+          setLogbookLocks((prev) =>
+            mergeListByKey(prev, mapLogbookLockRow(payload.new), (l) => l.id)
+          );
         }
       )
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'doctor_schedules' },
+        { event: 'UPDATE', schema: 'public', table: 'logbook_locks', filter: activeMonthFilter },
         (payload) => {
-          if (cancelled) return;
-          if (payload.eventType === 'DELETE') {
-            const oldId = (payload.old as { id?: string })?.id;
-            if (oldId) setDoctorSchedules((prev) => prev.filter((d) => d.id !== oldId));
-          } else if (payload.new) {
-            setDoctorSchedules((prev) =>
-              mergeListByKey(prev, mapDoctorScheduleRow(payload.new), (d) => d.id)
-            );
-          }
+          if (cancelled || !payload.new) return;
+          setLogbookLocks((prev) =>
+            mergeListByKey(prev, mapLogbookLockRow(payload.new), (l) => l.id)
+          );
         }
       )
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'pj_shift_assignments' },
+        { event: 'DELETE', schema: 'public', table: 'logbook_locks' },
         (payload) => {
           if (cancelled) return;
-          if (payload.eventType === 'DELETE') {
-            const oldId = (payload.old as { id?: string })?.id;
-            if (oldId) setPjShiftAssignments((prev) => prev.filter((p) => p.id !== oldId));
-          } else if (payload.new) {
-            setPjShiftAssignments((prev) =>
-              mergeListByKey(prev, mapPjShiftAssignmentRow(payload.new), (p) => p.id)
-            );
-          }
+          const oldId = (payload.old as { id?: string })?.id;
+          if (oldId) setLogbookLocks((prev) => prev.filter((l) => l.id !== oldId));
         }
       )
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'reports' },
+        { event: 'INSERT', schema: 'public', table: 'machine_locks', filter: activeMonthFilter },
+        (payload) => {
+          if (cancelled || !payload.new) return;
+          setMachineLocks((prev) =>
+            mergeListByKey(prev, mapMachineLockRow(payload.new), (l) => l.id)
+          );
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'machine_locks', filter: activeMonthFilter },
+        (payload) => {
+          if (cancelled || !payload.new) return;
+          setMachineLocks((prev) =>
+            mergeListByKey(prev, mapMachineLockRow(payload.new), (l) => l.id)
+          );
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'machine_locks' },
         (payload) => {
           if (cancelled) return;
-          if (payload.eventType === 'DELETE') {
-            const oldId = (payload.old as { id?: string })?.id;
-            if (oldId) setAllReportsRaw((prev) => prev.filter((r) => r.id !== oldId));
-          } else if (payload.new) {
-            setAllReportsRaw((prev) =>
-              mergeListByKey(prev, mapReportRow(payload.new), (r) => r.id)
-            );
-          }
+          const oldId = (payload.old as { id?: string })?.id;
+          if (oldId) setMachineLocks((prev) => prev.filter((l) => l.id !== oldId));
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'schedules', filter: activeMonthFilter },
+        (payload) => {
+          if (cancelled || !payload.new) return;
+          const item = mapScheduleRow(payload.new);
+          if (!isLeaderOrAdmin && item.nurseId !== authUser.uid) return;
+          setSchedules((prev) => mergeListByKey(prev, item, (s) => s.id));
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'schedules', filter: activeMonthFilter },
+        (payload) => {
+          if (cancelled || !payload.new) return;
+          const item = mapScheduleRow(payload.new);
+          if (!isLeaderOrAdmin && item.nurseId !== authUser.uid) return;
+          setSchedules((prev) => mergeListByKey(prev, item, (s) => s.id));
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'schedules' },
+        (payload) => {
+          if (cancelled) return;
+          const oldId = (payload.old as { id?: string })?.id;
+          if (oldId) setSchedules((prev) => prev.filter((s) => s.id !== oldId));
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'doctor_schedules',
+          filter: activeMonthFilter,
+        },
+        (payload) => {
+          if (cancelled || !payload.new) return;
+          setDoctorSchedules((prev) =>
+            mergeListByKey(prev, mapDoctorScheduleRow(payload.new), (d) => d.id)
+          );
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'doctor_schedules',
+          filter: activeMonthFilter,
+        },
+        (payload) => {
+          if (cancelled || !payload.new) return;
+          setDoctorSchedules((prev) =>
+            mergeListByKey(prev, mapDoctorScheduleRow(payload.new), (d) => d.id)
+          );
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'doctor_schedules' },
+        (payload) => {
+          if (cancelled) return;
+          const oldId = (payload.old as { id?: string })?.id;
+          if (oldId) setDoctorSchedules((prev) => prev.filter((d) => d.id !== oldId));
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'pj_shift_assignments',
+          filter: activeMonthFilter,
+        },
+        (payload) => {
+          if (cancelled || !payload.new) return;
+          setPjShiftAssignments((prev) =>
+            mergeListByKey(prev, mapPjShiftAssignmentRow(payload.new), (p) => p.id)
+          );
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'pj_shift_assignments',
+          filter: activeMonthFilter,
+        },
+        (payload) => {
+          if (cancelled || !payload.new) return;
+          setPjShiftAssignments((prev) =>
+            mergeListByKey(prev, mapPjShiftAssignmentRow(payload.new), (p) => p.id)
+          );
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'pj_shift_assignments' },
+        (payload) => {
+          if (cancelled) return;
+          const oldId = (payload.old as { id?: string })?.id;
+          if (oldId) setPjShiftAssignments((prev) => prev.filter((p) => p.id !== oldId));
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'reports', filter: activeMonthFilter },
+        (payload) => {
+          if (cancelled || !payload.new) return;
+          setAllReportsRaw((prev) =>
+            mergeListByKey(prev, mapReportRow(payload.new), (r) => r.id)
+          );
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'reports', filter: activeMonthFilter },
+        (payload) => {
+          if (cancelled || !payload.new) return;
+          setAllReportsRaw((prev) =>
+            mergeListByKey(prev, mapReportRow(payload.new), (r) => r.id)
+          );
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'reports' },
+        (payload) => {
+          if (cancelled) return;
+          const oldId = (payload.old as { id?: string })?.id;
+          if (oldId) setAllReportsRaw((prev) => prev.filter((r) => r.id !== oldId));
         }
       )
       .on(
@@ -468,7 +1057,16 @@ export function useUnitData() {
         void sb.removeChannel(channel);
       }
     };
-  }, [authReady, authUser?.uid, userProfile?.role, userProfile?.isActive, isLeaderOrAdmin, isAdmin, resubscribeEpoch]);
+  }, [
+    authReady,
+    authUser?.uid,
+    userProfile?.role,
+    userProfile?.isActive,
+    isLeaderOrAdmin,
+    isAdmin,
+    activeMonthKey,
+    resubscribeEpoch,
+  ]);
 
   if (fatalError) {
     throw new Error(fatalError);
@@ -493,13 +1091,15 @@ export function useUnitData() {
     return allLogbooks.filter((item) => item.nurseId === uid);
   }, [allLogbooks, authUser?.uid]);
 
-  // Prune orphaned logbook_locks whose referenced logbook was already deleted
+  // Prune orphaned logbook_locks ONLY within the loaded active month
   useEffect(() => {
     if (!authUser || !userProfile?.isActive || !dataReady) return;
+    if (loadedActiveMonthRef.current !== activeMonthKey) return;
 
     const timer = window.setTimeout(() => {
       const existingLogbookIds = new Set(allLogbooks.map((lb) => lb.id));
       for (const lk of logbookLocks) {
+        if (lk.monthKey !== activeMonthKey) continue;
         const pruneKey = `${lk.id}::${lk.logbookId}`;
         if (prunedLockIdsRef.current.has(pruneKey) || existingLogbookIds.has(lk.logbookId)) {
           continue;
@@ -525,15 +1125,17 @@ export function useUnitData() {
     }, 2000);
 
     return () => window.clearTimeout(timer);
-  }, [authUser, userProfile?.isActive, isAdmin, dataReady, allLogbooks, logbookLocks]);
+  }, [authUser, userProfile?.isActive, isAdmin, dataReady, activeMonthKey, allLogbooks, logbookLocks]);
 
-  // Prune orphaned machine_locks whose referenced non-empty logbook was deleted
+  // Prune orphaned machine_locks ONLY within the loaded active month
   useEffect(() => {
     if (!authUser || !userProfile?.isActive || !dataReady) return;
+    if (loadedActiveMonthRef.current !== activeMonthKey) return;
 
     const timer = window.setTimeout(() => {
       const existingLogbookIds = new Set(allLogbooks.map((lb) => lb.id));
       for (const lk of machineLocks) {
+        if (lk.monthKey !== activeMonthKey) continue;
         const pruneKey = `${lk.id}::${lk.logbookId || ''}`;
         if (
           !lk.logbookId ||
@@ -563,7 +1165,7 @@ export function useUnitData() {
     }, 2000);
 
     return () => window.clearTimeout(timer);
-  }, [authUser, userProfile?.isActive, isAdmin, dataReady, allLogbooks, machineLocks]);
+  }, [authUser, userProfile?.isActive, isAdmin, dataReady, activeMonthKey, allLogbooks, machineLocks]);
 
   const allReports = useMemo(() => {
     return [...allReportsRaw].sort((a, b) => b.date.localeCompare(a.date));
@@ -571,6 +1173,10 @@ export function useUnitData() {
 
   return {
     loading,
+    archiveLoading: archiveRequestCount > 0,
+    allArchivesLoaded,
+    ensureMonthLoaded,
+    ensureAllArchivesLoaded,
     patients,
     doctors,
     machines,

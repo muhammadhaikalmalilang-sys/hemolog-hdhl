@@ -27,6 +27,9 @@ interface HistoryPageProps {
   staffDirectory?: StaffDirectoryEntry[];
   machineLocks?: MachineLock[];
   formTemplate?: LogbookFormTemplate;
+  archiveLoading?: boolean;
+  onEnsureMonthLoaded?: (monthKey: string) => Promise<void> | void;
+  onEnsureAllArchivesLoaded?: () => Promise<void> | void;
 }
 
 export function HistoryPage({
@@ -39,6 +42,9 @@ export function HistoryPage({
   staffDirectory = [],
   machineLocks = [],
   formTemplate,
+  archiveLoading = false,
+  onEnsureMonthLoaded,
+  onEnsureAllArchivesLoaded,
 }: HistoryPageProps) {
   const { userProfile } = useAuth();
   const { todayDate: liveTodayDate } = useLiveClock();
@@ -55,6 +61,16 @@ export function HistoryPage({
       setDateFilter((prev) => (prev === todayDate ? liveTodayDate : prev));
     }
   }, [liveTodayDate, todayDate]);
+
+  useEffect(() => {
+    if (tab === 'shift_reports') {
+      void onEnsureAllArchivesLoaded?.();
+    } else if (dateFilter) {
+      void onEnsureMonthLoaded?.(dateFilter.slice(0, 7));
+    } else {
+      void onEnsureAllArchivesLoaded?.();
+    }
+  }, [tab, dateFilter, onEnsureMonthLoaded, onEnsureAllArchivesLoaded]);
 
   const uid = userProfile?.uid || '';
   const isPjShift = userProfile?.role === 'PJ Shift';
@@ -194,6 +210,11 @@ export function HistoryPage({
                 <strong className="text-slate-700">
                   {dateFilter ? formatFullDayDateId(dateFilter) : 'Semua Tanggal'}
                 </strong>
+                {archiveLoading && (
+                  <span className="ml-2 font-medium text-[#0B5A8E]">
+                    (Memuat arsip...)
+                  </span>
+                )}
               </span>
               {dateFilter && dateFilter !== todayDate && (
                 <button

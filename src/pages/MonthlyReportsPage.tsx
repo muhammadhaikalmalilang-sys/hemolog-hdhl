@@ -48,6 +48,8 @@ interface MonthlyReportsPageProps {
   staffDirectory: StaffDirectoryEntry[];
   reports?: ReportEntry[];
   formTemplate?: LogbookFormTemplate;
+  archiveLoading?: boolean;
+  onEnsureMonthLoaded?: (monthKey: string) => Promise<void> | void;
 }
 
 interface MonthlyCustomMetricRow {
@@ -258,6 +260,8 @@ export function MonthlyReportsPage({
   staffDirectory,
   reports = [],
   formTemplate,
+  archiveLoading = false,
+  onEnsureMonthLoaded,
 }: MonthlyReportsPageProps) {
   const { userProfile } = useAuth();
   const { showToast } = useToast();
@@ -315,6 +319,12 @@ export function MonthlyReportsPage({
       setMonthKey((prev) => (prev === trackedMonthKey ? liveMonthKey : prev));
     }
   }, [liveMonthKey, trackedMonthKey]);
+
+  useEffect(() => {
+    if (monthKey) {
+      void onEnsureMonthLoaded?.(monthKey);
+    }
+  }, [monthKey, onEnsureMonthLoaded]);
 
   const detailEntry = useMemo(
     () => (detailEntryId ? logbooks.find((item) => item.id === detailEntryId) || null : null),
@@ -1340,6 +1350,12 @@ export function MonthlyReportsPage({
           </button>
         </div>
       </div>
+
+      {archiveLoading && (
+        <div className="no-print rounded-xl border border-sky-200 bg-sky-50 px-4 py-2 text-xs font-medium text-[#0B5A8E]">
+          Memuat arsip laporan bulanan {formatMonthLabel(monthKey)}...
+        </div>
+      )}
 
       {viewMode === 'recap' ? (
         <div

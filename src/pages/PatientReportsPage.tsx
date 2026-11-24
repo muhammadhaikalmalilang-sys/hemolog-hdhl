@@ -35,6 +35,9 @@ interface PatientReportsPageProps {
   staffDirectory?: StaffDirectoryEntry[];
   pjShiftAssignments?: PjShiftAssignmentEntry[];
   formTemplate?: LogbookFormTemplate;
+  archiveLoading?: boolean;
+  onEnsureMonthLoaded?: (monthKey: string) => Promise<void> | void;
+  onEnsureAllArchivesLoaded?: () => Promise<void> | void;
 }
 
 function calcDurationHours(startTime: string, endTime: string): number | null {
@@ -81,6 +84,9 @@ export function PatientReportsPage({
   staffDirectory = [],
   pjShiftAssignments = [],
   formTemplate,
+  archiveLoading = false,
+  onEnsureMonthLoaded,
+  onEnsureAllArchivesLoaded,
 }: PatientReportsPageProps) {
   const { userProfile } = useAuth();
   const { showToast } = useToast();
@@ -115,6 +121,16 @@ export function PatientReportsPage({
       setShiftFilter(liveCurrentShift);
     }
   }, [liveCurrentShift, hasManualShift]);
+
+  useEffect(() => {
+    if (dateFilter) {
+      void onEnsureMonthLoaded?.(dateFilter.slice(0, 7));
+    } else if (monthFilter) {
+      void onEnsureMonthLoaded?.(monthFilter);
+    } else {
+      void onEnsureAllArchivesLoaded?.();
+    }
+  }, [dateFilter, monthFilter, onEnsureMonthLoaded, onEnsureAllArchivesLoaded]);
 
   const [detailEntryId, setDetailEntryId] = useState<string | null>(null);
   const detailEntry = useMemo(
@@ -771,6 +787,12 @@ export function PatientReportsPage({
           )}
         </div>
       </div>
+
+      {archiveLoading && (
+        <div className="no-print rounded-xl border border-sky-200 bg-sky-50 px-4 py-2 text-xs font-medium text-[#0B5A8E]">
+          Memuat arsip laporan pelayanan pasien...
+        </div>
+      )}
 
       {/* Filters */}
       <div className="no-print rounded-xl border border-slate-200 bg-white p-3.5 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">

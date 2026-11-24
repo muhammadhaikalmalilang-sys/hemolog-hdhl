@@ -46,6 +46,8 @@ interface DashboardPageProps {
   staffDirectory: StaffDirectoryEntry[];
   schedules: ScheduleEntry[];
   onNavigate: (menu: MenuId) => void;
+  archiveLoading?: boolean;
+  onEnsureMonthLoaded?: (monthKey: string) => Promise<void> | void;
 }
 
 export function DashboardPage({
@@ -56,6 +58,8 @@ export function DashboardPage({
   machines,
   staffDirectory,
   onNavigate,
+  archiveLoading = false,
+  onEnsureMonthLoaded,
 }: DashboardPageProps) {
   const { userProfile } = useAuth();
   const { showToast } = useToast();
@@ -74,6 +78,9 @@ export function DashboardPage({
   const [seeding, setSeeding] = useState(false);
   const [seedFeedback, setSeedFeedback] = useState<string | null>(null);
 
+  const selectedMonthKey = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
+  const selectedMonthName = MONTH_NAMES_ID[selectedMonth - 1] || '';
+
   useEffect(() => {
     if (realCurrentMonthKey !== trackedMonthKey) {
       const [prevY, prevM] = trackedMonthKey.split('-').map(Number);
@@ -85,6 +92,10 @@ export function DashboardPage({
     }
   }, [realCurrentMonthKey, trackedMonthKey, realYear, realMonth, selectedYear, selectedMonth]);
 
+  useEffect(() => {
+    void onEnsureMonthLoaded?.(selectedMonthKey);
+  }, [selectedMonthKey, onEnsureMonthLoaded]);
+
   if (!userProfile) return null;
 
   const isAdmin = userProfile.role === 'Administrator';
@@ -93,9 +104,6 @@ export function DashboardPage({
     userProfile.role === 'Kepala Ruang' ||
     userProfile.role === 'PJ Shift' ||
     userProfile.role === 'Perawat Pelaksana';
-
-  const selectedMonthKey = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
-  const selectedMonthName = MONTH_NAMES_ID[selectedMonth - 1] || '';
 
   const availableYears = useMemo(() => {
     const years = new Set<number>([realYear - 1, realYear, realYear + 1]);
@@ -327,6 +335,12 @@ export function DashboardPage({
           </div>
         </div>
       </div>
+
+      {archiveLoading && (
+        <div className="rounded-xl border border-sky-200 bg-sky-50/90 px-4 py-2 text-xs font-medium text-[#0B5A8E]">
+          Memuat arsip data periode {selectedMonthName} {selectedYear}...
+        </div>
+      )}
 
       {seedFeedback && (
         <div className="rounded-xl border border-teal-200 bg-teal-50/95 px-4 py-3 text-xs font-medium text-teal-800 shadow-sm">

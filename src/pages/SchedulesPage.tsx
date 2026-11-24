@@ -52,6 +52,8 @@ interface SchedulesPageProps {
   doctorSchedules: DoctorScheduleEntry[];
   doctors: Doctor[];
   staffDirectory: StaffDirectoryEntry[];
+  archiveLoading?: boolean;
+  onEnsureMonthLoaded?: (monthKey: string) => Promise<void> | void;
 }
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -67,6 +69,8 @@ export function SchedulesPage({
   doctorSchedules,
   doctors,
   staffDirectory,
+  archiveLoading = false,
+  onEnsureMonthLoaded,
 }: SchedulesPageProps) {
   const { userProfile } = useAuth();
   const { showToast } = useToast();
@@ -127,6 +131,12 @@ export function SchedulesPage({
       setPjDate((prev) => (prev === trackedTodayDate ? liveTodayDate : prev));
     }
   }, [liveTodayDate, liveMonthKey, trackedTodayDate]);
+
+  useEffect(() => {
+    if (monthKey) {
+      void onEnsureMonthLoaded?.(monthKey);
+    }
+  }, [monthKey, onEnsureMonthLoaded]);
 
   const userUid = userProfile?.uid || '';
   const isAdmin = userProfile?.role === 'Administrator';
@@ -665,6 +675,12 @@ export function SchedulesPage({
           )}
         </div>
       </div>
+
+      {archiveLoading && (
+        <div className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-2 text-xs font-medium text-[#0B5A8E]">
+          Memuat arsip jadwal dinas bulan {formatMonthLabel(monthKey)}...
+        </div>
+      )}
 
       {scheduleError && (
         <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-medium text-rose-700">

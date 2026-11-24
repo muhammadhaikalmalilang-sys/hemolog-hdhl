@@ -48,6 +48,8 @@ interface PjShiftReportsPageProps {
   doctorSchedules: DoctorScheduleEntry[];
   staffDirectory: StaffDirectoryEntry[];
   pjShiftAssignments?: PjShiftAssignmentEntry[];
+  archiveLoading?: boolean;
+  onEnsureMonthLoaded?: (monthKey: string) => Promise<void> | void;
 }
 
 function calcDurationHours(startTime: string, endTime: string): number | null {
@@ -205,6 +207,8 @@ export function PjShiftReportsPage({
   doctorSchedules,
   staffDirectory,
   pjShiftAssignments = [],
+  archiveLoading = false,
+  onEnsureMonthLoaded,
 }: PjShiftReportsPageProps) {
   const { userProfile } = useAuth();
   const { showToast } = useToast();
@@ -234,6 +238,18 @@ export function PjShiftReportsPage({
       setSelectedDate((prev) => (prev === trackedTodayDate ? liveTodayDate : prev));
     }
   }, [liveTodayDate, trackedTodayDate]);
+
+  useEffect(() => {
+    if (!selectedDate) return;
+    const primaryMonth = selectedDate.slice(0, 7);
+    void onEnsureMonthLoaded?.(primaryMonth);
+    if (shiftFilter === 'Malam') {
+      const nextMonth = addDaysToDateStr(selectedDate, 1).slice(0, 7);
+      if (nextMonth !== primaryMonth) {
+        void onEnsureMonthLoaded?.(nextMonth);
+      }
+    }
+  }, [selectedDate, shiftFilter, onEnsureMonthLoaded]);
 
   // Create/Save PJ Shift report modal
   const [showModal, setShowModal] = useState(false);
@@ -2017,6 +2033,12 @@ export function PjShiftReportsPage({
           )}
         </div>
       </div>
+
+      {archiveLoading && (
+        <div className="no-print rounded-xl border border-sky-200 bg-sky-50 px-4 py-2 text-xs font-medium text-[#0B5A8E]">
+          Memuat arsip laporan PJ Shift...
+        </div>
+      )}
 
       {/* Filters & Quick Verified Period Selector */}
       <div className="no-print rounded-xl border border-slate-200 bg-white p-3.5 space-y-3">
