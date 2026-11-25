@@ -140,6 +140,7 @@ function WorkspaceShell() {
     loading,
     archiveLoading,
     ensureMonthLoaded,
+    refreshReportsForMonth,
     ensureAllArchivesLoaded,
     ensureLogbookDetailsByIds,
     ensureMonthDetailsLoaded,
@@ -497,6 +498,7 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_
             pjShiftAssignments={pjShiftAssignments}
             archiveLoading={archiveLoading}
             onEnsureMonthLoaded={ensureMonthLoaded}
+            onRefreshMonthReports={refreshReportsForMonth}
             onEnsureLogbookDetailsByIds={ensureLogbookDetailsByIds}
           />
         );

@@ -301,6 +301,34 @@ export function useUnitData() {
     return task;
   }, []);
 
+  const refreshReportsForMonth = useCallback(async (monthKey: string) => {
+    if (!supabase || !MONTH_KEY_RE.test(monthKey)) return;
+    const uid = authUidRef.current;
+    const capturedSessionKey = sessionKeyRef.current;
+    if (!uid || !capturedSessionKey) return;
+    try {
+      const repRows = await fetchRowsPaginated('reports', mapReportRow, (q) =>
+        q
+          .eq('month_key', monthKey)
+          .order('date', { ascending: false })
+          .order('id', { ascending: true })
+      );
+      if (sessionKeyRef.current !== capturedSessionKey) return;
+      setAllReportsRaw((prev) =>
+        mergeManyByKey(
+          prev.filter((item) => item.monthKey !== monthKey),
+          repRows,
+          (r) => r.id
+        )
+      );
+      loadedMonthsRef.current.add(monthKey);
+    } catch (err) {
+      if (!isTransientDbError(err)) {
+        console.warn(`Gagal menyegarkan data laporan periode ${monthKey}:`, err);
+      }
+    }
+  }, []);
+
   const ensureMonthLoaded = useCallback(
     async (monthKey: string) => {
       if (!supabase || !MONTH_KEY_RE.test(monthKey)) return;
@@ -1167,22 +1195,32 @@ export function useUnitData() {
       )
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'reports', filter: activeMonthFilter },
+        { event: 'INSERT', schema: 'public', table: 'reports' },
         (payload) => {
           if (cancelled || !payload.new) return;
-          setAllReportsRaw((prev) =>
-            mergeListByKey(prev, mapReportRow(payload.new), (r) => r.id)
-          );
+          const mapped = mapReportRow(payload.new);
+          if (
+            mapped.monthKey !== activeMonthKey &&
+            !loadedMonthsRef.current.has(mapped.monthKey)
+          ) {
+            return;
+          }
+          setAllReportsRaw((prev) => mergeListByKey(prev, mapped, (r) => r.id));
         }
       )
       .on(
         'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'reports', filter: activeMonthFilter },
+        { event: 'UPDATE', schema: 'public', table: 'reports' },
         (payload) => {
           if (cancelled || !payload.new) return;
-          setAllReportsRaw((prev) =>
-            mergeListByKey(prev, mapReportRow(payload.new), (r) => r.id)
-          );
+          const mapped = mapReportRow(payload.new);
+          if (
+            mapped.monthKey !== activeMonthKey &&
+            !loadedMonthsRef.current.has(mapped.monthKey)
+          ) {
+            return;
+          }
+          setAllReportsRaw((prev) => mergeListByKey(prev, mapped, (r) => r.id));
         }
       )
       .on(
@@ -1366,6 +1404,7 @@ export function useUnitData() {
     archiveLoading: archiveRequestCount > 0,
     allArchivesLoaded,
     ensureMonthLoaded,
+    refreshReportsForMonth,
     ensureAllArchivesLoaded,
     ensureLogbookDetailsByIds,
     ensureMonthDetailsLoaded,

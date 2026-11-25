@@ -53,6 +53,7 @@ interface PjShiftReportsPageProps {
   pjShiftAssignments?: PjShiftAssignmentEntry[];
   archiveLoading?: boolean;
   onEnsureMonthLoaded?: (monthKey: string) => Promise<void> | void;
+  onRefreshMonthReports?: (monthKey: string) => Promise<void> | void;
   onEnsureLogbookDetailsByIds?: (ids: string[]) => Promise<void> | void;
 }
 
@@ -213,6 +214,7 @@ export function PjShiftReportsPage({
   pjShiftAssignments = [],
   archiveLoading = false,
   onEnsureMonthLoaded,
+  onRefreshMonthReports,
   onEnsureLogbookDetailsByIds,
 }: PjShiftReportsPageProps) {
   const { userProfile } = useAuth();
@@ -264,13 +266,15 @@ export function PjShiftReportsPage({
     if (!selectedDate) return;
     const primaryMonth = selectedDate.slice(0, 7);
     void onEnsureMonthLoaded?.(primaryMonth);
+    void onRefreshMonthReports?.(primaryMonth);
     if (shiftFilter === 'Malam') {
       const nextMonth = addDaysToDateStr(selectedDate, 1).slice(0, 7);
       if (nextMonth !== primaryMonth) {
         void onEnsureMonthLoaded?.(nextMonth);
+        void onRefreshMonthReports?.(nextMonth);
       }
     }
-  }, [selectedDate, shiftFilter, onEnsureMonthLoaded]);
+  }, [selectedDate, shiftFilter, onEnsureMonthLoaded, onRefreshMonthReports]);
 
   useEffect(() => {
     if (!selectedDate || !onEnsureLogbookDetailsByIds) return;
@@ -333,10 +337,6 @@ export function PjShiftReportsPage({
   const [showResetConfirmModal, setShowResetConfirmModal] = useState(false);
   const [resettingApprovals, setResettingApprovals] = useState(false);
 
-  const canCreate =
-    userProfile?.role === 'PJ Shift' ||
-    userProfile?.role === 'Kepala Ruang' ||
-    userProfile?.role === 'Administrator';
   const canReview = userProfile?.role === 'Kepala Ruang';
 
   const staffMap = useMemo(() => new Map(staffDirectory.map((s) => [s.uid, s])), [staffDirectory]);
@@ -389,14 +389,75 @@ export function PjShiftReportsPage({
     [allApprovedLogbooks, pjShiftReports, shiftFilter]
   );
 
-  const activeSavedReport = useMemo(() => {
-    return (
-      pjShiftReports.find(
-        (r) =>
-          r.date === selectedDate && (shiftFilter === 'ALL' || r.shift === shiftFilter)
-      ) || null
-    );
+  const matchingShiftReports = useMemo(() => {
+    const compareChronological = (a: ReportEntry, b: ReportEntry) => {
+      const updCmp = String(a.updatedAt || '').localeCompare(String(b.updatedAt || ''));
+      if (updCmp !== 0) return updCmp;
+      const crtCmp = String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+      if (crtCmp !== 0) return crtCmp;
+      return a.id.localeCompare(b.id);
+    };
+
+    if (shiftFilter === 'ALL') {
+      const shiftOrder: Record<ShiftType, number> = { Pagi: 1, Siang: 2, Malam: 3 };
+      return pjShiftReports
+        .filter((r) => r.date === selectedDate)
+        .sort((a, b) => {
+          const sA = a.shift ? shiftOrder[a.shift] : 99;
+          const sB = b.shift ? shiftOrder[b.shift] : 99;
+          if (sA !== sB) return sA - sB;
+          return compareChronological(a, b);
+        });
+    }
+
+    return pjShiftReports
+      .filter((r) => r.date === selectedDate && r.shift === shiftFilter)
+      .sort(compareChronological);
   }, [pjShiftReports, selectedDate, shiftFilter]);
+
+  const activeSavedReport = useMemo<ReportEntry | null>(() => {
+    if (matchingShiftReports.length === 0) return null;
+    if (shiftFilter === 'ALL') {
+      return matchingShiftReports[0];
+    }
+    if (matchingShiftReports.length === 1) {
+      return matchingShiftReports[0];
+    }
+
+    // Coalesce any legacy duplicate rows deterministically (oldest -> newest) so all accounts see identical data
+    let merged: ReportEntry = { ...matchingShiftReports[0] };
+    for (let i = 1; i < matchingShiftReports.length; i += 1) {
+      const next = matchingShiftReports[i];
+      const prevSectionD = merged.sectionDItems || [];
+      const nextSectionD = next.sectionDItems || [];
+      let mergedSectionD = prevSectionD;
+      if (nextSectionD.length > 0) {
+        const byItem = new Map<string, ReportSectionDItem>();
+        for (const row of prevSectionD) byItem.set(row.item, row);
+        for (const row of nextSectionD) byItem.set(row.item, row);
+        mergedSectionD = Array.from(byItem.values());
+      }
+
+      const nextRecord: ReportEntry = { ...merged };
+      const nextRecordMutable = nextRecord as unknown as Record<string, unknown>;
+      (Object.keys(next) as (keyof ReportEntry)[]).forEach((key) => {
+        const val = next[key];
+        if (val !== undefined && val !== null && val !== '') {
+          nextRecordMutable[key as string] = val;
+        }
+      });
+      nextRecord.sectionDItems = mergedSectionD.length > 0 ? mergedSectionD : next.sectionDItems;
+      if (merged.reviewStatus === 'Reviewed' && !next.reviewedBy) {
+        nextRecord.reviewStatus = merged.reviewStatus;
+        nextRecord.reviewedBy = merged.reviewedBy;
+        nextRecord.reviewedByName = merged.reviewedByName;
+        nextRecord.reviewNote = merged.reviewNote;
+        nextRecord.reviewedAt = merged.reviewedAt;
+      }
+      merged = nextRecord;
+    }
+    return merged;
+  }, [matchingShiftReports, shiftFilter]);
 
   const hasAnyApproval = Boolean(
     activeSavedReport &&
@@ -473,7 +534,10 @@ export function PjShiftReportsPage({
   }, [schedules, handoverTargetDate, nextShiftName, shiftFilter, staffMap]);
 
   const activeKaruList = useMemo(
-    () => staffDirectory.filter((st) => st.isActive && st.role === 'Kepala Ruang'),
+    () =>
+      staffDirectory
+        .filter((st) => st.isActive && st.role === 'Kepala Ruang')
+        .sort((a, b) => a.fullName.localeCompare(b.fullName)),
     [staffDirectory]
   );
 
@@ -773,8 +837,7 @@ export function PjShiftReportsPage({
 
     const kaRuangName =
       activeSavedReport?.reviewedByName ||
-      (userProfile?.role === 'Kepala Ruang' ? userProfile.fullName : '') ||
-      Array.from(karuVerifierNames)[0] ||
+      Array.from(karuVerifierNames).sort()[0] ||
       activeKaruList[0]?.fullName ||
       'TWIS FERTILIANTI PW';
 
@@ -1006,7 +1069,6 @@ export function PjShiftReportsPage({
     scheduledPjCurrentList,
     scheduledPjNextList,
     activeKaruList,
-    userProfile,
   ]);
 
   const savedSbar = useMemo(
@@ -1056,18 +1118,15 @@ export function PjShiftReportsPage({
       nursesOnDuty: clampString(nursesDefault, 500),
       incidents: clampString(incidentsDefault, 1000),
       handoverNotes: clampString(handoverDefault, 2500),
+      sbarSituation: clampString(sbarView.situation, 2000),
+      sbarBackground: clampString(sbarView.background, 3000),
+      sbarAssessment: clampString(sbarView.assessment, 2000),
+      sbarRecommendation: clampString(sbarView.recommendation, 2000),
       reviewStatus: 'Submitted' as const,
     };
   };
 
-  const canEditContent =
-    shiftFilter !== 'ALL' &&
-    canCreate &&
-    (!activeSavedReport ||
-      activeSavedReport.reviewStatus !== 'Reviewed' ||
-      userProfile?.role === 'Administrator');
-
-  // Permission evaluation for Section F Digital Signature columns
+  // Permission evaluation for Section F Digital Signature & Content Editing
   const userScheduleCurrentDate = useMemo(() => {
     if (!userProfile) return null;
     return schedules.find((s) => s.nurseId === userProfile.uid && s.date === selectedDate) || null;
@@ -1079,6 +1138,82 @@ export function PjShiftReportsPage({
       schedules.find((s) => s.nurseId === userProfile.uid && s.date === handoverTargetDate) || null
     );
   }, [schedules, userProfile, handoverTargetDate]);
+
+  const contentEditAuth = useMemo(() => {
+    if (shiftFilter === 'ALL') {
+      return {
+        allowed: false,
+        reason:
+          'Pilih Shift Pagi atau Siang terlebih dahulu untuk menginput atau mengubah Laporan PJ Shift.',
+      };
+    }
+    if (activeSavedReport?.reviewStatus === 'Reviewed') {
+      return {
+        allowed: false,
+        reason: `Laporan shift ini sudah disahkan oleh Kepala Ruang (${activeSavedReport.reviewedByName || 'Kepala Ruang'}) sehingga terkunci.`,
+      };
+    }
+    if (!userProfile || userProfile.role !== 'PJ Shift') {
+      return {
+        allowed: false,
+        reason:
+          'Hanya perawat yang bertugas sebagai PJ Shift pada shift ini yang diperbolehkan menginput atau mengubah Laporan PJ Shift.',
+      };
+    }
+    if (assignedPjCurrent) {
+      if (assignedPjCurrent.pjNurseId !== userProfile.uid) {
+        return {
+          allowed: false,
+          reason: `Hanya ${assignedPjCurrent.pjNurseName} (PJ Shift ${shiftFilter} tanggal ${formatDateId(selectedDate)}) yang diperbolehkan menginput atau mengubah laporan shift ini.`,
+        };
+      }
+      return { allowed: true, reason: '' };
+    }
+    if (scheduledPjCurrentList.length > 1) {
+      return {
+        allowed: false,
+        reason:
+          'Terdapat lebih dari 1 PJ Shift terjadwal pada shift ini. Tetapkan tepat 1 PJ Shift di menu Jadwal Dinas → Penugasan PJ Shift terlebih dahulu.',
+      };
+    }
+    if (!userScheduleCurrentDate || userScheduleCurrentDate.shift !== shiftFilter) {
+      const targetName = scheduledPjCurrentList[0]?.fullName;
+      return {
+        allowed: false,
+        reason: targetName
+          ? `Hanya ${targetName} yang terjadwal sebagai PJ Shift ${shiftFilter} tanggal ${formatDateId(selectedDate)}.`
+          : `Akun Anda tidak terjadwal sebagai PJ Shift ${shiftFilter} pada tanggal ${formatDateId(selectedDate)}.`,
+      };
+    }
+    if (scheduledPjCurrentList.length === 1 && scheduledPjCurrentList[0].uid !== userProfile.uid) {
+      return {
+        allowed: false,
+        reason: `Hanya ${scheduledPjCurrentList[0].fullName} yang terjadwal sebagai PJ Shift ${shiftFilter} tanggal ${formatDateId(selectedDate)}.`,
+      };
+    }
+    return { allowed: true, reason: '' };
+  }, [
+    shiftFilter,
+    activeSavedReport,
+    userProfile,
+    assignedPjCurrent,
+    scheduledPjCurrentList,
+    userScheduleCurrentDate,
+    selectedDate,
+  ]);
+
+  const canEditContent = contentEditAuth.allowed;
+
+  useEffect(() => {
+    if (!canEditContent) {
+      setShowModal(false);
+      setShowMaintModal(false);
+      setEditingSectionDIndex(null);
+      setDraftSectionDRow(null);
+      setEditingSbarKey(null);
+      setDraftSbarText('');
+    }
+  }, [canEditContent]);
 
   const kolom1Auth = useMemo(() => {
     if (shiftFilter === 'ALL') {
@@ -1238,6 +1373,10 @@ export function PjShiftReportsPage({
   }, [shiftFilter, activeSavedReport, userProfile, activeKaruList]);
 
   const handleOpenCreateModal = () => {
+    if (!canEditContent) {
+      showToast(contentEditAuth.reason, 'error');
+      return;
+    }
     setModalNursesOnDuty(
       activeSavedReport?.nursesOnDuty ||
         (shiftStats.allNurseRoster.length > 0
@@ -1266,9 +1405,15 @@ export function PjShiftReportsPage({
 
   const handleCreateOrUpdateReport = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userProfile) return;
+    if (!userProfile || !canEditContent || shiftFilter === 'ALL') {
+      showToast(
+        contentEditAuth.reason || 'Hanya PJ Shift pada shift ini yang dapat menyimpan laporan.',
+        'error'
+      );
+      return;
+    }
     setSaving(true);
-    const effectiveShift: ShiftType = shiftFilter === 'ALL' ? 'Pagi' : shiftFilter;
+    const effectiveShift: ShiftType = shiftFilter;
     const parsedModalSbar = parseSbarLines(modalHandoverNotes);
     const sbarFields = {
       ...(parsedModalSbar?.s ? { sbarSituation: clampString(parsedModalSbar.s, 2000) } : {}),
@@ -1276,12 +1421,13 @@ export function PjShiftReportsPage({
       ...(parsedModalSbar?.a ? { sbarAssessment: clampString(parsedModalSbar.a, 2000) } : {}),
       ...(parsedModalSbar?.r ? { sbarRecommendation: clampString(parsedModalSbar.r, 2000) } : {}),
     };
+    const existingReport = activeSavedReport;
     try {
-      if (activeSavedReport && activeSavedReport.reviewStatus !== 'Reviewed') {
+      if (existingReport) {
         await updateRowByColumn(
           'reports',
           'id',
-          activeSavedReport.id,
+          existingReport.id,
           toReportRow({
             shift: effectiveShift,
             totalPatients: shiftStats.totalVerified,
@@ -1316,7 +1462,7 @@ export function PjShiftReportsPage({
       }
       setShowModal(false);
       showToast(
-        activeSavedReport && activeSavedReport.reviewStatus !== 'Reviewed'
+        existingReport
           ? `Laporan PJ Shift ${effectiveShift} diperbarui.`
           : `Laporan PJ Shift ${effectiveShift} berhasil disimpan.`,
         'success'
@@ -1341,13 +1487,13 @@ export function PjShiftReportsPage({
       const nowIso = new Date().toISOString();
       if (reviewTarget.id === '__NEW__') {
         const effectiveShift: ShiftType = shiftFilter === 'ALL' ? 'Pagi' : shiftFilter;
-        const base = getBaseNewReportPayload(effectiveShift);
-        if (base) {
-          await insertRow(
+        const existingForShift = activeSavedReport;
+        if (existingForShift) {
+          await updateRowByColumn(
             'reports',
+            'id',
+            existingForShift.id,
             toReportRow({
-              id: generateRecordId(),
-              ...base,
               reviewStatus: 'Reviewed',
               reviewedBy: userProfile.uid,
               reviewedByName: clampString(userProfile.fullName, 120),
@@ -1355,6 +1501,22 @@ export function PjShiftReportsPage({
               reviewedAt: nowIso,
             })
           );
+        } else {
+          const base = getBaseNewReportPayload(effectiveShift);
+          if (base) {
+            await insertRow(
+              'reports',
+              toReportRow({
+                id: generateRecordId(),
+                ...base,
+                reviewStatus: 'Reviewed',
+                reviewedBy: userProfile.uid,
+                reviewedByName: clampString(userProfile.fullName, 120),
+                reviewNote: noteText,
+                reviewedAt: nowIso,
+              })
+            );
+          }
         }
       } else {
         await updateRowByColumn(
@@ -1525,26 +1687,27 @@ export function PjShiftReportsPage({
     setResettingApprovals(true);
     setSignFeedback(null);
     try {
-      await updateRowByColumn(
-        'reports',
-        'id',
-        activeSavedReport.id,
-        toReportRow({
-          handoverSignedBy: undefined,
-          handoverSignedByName: undefined,
-          handoverSignedShift: undefined,
-          handoverSignedAt: undefined,
-          receivedSignedBy: undefined,
-          receivedSignedByName: undefined,
-          receivedSignedShift: undefined,
-          receivedSignedDate: undefined,
-          receivedSignedAt: undefined,
-          reviewedBy: undefined,
-          reviewedByName: undefined,
-          reviewNote: undefined,
-          reviewedAt: undefined,
-          reviewStatus: 'Submitted',
-        })
+      const resetPatch = toReportRow({
+        handoverSignedBy: undefined,
+        handoverSignedByName: undefined,
+        handoverSignedShift: undefined,
+        handoverSignedAt: undefined,
+        receivedSignedBy: undefined,
+        receivedSignedByName: undefined,
+        receivedSignedShift: undefined,
+        receivedSignedDate: undefined,
+        receivedSignedAt: undefined,
+        reviewedBy: undefined,
+        reviewedByName: undefined,
+        reviewNote: undefined,
+        reviewedAt: undefined,
+        reviewStatus: 'Submitted',
+      });
+      const targetIds = Array.from(
+        new Set([activeSavedReport.id, ...matchingShiftReports.map((r) => r.id)])
+      );
+      await Promise.all(
+        targetIds.map((id) => updateRowByColumn('reports', 'id', id, resetPatch))
       );
       setShowResetConfirmModal(false);
       setSignFeedback({
@@ -1754,7 +1917,7 @@ export function PjShiftReportsPage({
 
   const handleSaveMaintenance = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userProfile || shiftFilter === 'ALL') return;
+    if (!userProfile || !canEditContent || shiftFilter === 'ALL') return;
     const parsedCount = Math.max(0, Math.round(Number(maintCountInput) || 0));
     const cappedCount =
       shiftStats.totalMachines > 0 ? Math.min(shiftStats.totalMachines, parsedCount) : parsedCount;
@@ -1839,7 +2002,7 @@ export function PjShiftReportsPage({
   };
 
   const handleSaveSectionDRow = async (idx: number) => {
-    if (!userProfile || !draftSectionDRow || shiftFilter === 'ALL') return;
+    if (!userProfile || !draftSectionDRow || !canEditContent || shiftFilter === 'ALL') return;
     setSavingSectionD(true);
     setSignFeedback(null);
     const preservedMetaItems = (activeSavedReport?.sectionDItems || []).filter((it) =>
@@ -1931,7 +2094,7 @@ export function PjShiftReportsPage({
   const handleSaveSbarRow = async (
     key: 'situation' | 'background' | 'assessment' | 'recommendation'
   ) => {
-    if (!userProfile || shiftFilter === 'ALL') return;
+    if (!userProfile || !canEditContent || shiftFilter === 'ALL') return;
     setSavingSbar(true);
     setSignFeedback(null);
     const updatedSbar = {
@@ -2496,7 +2659,7 @@ export function PjShiftReportsPage({
               Reset Pengesahan
             </button>
           )}
-          {canCreate && (
+          {canEditContent && (
             <button
               type="button"
               onClick={handleOpenCreateModal}
@@ -2569,6 +2732,14 @@ export function PjShiftReportsPage({
             </select>
           </div>
         </div>
+        {!canEditContent && (
+          <div className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
+            <Lock className="h-3.5 w-3.5 shrink-0 mt-0.5 text-slate-400" />
+            <span>
+              <strong>Mode Baca Saja:</strong> {contentEditAuth.reason}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Main Institutional Report Sheet Matching PDF */}
@@ -3105,11 +3276,7 @@ export function PjShiftReportsPage({
                         </button>
                       ) : (
                         <span
-                          title={
-                            shiftFilter === 'ALL'
-                              ? 'Pilih shift spesifik (Pagi/Siang) untuk mengedit'
-                              : 'Terkunci'
-                          }
+                          title={contentEditAuth.reason}
                           className="inline-flex items-center gap-1 text-[10px] text-slate-400"
                         >
                           <Lock className="h-3 w-3" />
@@ -3213,11 +3380,7 @@ export function PjShiftReportsPage({
                         </button>
                       ) : (
                         <span
-                          title={
-                            shiftFilter === 'ALL'
-                              ? 'Pilih shift spesifik (Pagi/Siang) untuk mengedit'
-                              : 'Terkunci'
-                          }
+                          title={contentEditAuth.reason}
                           className="inline-flex items-center gap-1 text-[10px] text-slate-400"
                         >
                           <Lock className="h-3 w-3" />

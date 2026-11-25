@@ -223,23 +223,32 @@ export function SchedulesPage({
 
   const draftCount = monthSchedules.filter((s) => s.validationStatus === 'Draft').length;
 
-  const defaultDpjp = useMemo(
+  const dpjpDoctors = useMemo(
     () =>
-      activeDoctors.find((d) => /sp\.?pd|kgh|konsulen|nefro/i.test(d.specialization)) ||
-      activeDoctors[0],
+      activeDoctors.filter(
+        (d) =>
+          /dpjp|sp\.?pd|kgh|konsulen|konsultan|nefro|penyakit dalam|spesialis/i.test(
+            d.specialization
+          ) && !/umum|jaga|duty/i.test(d.specialization)
+      ),
     [activeDoctors]
   );
 
-  const defaultDuty = useMemo(
-    () =>
-      activeDoctors.find((d) => /umum|jaga|duty/i.test(d.specialization)) ||
-      activeDoctors.find((d) => d.id !== defaultDpjp?.id) ||
-      activeDoctors[0],
-    [activeDoctors, defaultDpjp]
+  const dutyDoctors = useMemo(
+    () => activeDoctors.filter((d) => /umum|jaga|duty/i.test(d.specialization)),
+    [activeDoctors]
   );
 
-  const resolvedDocDpjpId = docDpjpId || defaultDpjp?.id || '';
-  const resolvedDocDutyId = docDutyId || defaultDuty?.id || '';
+  const defaultDpjp = useMemo(() => dpjpDoctors[0], [dpjpDoctors]);
+
+  const defaultDuty = useMemo(() => dutyDoctors[0], [dutyDoctors]);
+
+  const resolvedDocDpjpId = dpjpDoctors.some((d) => d.id === docDpjpId)
+    ? docDpjpId
+    : defaultDpjp?.id || '';
+  const resolvedDocDutyId = dutyDoctors.some((d) => d.id === docDutyId)
+    ? docDutyId
+    : defaultDuty?.id || '';
 
   if (!userProfile) return null;
 
@@ -1024,7 +1033,7 @@ export function SchedulesPage({
                     className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs focus:border-[#0B5A8E] focus:outline-none"
                   >
                     <option value="">-- Pilih Dokter DPJP --</option>
-                    {activeDoctors.map((d) => (
+                    {dpjpDoctors.map((d) => (
                       <option key={d.id} value={d.id}>
                         {d.fullName} ({d.specialization})
                       </option>
@@ -1042,7 +1051,7 @@ export function SchedulesPage({
                     className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs focus:border-[#0B5A8E] focus:outline-none"
                   >
                     <option value="">-- Pilih Dokter Jaga --</option>
-                    {activeDoctors.map((d) => (
+                    {dutyDoctors.map((d) => (
                       <option key={d.id} value={d.id}>
                         {d.fullName} ({d.specialization})
                       </option>
