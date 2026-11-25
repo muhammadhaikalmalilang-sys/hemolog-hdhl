@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Download, Eye, Plus, Printer, Search, X } from 'lucide-react';
+import { Download, Eye, FileDown, Plus, Printer, Search, X } from 'lucide-react';
 import { handleDbError, OperationType } from '../lib/supabase';
 import { generateRecordId, insertRow, toReportRow } from '../lib/db';
 import {
@@ -14,6 +14,7 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { useLiveClock } from '../hooks/useLiveClock';
 import { useF4OnePagePrint } from '../hooks/useF4OnePagePrint';
+import { exportPatientServicesPdf, exportPatientSoapPdf } from '../lib/patientReportPdf';
 import { LogbookDetailModal } from '../components/logbook/LogbookDetailModal';
 import { VerificationBadge } from '../components/ui/StatusBadge';
 import type {
@@ -121,6 +122,7 @@ export function PatientReportsPage({
     sheetRef,
     documentTitle: printDocumentTitle,
   });
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
 
   useEffect(() => {
     if (liveTodayDate !== todayDate) {
@@ -777,6 +779,33 @@ export function PatientReportsPage({
     showToast(`Laporan detail pasien (${tableRows.length} baris) diekspor ke CSV.`, 'success');
   };
 
+  const handleDownloadPatientPdf = () => {
+    if (downloadingPdf) return;
+    setDownloadingPdf(true);
+    try {
+      const pdfMeta = {
+        ...bannerMeta,
+        nurseCount: nurseBreakdown.length,
+      };
+      if (activeTab === 'soap') {
+        exportPatientSoapPdf({
+          notes: filteredSoap,
+          meta: pdfMeta,
+          filename: `${printDocumentTitle}-SOAP`,
+        });
+      } else {
+        exportPatientServicesPdf({
+          rows: tableRows,
+          summaryStats,
+          meta: pdfMeta,
+          filename: printDocumentTitle,
+        });
+      }
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
+
   return (
     <div className="space-y-4 print:space-y-0">
       {/* Top Toolbar */}
@@ -795,11 +824,21 @@ export function PatientReportsPage({
           <button
             type="button"
             onClick={handlePrint}
-            title="Cetak / Simpan PDF (F4 Landscape - 1 Halaman Penuh)"
+            title="Cetak Langsung (F4 Landscape - 1 Halaman Penuh)"
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
           >
             <Printer className="h-4 w-4" />
-            Cetak / PDF
+            Cetak
+          </button>
+          <button
+            type="button"
+            onClick={handleDownloadPatientPdf}
+            disabled={downloadingPdf}
+            title={`Unduh PDF (${printDocumentTitle}.pdf)`}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 whitespace-nowrap"
+          >
+            <FileDown className="h-4 w-4" />
+            {downloadingPdf ? 'Membuat PDF...' : 'Download PDF'}
           </button>
           <button
             type="button"

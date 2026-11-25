@@ -7,6 +7,7 @@ import {
   Clock,
   Download,
   Eye,
+  FileDown,
   Lock,
   Printer,
   ShieldCheck,
@@ -297,13 +298,15 @@ export function MonthlyReportsPage({
   );
 
   const sheetRef = useRef<HTMLDivElement>(null);
-  const { handlePrint } = useF4OnePagePrint({
-    orientation: 'landscape',
-    sheetRef,
-  });
   const { currentMonthKey: liveMonthKey } = useLiveClock();
   const [trackedMonthKey, setTrackedMonthKey] = useState(liveMonthKey);
   const [monthKey, setMonthKey] = useState(liveMonthKey);
+  const printDocumentTitle = `Lap Bulanan-${monthKey}`;
+  const { handlePrint, handleDownloadPdf, downloadingPdf } = useF4OnePagePrint({
+    orientation: 'landscape',
+    sheetRef,
+    documentTitle: printDocumentTitle,
+  });
   const [selectedNurseId, setSelectedNurseId] = useState<string>('');
   const [viewMode, setViewMode] = useState<'matrix' | 'recap'>('matrix');
   const [detailEntryId, setDetailEntryId] = useState<string | null>(null);
@@ -1311,11 +1314,22 @@ export function MonthlyReportsPage({
           <button
             type="button"
             onClick={handlePrint}
-            title="Cetak / Simpan PDF (F4 Landscape - 1 Halaman Penuh)"
+            title="Cetak Langsung (F4 Landscape - 1 Halaman Penuh)"
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
           >
             <Printer className="h-4 w-4" />
-            Cetak / PDF
+            Cetak
+          </button>
+
+          <button
+            type="button"
+            onClick={() => void handleDownloadPdf()}
+            disabled={downloadingPdf}
+            title={`Unduh PDF (${printDocumentTitle}.pdf)`}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 whitespace-nowrap"
+          >
+            <FileDown className="h-4 w-4" />
+            {downloadingPdf ? 'Membuat PDF...' : 'Download PDF'}
           </button>
 
           <button

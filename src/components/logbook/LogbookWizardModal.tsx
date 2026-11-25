@@ -1103,6 +1103,13 @@ export function LogbookWizardModal({
   const [ufAchieved, setUfAchieved] = useState(
     editingEntry ? String(editingEntry.ufAchieved ?? '') : ''
   );
+  const initialPostBpParts = (editingEntry?.postBp || '').split('/');
+  const [postSystolicBp, setPostSystolicBp] = useState(
+    editingEntry && initialPostBpParts[0] ? initialPostBpParts[0].trim() : ''
+  );
+  const [postDiastolicBp, setPostDiastolicBp] = useState(
+    editingEntry && initialPostBpParts[1] ? initialPostBpParts[1].trim() : ''
+  );
   const [postBp, setPostBp] = useState(editingEntry ? editingEntry.postBp || '' : '');
   const [ktv, setKtv] = useState(initialDetails?.section6.ktv || '');
   const [postPulse, setPostPulse] = useState(initialDetails?.section6.postPulse || '80');
@@ -1352,6 +1359,9 @@ export function LogbookWizardModal({
     setBleedingStopMinutes(d?.section6.bleedingStopMinutes || '10');
     setPostWeight(String(entry.postWeight ?? ''));
     setUfAchieved(String(entry.ufAchieved ?? ''));
+    const nextPostBpParts = (entry.postBp || '').split('/');
+    setPostSystolicBp(nextPostBpParts[0] ? nextPostBpParts[0].trim() : '');
+    setPostDiastolicBp(nextPostBpParts[1] ? nextPostBpParts[1].trim() : '');
     setPostBp(entry.postBp || '');
     setKtv(d?.section6.ktv || '');
     setPostPulse(d?.section6.postPulse || '80');
@@ -1659,6 +1669,8 @@ export function LogbookWizardModal({
         break;
       case '6.3':
         if (!done) {
+          setPostSystolicBp('');
+          setPostDiastolicBp('');
           setPostBp('');
           setUfAchieved('');
           setKtv('');
@@ -1831,11 +1843,21 @@ export function LogbookWizardModal({
     if (opt) setErrorMsg(null);
   };
 
-  const updatePostHdEvaluation = (nextPostBp: string, nextUf: string, nextKtv: string) => {
+  const updatePostHdEvaluation = (
+    nextSys: string,
+    nextDia: string,
+    nextUf: string,
+    nextKtv: string
+  ) => {
+    setPostSystolicBp(nextSys);
+    setPostDiastolicBp(nextDia);
+    const s = nextSys.trim();
+    const d = nextDia.trim();
+    const nextPostBp = s && d ? `${s}/${d}` : '';
     setPostBp(nextPostBp);
     setUfAchieved(nextUf);
     setKtv(nextKtv);
-    const complete = Boolean(nextPostBp.trim() && nextUf.trim() && nextKtv.trim());
+    const complete = Boolean(s && d && nextUf.trim() && nextKtv.trim());
     setSpoChecklist((prev) => ({
       ...prev,
       '6.3': complete ? 'DIKERJAKAN' : 'TIDAK DIKERJAKAN',
@@ -1871,8 +1893,11 @@ export function LogbookWizardModal({
     if (pointId === '4.1' && (!intraSystolicBp.trim() || !intraDiastolicBp.trim())) {
       return 'Wajib mengisi kedua kolom Sistolik dan Diastolik terlebih dahulu pada Poin 4.1.';
     }
-    if (pointId === '6.3' && (!postBp.trim() || !ufAchieved.trim() || !ktv.trim())) {
-      return 'Wajib mengisi semua kolom (Tekanan Darah Post HD, Nilai UFG Tercapai, dan KT/V) terlebih dahulu pada Poin 6.3.';
+    if (
+      pointId === '6.3' &&
+      (!postSystolicBp.trim() || !postDiastolicBp.trim() || !ufAchieved.trim() || !ktv.trim())
+    ) {
+      return 'Wajib mengisi semua kolom (Sistolik, Diastolik, Nilai UFG Tercapai, dan KT/V) terlebih dahulu pada Poin 6.3.';
     }
     const meta = pointTemplateMap.get(pointId);
     if (meta?.customFields && meta.customFields.length > 0) {
@@ -2532,8 +2557,11 @@ export function LogbookWizardModal({
       }
     }
     if (targetStep === 6) {
-      if (isPointVisible('6.3') && (!postBp.trim() || !ufAchieved.trim() || !ktv.trim())) {
-        return 'Wajib mengisi semua kolom (Tekanan Darah Post HD, Nilai UFG Tercapai, dan KT/V) pada Poin 6.3 (Bagian 6).';
+      if (
+        isPointVisible('6.3') &&
+        (!postSystolicBp.trim() || !postDiastolicBp.trim() || !ufAchieved.trim() || !ktv.trim())
+      ) {
+        return 'Wajib mengisi semua kolom (Sistolik, Diastolik, Nilai UFG Tercapai, dan KT/V) pada Poin 6.3 (Bagian 6).';
       }
       if (isPointVisible('3.2') && !postWeight.trim()) {
         return 'Lengkapi Berat Badan Pulang (Post-HD) pada Poin 3.2 (Bagian 3).';
@@ -2877,7 +2905,11 @@ export function LogbookWizardModal({
     const safeStartTime = clampString(startTime.trim() || '07:30', 10) || '07:30';
     const safeEndTime = clampString(endTime.trim() || '12:00', 10) || '12:00';
     const safePreBp = clampString(resolvedPreBp, 20);
-    const safePostBp = clampString(postBp.trim(), 20);
+    const resolvedPostBp =
+      postSystolicBp.trim() && postDiastolicBp.trim()
+        ? `${postSystolicBp.trim()}/${postDiastolicBp.trim()}`
+        : postBp.trim();
+    const safePostBp = clampString(resolvedPostBp, 20);
 
     const normalizedSpoChecklist: Record<string, SpoCheckStatus> = {};
     for (const pt of activeSpoPoints) {
@@ -4926,21 +4958,40 @@ export function LogbookWizardModal({
       case '6.3':
         return (
           <div className="space-y-2.5">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div>
+            <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+              <div className="sm:col-span-5">
                 <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
                   Tekanan Darah Post HD{' '}
                   <span className="text-slate-400 font-normal">(mmHg)</span>
                 </label>
-                <input
-                  type="text"
-                  value={postBp}
-                  onChange={(e) => updatePostHdEvaluation(e.target.value, ufAchieved, ktv)}
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
-                />
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={postSystolicBp}
+                    onChange={(e) =>
+                      updatePostHdEvaluation(e.target.value, postDiastolicBp, ufAchieved, ktv)
+                    }
+                    placeholder="Sistolik"
+                    aria-label="Tekanan Darah Post HD Sistolik"
+                    className="w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                  />
+                  <span className="text-sm font-semibold text-slate-400 shrink-0">/</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={postDiastolicBp}
+                    onChange={(e) =>
+                      updatePostHdEvaluation(postSystolicBp, e.target.value, ufAchieved, ktv)
+                    }
+                    placeholder="Diastolik"
+                    aria-label="Tekanan Darah Post HD Diastolik"
+                    className="w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
+                  />
+                </div>
               </div>
 
-              <div>
+              <div className="sm:col-span-4">
                 <label className="flex flex-wrap items-center justify-between gap-1.5 text-[11px] font-semibold text-slate-600 mb-1.5">
                   <span>
                     Nilai UFG Tercapai <span className="text-slate-400 font-normal">(mL)</span>
@@ -4952,27 +5003,36 @@ export function LogbookWizardModal({
                 <input
                   type="number"
                   value={ufAchieved}
-                  onChange={(e) => updatePostHdEvaluation(postBp, e.target.value, ktv)}
+                  onChange={(e) =>
+                    updatePostHdEvaluation(postSystolicBp, postDiastolicBp, e.target.value, ktv)
+                  }
                   className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                 />
               </div>
 
-              <div>
+              <div className="sm:col-span-3">
                 <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
                   KT/V <span className="text-slate-400 font-normal">(Adekuasi HD)</span>
                 </label>
                 <input
                   type="text"
                   value={ktv}
-                  onChange={(e) => updatePostHdEvaluation(postBp, ufAchieved, e.target.value)}
+                  onChange={(e) =>
+                    updatePostHdEvaluation(
+                      postSystolicBp,
+                      postDiastolicBp,
+                      ufAchieved,
+                      e.target.value
+                    )
+                  }
                   className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-[#0e4e78] focus:outline-none"
                 />
               </div>
             </div>
 
-            {(!postBp.trim() || !ufAchieved.trim() || !ktv.trim()) && (
+            {(!postSystolicBp.trim() || !postDiastolicBp.trim() || !ufAchieved.trim() || !ktv.trim()) && (
               <p className="text-[11px] font-medium text-amber-600">
-                Wajib mengisi semua kolom (Tekanan Darah Post HD, Nilai UFG Tercapai, dan KT/V) agar status logbook Poin 6.3 dikerjakan.
+                Wajib mengisi semua kolom (Sistolik, Diastolik, Nilai UFG Tercapai, dan KT/V) agar status logbook Poin 6.3 dikerjakan.
               </p>
             )}
           </div>
