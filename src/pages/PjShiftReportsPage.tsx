@@ -10,6 +10,7 @@ import {
   RotateCcw,
   Save,
   ShieldCheck,
+  Smartphone,
   X,
 } from 'lucide-react';
 import { handleDbError, OperationType } from '../lib/supabase';
@@ -27,6 +28,7 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { useLiveClock } from '../hooks/useLiveClock';
 import { useF4OnePagePrint } from '../hooks/useF4OnePagePrint';
+import { exportPjShiftMobilePdf } from '../lib/pjShiftReportPdf';
 import type {
   DoctorScheduleEntry,
   LogbookEntry,
@@ -243,6 +245,7 @@ export function PjShiftReportsPage({
     maxPages: 2,
     documentTitle: printDocumentTitle,
   });
+  const [downloadingMobilePdf, setDownloadingMobilePdf] = useState(false);
 
   // Verified logbooks only (Approved by PJ Shift or Kepala Ruang)
   const allApprovedLogbooks = useMemo(
@@ -2243,6 +2246,185 @@ export function PjShiftReportsPage({
     showToast(`Laporan PJ Shift (${selectedDate} · ${shiftFilter}) diekspor ke CSV.`, 'success');
   };
 
+  const handleDownloadPjMobilePdf = () => {
+    if (downloadingMobilePdf) return;
+    setDownloadingMobilePdf(true);
+    try {
+      const nurseDutyText =
+        shiftStats.totalNursesDinas > 0
+          ? shiftStats.pjCount > 0
+            ? `${shiftStats.totalNursesDinas} Orang (${shiftStats.pjCount} PJ Shift + ${shiftStats.pelaksanaCount} Perawat Pelaksana)`
+            : `${shiftStats.totalNursesDinas} Orang (${shiftStats.pelaksanaCount} Perawat Pelaksana)`
+          : activeSavedReport?.nursesOnDuty || '0 Orang';
+
+      const ratioText =
+        shiftStats.totalNursesDinas > 0 && shiftStats.totalVerified > 0
+          ? `1 : ${shiftStats.ratioNum} (${shiftStats.totalNursesDinas} Perawat : ${shiftStats.totalVerified} Pasien)`
+          : '- (Standar PERNEFRI 1 : 3-4 Pasien)';
+
+      const sectionAItems = [
+        { label: 'Hari / Tanggal', value: formatFullDayDateId(selectedDate) },
+        { label: 'Shift Dinas', value: getShiftTimeLabel(shiftFilter) },
+        { label: 'Penanggung Jawab (PJ) Shift', value: shiftStats.pjShiftName },
+        { label: 'Dokter DPJP Unit HD', value: shiftStats.dpjpLabel },
+        { label: 'Kepala Ruangan HD', value: shiftStats.kaRuangName },
+        { label: 'Dokter Jaga Ruangan', value: shiftStats.dutyDoctorLabel },
+        { label: 'Jumlah Perawat Dinas', value: nurseDutyText },
+        { label: 'Rasio Perawat : Pasien', value: ratioText },
+        { label: 'Tenaga Pendukung Dinas', value: '1 Teknisi Elektromedis/RO 1 dan HK Ruangan' },
+        {
+          label: 'Total Pasien Dilayani',
+          value: `${shiftStats.totalVerified} Pasien Selesai HD (${shiftStats.rajalCount} Rajal, ${shiftStats.ranapCount} Ranap)`,
+        },
+      ];
+
+      const sectionBRows = [
+        {
+          lLabel: 'Pasien Terjadwal (Target Shift)',
+          lVal: shiftStats.scheduledPatientsCount,
+          rLabel: 'Total Kapasitas Mesin HD',
+          rVal: shiftStats.totalMachines,
+        },
+        {
+          lLabel: 'Pasien Hadir & Selesai HD',
+          lVal: shiftStats.totalVerified,
+          rLabel: 'Mesin Beroperasi Siap Pakai',
+          rVal: shiftStats.operationalMachines,
+        },
+        {
+          lLabel: 'Pasien HD Cito / Emergency (ICU/IGD)',
+          lVal: shiftStats.citoCount,
+          rLabel: 'Mesin Maintenance / Perbaikan',
+          rVal: shiftStats.maintenanceMachines,
+          rSubLines: shiftStats.maintenanceNote ? [`(${shiftStats.maintenanceNote})`] : undefined,
+        },
+        {
+          lLabel: 'Pasien Batal / Tunda (Reschedule)',
+          lVal: shiftStats.rescheduledCount,
+          rLabel: 'Mesin Khusus Hepatitis B (Isolasi)',
+          rVal: shiftStats.hepBMachines,
+        },
+        {
+          lLabel: 'Kategori: Pasien Reguler (Non-Hepatitis)',
+          lVal: shiftStats.regulerCount,
+          rLabel: 'Mesin Khusus Hepatitis C',
+          rVal: shiftStats.hepCMachines,
+        },
+        {
+          lLabel: 'Kategori: Pasien Isolasi Hepatitis B',
+          lVal: shiftStats.hepBCount,
+          rLabel: 'Akses: AV Fistula (Cimino)',
+          rVal: shiftStats.avfCount,
+        },
+        {
+          lLabel: 'Kategori: Pasien Isolasi Hepatitis C / HIV',
+          lVal: shiftStats.hepCHivCount,
+          rLabel: 'Akses: Double Lumen (CDL)',
+          rVal: shiftStats.cdlCount,
+        },
+        {
+          lLabel: 'Status: Pasien Rawat Jalan',
+          lVal: shiftStats.rajalCount,
+          rLabel: 'Akses: Femoral',
+          rVal: shiftStats.femoralCount,
+        },
+        {
+          lLabel: 'Status: Pasien Rawat Inap (Bangsal/ICU)',
+          lVal: shiftStats.ranapCount,
+          rLabel: 'Transfusi & Epo (Pasien)',
+          rVal:
+            shiftStats.therapyPatients.length === 0
+              ? '0 Pasien (Nihil)'
+              : `${shiftStats.therapyPatients.length} Pasien`,
+          rSubLines:
+            shiftStats.therapyPatients.length > 0
+              ? shiftStats.therapyPatients.map((tp, idx) => `${idx + 1}. ${tp.label}`)
+              : undefined,
+        },
+      ];
+
+      const signatures = [
+        {
+          heading: 'Yang Menyerahkan,',
+          roleLabel: `Perawat Penanggung Jawab (PJ) Shift ${shiftFilter !== 'ALL' ? shiftFilter : ''}`.trim(),
+          fallbackName: shiftStats.pjShiftName,
+          signed: Boolean(activeSavedReport?.handoverSignedBy),
+          signerName: activeSavedReport?.handoverSignedByName,
+          metaLine: activeSavedReport?.handoverSignedBy
+            ? `PJ Shift ${activeSavedReport.handoverSignedShift || shiftFilter} · ${
+                formatSignatureTimestamp(
+                  activeSavedReport.handoverSignedAt || activeSavedReport.updatedAt
+                ) || 'Tercatat Sistem'
+              }`
+            : undefined,
+          sigCode: activeSavedReport?.handoverSignedBy
+            ? `ID: SIG-${activeSavedReport.handoverSignedBy.slice(0, 8).toUpperCase()}`
+            : undefined,
+        },
+        ...(shiftFilter !== 'Siang'
+          ? [
+              {
+                heading: 'Yang Menerima,',
+                roleLabel: `Perawat Penanggung Jawab (PJ) Shift ${shiftStats.nextShiftName}`,
+                fallbackName: shiftStats.nextPjShiftName,
+                signed: Boolean(activeSavedReport?.receivedSignedBy),
+                signerName: activeSavedReport?.receivedSignedByName,
+                metaLine: activeSavedReport?.receivedSignedBy
+                  ? `PJ Shift ${
+                      activeSavedReport.receivedSignedShift || shiftStats.nextShiftName
+                    } · ${
+                      formatSignatureTimestamp(
+                        activeSavedReport.receivedSignedAt || activeSavedReport.updatedAt
+                      ) || 'Tercatat Sistem'
+                    }`
+                  : undefined,
+                sigCode: activeSavedReport?.receivedSignedBy
+                  ? `ID: SIG-${activeSavedReport.receivedSignedBy.slice(0, 8).toUpperCase()}`
+                  : undefined,
+              },
+            ]
+          : []),
+        {
+          heading: 'Mengetahui & Menyetujui,',
+          roleLabel: 'Kepala Ruangan Hemodialisis',
+          fallbackName: shiftStats.kaRuangName,
+          signed: activeSavedReport?.reviewStatus === 'Reviewed',
+          signerName: activeSavedReport?.reviewedByName,
+          metaLine:
+            activeSavedReport?.reviewStatus === 'Reviewed'
+              ? `Kepala Ruang · ${
+                  formatSignatureTimestamp(
+                    activeSavedReport.reviewedAt || activeSavedReport.updatedAt
+                  ) || 'Tercatat Sistem'
+                }`
+              : undefined,
+          sigCode: activeSavedReport?.reviewedBy
+            ? `ID: SIG-${activeSavedReport.reviewedBy.slice(0, 8).toUpperCase()}`
+            : undefined,
+        },
+      ];
+
+      exportPjShiftMobilePdf({
+        filename: `${printDocumentTitle}-Mobile`,
+        sectionAItems,
+        sectionBRows,
+        sectionCRows,
+        sectionDRows,
+        sbar: sbarView,
+        signatures,
+        reviewEvaluation:
+          activeSavedReport?.reviewStatus === 'Reviewed' && activeSavedReport.reviewNote
+            ? {
+                reviewerName: activeSavedReport.reviewedByName || shiftStats.kaRuangName,
+                note: activeSavedReport.reviewNote,
+              }
+            : null,
+      });
+    } finally {
+      setDownloadingMobilePdf(false);
+    }
+  };
+
   return (
     <div className="space-y-4 print:space-y-0">
       {/* Top Toolbar */}
@@ -2270,11 +2452,21 @@ export function PjShiftReportsPage({
             type="button"
             onClick={() => void handleDownloadPdf()}
             disabled={downloadingPdf}
-            title={`Unduh PDF (${printDocumentTitle}.pdf)`}
+            title={`Unduh PDF F4 (${printDocumentTitle}.pdf)`}
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 whitespace-nowrap"
           >
             <FileDown className="h-4 w-4" />
             {downloadingPdf ? 'Membuat PDF...' : 'Download PDF'}
+          </button>
+          <button
+            type="button"
+            onClick={handleDownloadPjMobilePdf}
+            disabled={downloadingMobilePdf}
+            title={`Unduh PDF Mobile Portrait (${printDocumentTitle}-Mobile.pdf)`}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-sky-300 bg-sky-50 px-3.5 py-2 text-xs font-semibold text-[#0B5A8E] hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-60 whitespace-nowrap"
+          >
+            <Smartphone className="h-4 w-4" />
+            {downloadingMobilePdf ? 'Membuat PDF...' : 'PDF Mobile'}
           </button>
           <button
             type="button"

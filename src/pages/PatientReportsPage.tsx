@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Download, Eye, FileDown, Plus, Printer, Search, X } from 'lucide-react';
+import { Download, Eye, FileDown, Plus, Printer, Search, Smartphone, X } from 'lucide-react';
 import { handleDbError, OperationType } from '../lib/supabase';
 import { generateRecordId, insertRow, toReportRow } from '../lib/db';
 import {
@@ -14,7 +14,12 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { useLiveClock } from '../hooks/useLiveClock';
 import { useF4OnePagePrint } from '../hooks/useF4OnePagePrint';
-import { exportPatientServicesPdf, exportPatientSoapPdf } from '../lib/patientReportPdf';
+import {
+  exportPatientServicesMobilePdf,
+  exportPatientServicesPdf,
+  exportPatientSoapMobilePdf,
+  exportPatientSoapPdf,
+} from '../lib/patientReportPdf';
 import { LogbookDetailModal } from '../components/logbook/LogbookDetailModal';
 import { VerificationBadge } from '../components/ui/StatusBadge';
 import type {
@@ -124,6 +129,7 @@ export function PatientReportsPage({
     documentTitle: printDocumentTitle,
   });
   const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [downloadingMobilePdf, setDownloadingMobilePdf] = useState(false);
 
   useEffect(() => {
     if (liveTodayDate !== todayDate) {
@@ -807,6 +813,33 @@ export function PatientReportsPage({
     }
   };
 
+  const handleDownloadPatientMobilePdf = () => {
+    if (downloadingMobilePdf) return;
+    setDownloadingMobilePdf(true);
+    try {
+      const pdfMeta = {
+        ...bannerMeta,
+        nurseCount: nurseBreakdown.length,
+      };
+      if (activeTab === 'soap') {
+        exportPatientSoapMobilePdf({
+          notes: filteredSoap,
+          meta: pdfMeta,
+          filename: `${printDocumentTitle}-SOAP-Mobile`,
+        });
+      } else {
+        exportPatientServicesMobilePdf({
+          rows: tableRows,
+          summaryStats,
+          meta: pdfMeta,
+          filename: `${printDocumentTitle}-Mobile`,
+        });
+      }
+    } finally {
+      setDownloadingMobilePdf(false);
+    }
+  };
+
   return (
     <div className="space-y-4 print:space-y-0">
       {/* Top Toolbar */}
@@ -835,11 +868,21 @@ export function PatientReportsPage({
             type="button"
             onClick={handleDownloadPatientPdf}
             disabled={downloadingPdf}
-            title={`Unduh PDF (${printDocumentTitle}.pdf)`}
+            title={`Unduh PDF Resmi F4 (${printDocumentTitle}.pdf)`}
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 whitespace-nowrap"
           >
             <FileDown className="h-4 w-4" />
             {downloadingPdf ? 'Membuat PDF...' : 'Download PDF'}
+          </button>
+          <button
+            type="button"
+            onClick={handleDownloadPatientMobilePdf}
+            disabled={downloadingMobilePdf}
+            title={`Unduh PDF Mobile Portrait (${printDocumentTitle}-Mobile.pdf)`}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-sky-300 bg-sky-50 px-3.5 py-2 text-xs font-semibold text-[#0B5A8E] hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-60 whitespace-nowrap"
+          >
+            <Smartphone className="h-4 w-4" />
+            {downloadingMobilePdf ? 'Membuat PDF...' : 'PDF Mobile'}
           </button>
           <button
             type="button"
