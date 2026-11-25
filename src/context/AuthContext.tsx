@@ -148,6 +148,7 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
+let profileChannelCounter = 0;
 
 async function parseApiJsonResponse<T extends { ok?: boolean; error?: string; message?: string }>(
   res: Response,
@@ -209,6 +210,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const sb = supabase;
     let cancelled = false;
     let authEventSeq = 0;
+    let profileLoadRunSeq = 0;
     let profileChannel: ReturnType<typeof sb.channel> | null = null;
     let retryTimer: number | null = null;
     let activeUser: AuthUser | null = null;
@@ -324,6 +326,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       seq: number
     ) => {
       if (cancelled || seq !== authEventSeq) return;
+      const runId = ++profileLoadRunSeq;
       cleanupChannel();
 
       try {
@@ -333,7 +336,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           .eq('uid', mappedUser.uid)
           .maybeSingle();
 
-        if (cancelled || seq !== authEventSeq) return;
+        if (cancelled || seq !== authEventSeq || runId !== profileLoadRunSeq) return;
 
         if (error) {
           if (isTransientDbError(error)) {
@@ -386,42 +389,48 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setProfileLoading(false);
         }
 
-        if (cancelled || seq !== authEventSeq) return;
-        profileChannel = sb
-          .channel(`user-profile-${mappedUser.uid}-${seq}`)
-          .on(
-            'postgres_changes',
-            {
-              event: '*',
-              schema: 'public',
-              table: 'users',
-              filter: `uid=eq.${mappedUser.uid}`,
-            },
-            (payload) => {
-              if (cancelled || seq !== authEventSeq) return;
-              if (payload.eventType === 'DELETE') {
-                setBlockedMessage('Akun Anda telah dihapus oleh Administrator.');
-                commitUserProfile(null);
-                void sb.auth.signOut().catch(() => undefined);
-                return;
-              }
-              if (payload.new) {
-                const updated = mapUserRow(payload.new as Record<string, unknown>);
-                if (!updated.isActive) {
-                  setBlockedMessage(
-                    'Akun Anda sedang dinonaktifkan oleh Administrator. Hubungi Admin Unit Hemodialisa untuk aktivasi kembali.'
-                  );
+        if (cancelled || seq !== authEventSeq || runId !== profileLoadRunSeq) return;
+        try {
+          const channelName = `user-profile-${mappedUser.uid}-${++profileChannelCounter}`;
+          profileChannel = sb
+            .channel(channelName)
+            .on(
+              'postgres_changes',
+              {
+                event: '*',
+                schema: 'public',
+                table: 'users',
+                filter: `uid=eq.${mappedUser.uid}`,
+              },
+              (payload) => {
+                if (cancelled || seq !== authEventSeq) return;
+                if (payload.eventType === 'DELETE') {
+                  setBlockedMessage('Akun Anda telah dihapus oleh Administrator.');
                   commitUserProfile(null);
                   void sb.auth.signOut().catch(() => undefined);
-                } else {
-                  commitUserProfile(updated);
+                  return;
                 }
-                setAuthReady(true);
-                setProfileLoading(false);
+                if (payload.new) {
+                  const updated = mapUserRow(payload.new as Record<string, unknown>);
+                  if (!updated.isActive) {
+                    setBlockedMessage(
+                      'Akun Anda sedang dinonaktifkan oleh Administrator. Hubungi Admin Unit Hemodialisa untuk aktivasi kembali.'
+                    );
+                    commitUserProfile(null);
+                    void sb.auth.signOut().catch(() => undefined);
+                  } else {
+                    commitUserProfile(updated);
+                  }
+                  setAuthReady(true);
+                  setProfileLoading(false);
+                }
               }
-            }
-          )
-          .subscribe();
+            )
+            .subscribe();
+        } catch (rtErr) {
+          console.warn('Langganan realtime profil pengguna tertunda sementara:', rtErr);
+          profileChannel = null;
+        }
       } catch (err) {
         if (cancelled || seq !== authEventSeq) return;
         setProfileError(formatDbError(err, OperationType.GET, `users/${mappedUser.uid}`, true));

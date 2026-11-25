@@ -53,6 +53,7 @@ import type {
 } from '../types';
 
 const MONTH_KEY_RE = /^\d{4}-\d{2}$/;
+let unitChannelCounter = 0;
 
 function shiftDateStr(dateStr: string, deltaDays: number): string {
   const parts = dateStr.split('-').map(Number);
@@ -881,7 +882,9 @@ export function useUnitData() {
 
     const activeMonthFilter = `month_key=eq.${activeMonthKey}`;
     const ch = sb
-      .channel(`hemolog-unit-${authUser.uid}-${activeMonthKey}-${resubscribeEpoch}`)
+      .channel(
+        `hemolog-unit-${authUser.uid}-${activeMonthKey}-${resubscribeEpoch}-${++unitChannelCounter}`
+      )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'patients' },
