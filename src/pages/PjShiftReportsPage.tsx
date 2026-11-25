@@ -1633,7 +1633,6 @@ export function PjShiftReportsPage({
     const disinfectedCount = shiftStats.heatDisinfectionCount + shiftStats.chemDisinfectionCount;
     const disinfectedPct = total > 0 ? Math.round((disinfectedCount / total) * 100) : 0;
 
-    const ikpCount = shiftStats.allIncidents.length;
     const wasteAllOk = total > 0 && shiftStats.wasteOkCount === total;
     const zonasiAllOk = total > 0 && shiftStats.zonasiOkCount === total;
 
@@ -1668,11 +1667,8 @@ export function PjShiftReportsPage({
       {
         item: 'Insiden Keselamatan Pasien (IKP)',
         parameter: 'KTD / KNC / KTC / Sentinel Event',
-        result:
-          ikpCount === 0
-            ? 'Nihil Kejadian Insiden Shift Ini'
-            : `${ikpCount} Insiden tercatat & ditindaklanjuti`,
-        status: ikpCount === 0 ? 'NIHIL INCIDENT' : `${ikpCount} INSIDEN`,
+        result: 'Nihil Kejadian Insiden Shift Ini',
+        status: 'NIHIL INCIDENT',
       },
       {
         item: 'Pengelolaan Limbah Medis B3',
@@ -2905,10 +2901,15 @@ export function PjShiftReportsPage({
                             setEditingSectionDIndex(idx);
                             setDraftSectionDRow({ ...row });
                           }}
+                          title={
+                            row.item === 'Insiden Keselamatan Pasien (IKP)'
+                              ? 'Input manual KTD / KNC / KTC / Sentinel Event'
+                              : 'Edit baris Bagian D'
+                          }
                           className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2.5 py-1 text-[10.5px] font-semibold text-slate-700 hover:border-[#0e4e78] hover:text-[#0e4e78]"
                         >
                           <Pencil className="h-3 w-3" />
-                          Edit
+                          {row.item === 'Insiden Keselamatan Pasien (IKP)' ? 'Input' : 'Edit'}
                         </button>
                       ) : (
                         <span
