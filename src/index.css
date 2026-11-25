@@ -207,117 +207,136 @@
   font-size: 11px !important;
 }
 
-/* Synchronized readable styles for PJ Shift Report (F4 Portrait) */
+/* Synchronized readable styles for PJ Shift Report (F4 Portrait, 1-2 Pages) */
 @media print {
-  .f4-pj-portrait {
-    display: flex !important;
-    flex-direction: column !important;
-    gap: 4px !important;
+  .f4-print-sheet.f4-pj-portrait {
+    display: block !important;
+    break-inside: auto !important;
+    page-break-inside: auto !important;
   }
   .f4-pj-portrait > * {
     margin-top: 0 !important;
     margin-bottom: 0 !important;
   }
+  .f4-pj-portrait > * + * {
+    margin-top: 7px !important;
+  }
+  .f4-pj-portrait .pj-keep-together {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
   .f4-pj-portrait .pj-doc-header {
-    padding-bottom: 3px !important;
+    padding-bottom: 4px !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
   }
   .f4-pj-portrait .pj-doc-header p:first-child {
-    font-size: 10px !important;
+    font-size: 10.5px !important;
   }
   .f4-pj-portrait .pj-doc-header h1 {
-    font-size: 13.5px !important;
-    line-height: 1.2 !important;
+    font-size: 14px !important;
+    line-height: 1.22 !important;
   }
   .f4-pj-portrait .pj-doc-header p:last-child {
-    font-size: 9px !important;
+    font-size: 9.5px !important;
   }
   .f4-pj-portrait table {
     width: 100% !important;
+    break-inside: auto !important;
+    page-break-inside: auto !important;
+  }
+  .f4-pj-portrait thead {
+    display: table-header-group !important;
+  }
+  .f4-pj-portrait tbody tr {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
   }
   .f4-pj-portrait th,
   .f4-pj-portrait td {
-    padding: 2.5px 5px !important;
-    font-size: 10px !important;
-    line-height: 1.2 !important;
+    padding: 3.5px 5.5px !important;
+    font-size: 10.5px !important;
+    line-height: 1.28 !important;
   }
   .f4-pj-portrait thead tr:first-child th {
-    padding: 3px 6px !important;
-    font-size: 10.5px !important;
+    padding: 4px 6px !important;
+    font-size: 11px !important;
   }
   .f4-pj-portrait thead tr:nth-child(2) th {
-    padding: 2px 5px !important;
-    font-size: 9.5px !important;
+    padding: 3px 5.5px !important;
+    font-size: 10px !important;
   }
   .f4-pj-portrait .pj-sig-table td {
-    padding: 4px 6px !important;
+    padding: 5px 7px !important;
   }
   .f4-pj-portrait .pj-sig-box {
-    min-height: 46px !important;
-    margin-top: 2px !important;
-    margin-bottom: 2px !important;
+    min-height: 54px !important;
+    margin-top: 3px !important;
+    margin-bottom: 3px !important;
   }
   .f4-pj-portrait .pj-sig-box > div {
-    padding: 3px 8px !important;
+    padding: 4px 9px !important;
   }
   .f4-pj-portrait .pj-sig-box span {
-    font-size: 8.5px !important;
-    line-height: 1.15 !important;
+    font-size: 9px !important;
+    line-height: 1.2 !important;
   }
 }
 
 .f4-measuring.f4-pj-portrait {
-  display: flex !important;
-  flex-direction: column !important;
-  gap: 4px !important;
+  display: block !important;
 }
 .f4-measuring.f4-pj-portrait > * {
   margin-top: 0 !important;
   margin-bottom: 0 !important;
 }
+.f4-measuring.f4-pj-portrait > * + * {
+  margin-top: 7px !important;
+}
 .f4-measuring.f4-pj-portrait .pj-doc-header {
-  padding-bottom: 3px !important;
+  padding-bottom: 4px !important;
 }
 .f4-measuring.f4-pj-portrait .pj-doc-header p:first-child {
-  font-size: 10px !important;
+  font-size: 10.5px !important;
 }
 .f4-measuring.f4-pj-portrait .pj-doc-header h1 {
-  font-size: 13.5px !important;
-  line-height: 1.2 !important;
+  font-size: 14px !important;
+  line-height: 1.22 !important;
 }
 .f4-measuring.f4-pj-portrait .pj-doc-header p:last-child {
-  font-size: 9px !important;
+  font-size: 9.5px !important;
 }
 .f4-measuring.f4-pj-portrait table {
   width: 100% !important;
 }
 .f4-measuring.f4-pj-portrait th,
 .f4-measuring.f4-pj-portrait td {
-  padding: 2.5px 5px !important;
-  font-size: 10px !important;
-  line-height: 1.2 !important;
+  padding: 3.5px 5.5px !important;
+  font-size: 10.5px !important;
+  line-height: 1.28 !important;
 }
 .f4-measuring.f4-pj-portrait thead tr:first-child th {
-  padding: 3px 6px !important;
-  font-size: 10.5px !important;
+  padding: 4px 6px !important;
+  font-size: 11px !important;
 }
 .f4-measuring.f4-pj-portrait thead tr:nth-child(2) th {
-  padding: 2px 5px !important;
-  font-size: 9.5px !important;
+  padding: 3px 5.5px !important;
+  font-size: 10px !important;
 }
 .f4-measuring.f4-pj-portrait .pj-sig-table td {
-  padding: 4px 6px !important;
+  padding: 5px 7px !important;
 }
 .f4-measuring.f4-pj-portrait .pj-sig-box {
-  min-height: 46px !important;
-  margin-top: 2px !important;
-  margin-bottom: 2px !important;
+  min-height: 54px !important;
+  margin-top: 3px !important;
+  margin-bottom: 3px !important;
 }
 .f4-measuring.f4-pj-portrait .pj-sig-box > div {
-  padding: 3px 8px !important;
+  padding: 4px 9px !important;
 }
 .f4-measuring.f4-pj-portrait .pj-sig-box span {
-  font-size: 8.5px !important;
-  line-height: 1.15 !important;
+  font-size: 9px !important;
+  line-height: 1.2 !important;
 }
 
 /* Synchronized readable styles for Monthly Report (F4 Landscape) */

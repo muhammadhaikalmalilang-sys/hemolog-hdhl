@@ -1,4 +1,4 @@
-import { useCallback, useEffect, type RefObject } from 'react';
+import { useCallback, useEffect, useRef, type RefObject } from 'react';
 
 export type F4Orientation = 'landscape' | 'portrait';
 
@@ -12,6 +12,8 @@ const F4_LONG_MM = 330;
 interface UseF4OnePagePrintOptions {
   orientation: F4Orientation;
   sheetRef: RefObject<HTMLDivElement | null>;
+  maxPages?: number;
+  documentTitle?: string;
 }
 
 function getPrintableTargetPx(orientation: F4Orientation) {
@@ -30,7 +32,10 @@ function getPrintableTargetPx(orientation: F4Orientation) {
 export function useF4OnePagePrint({
   orientation,
   sheetRef,
+  maxPages = 1,
+  documentTitle,
 }: UseF4OnePagePrintOptions) {
+  const previousTitleRef = useRef<string | null>(null);
   // Inject page-specific @page rule so browser print dialog defaults to F4 + exact orientation
   useEffect(() => {
     const styleId = 'hemolog-f4-page-style';
@@ -64,6 +69,10 @@ export function useF4OnePagePrint({
   }, [orientation]);
 
   const clearPrintFit = useCallback(() => {
+    if (previousTitleRef.current !== null) {
+      document.title = previousTitleRef.current;
+      previousTitleRef.current = null;
+    }
     const el = sheetRef.current;
     if (!el) return;
     el.classList.remove('f4-measuring');
@@ -73,10 +82,17 @@ export function useF4OnePagePrint({
   }, [sheetRef]);
 
   const applyPrintFit = useCallback(() => {
+    if (documentTitle) {
+      if (previousTitleRef.current === null) {
+        previousTitleRef.current = document.title;
+      }
+      document.title = documentTitle;
+    }
     const el = sheetRef.current;
     if (!el) return;
 
     const { targetWidth, targetHeight } = getPrintableTargetPx(orientation);
+    const effectiveMaxPages = Math.max(1, maxPages);
 
     el.style.removeProperty('--f4-print-width');
     el.style.removeProperty('--f4-print-zoom');
@@ -94,33 +110,70 @@ export function useF4OnePagePrint({
     const wScale = targetWidth / baseW;
     const hScale = targetHeight / baseH;
     let bestWidth = baseW;
-    let bestZoom = Math.min(wScale, hScale, 1);
+    let bestZoom = 1;
 
-    // If vertical height is the bottleneck, sweep wider layout widths to unwrap
-    // multi-line narrative text and pick the width yielding the LARGEST readable scale
-    if (hScale < wScale && bestZoom < 0.995) {
-      const steps = 12;
-      const maxWidth = Math.round(Math.max(baseW, targetWidth) * 1.85);
-      for (let i = 1; i <= steps; i++) {
-        const candWidth = Math.round(baseW + ((maxWidth - baseW) * i) / steps);
-        if (candWidth <= baseW) continue;
-        // Width upper bound check: resulting wScale cannot beat bestZoom
-        if (targetWidth / candWidth <= bestZoom) break;
+    if (effectiveMaxPages === 1) {
+      bestZoom = Math.min(wScale, hScale, 1);
 
-        el.style.width = `${candWidth}px`;
-        const nW = Math.max(el.scrollWidth, candWidth);
-        const nH = Math.max(el.scrollHeight, 1);
-        const candZoom = Math.min(targetWidth / nW, targetHeight / nH, 1);
+      // If vertical height is the bottleneck, sweep wider layout widths to unwrap
+      // multi-line narrative text and pick the width yielding the LARGEST readable scale
+      if (hScale < wScale && bestZoom < 0.995) {
+        const steps = 12;
+        const maxWidth = Math.round(Math.max(baseW, targetWidth) * 1.85);
+        for (let i = 1; i <= steps; i++) {
+          const candWidth = Math.round(baseW + ((maxWidth - baseW) * i) / steps);
+          if (candWidth <= baseW) continue;
+          if (targetWidth / candWidth <= bestZoom) break;
 
-        if (candZoom > bestZoom) {
-          bestZoom = candZoom;
-          bestWidth = nW;
+          el.style.width = `${candWidth}px`;
+          const nW = Math.max(el.scrollWidth, candWidth);
+          const nH = Math.max(el.scrollHeight, 1);
+          const candZoom = Math.min(targetWidth / nW, targetHeight / nH, 1);
+
+          if (candZoom > bestZoom) {
+            bestZoom = candZoom;
+            bestWidth = nW;
+          }
+          if (bestZoom >= 0.995) break;
         }
-        if (bestZoom >= 0.995) break;
+      }
+    } else if (baseH <= targetHeight) {
+      // Fits comfortably on 1 page at full readable width
+      bestZoom = Math.min(wScale, 1);
+    } else if (hScale >= 0.9 && wScale >= 0.9) {
+      // Slight 1-page overflow: scale down gently (>= ~0.89) to avoid a near-empty page 2
+      bestZoom = Math.min(wScale, hScale, 1);
+    } else {
+      // Allow multi-page flow at full readable scale (up to effectiveMaxPages)
+      // Reserve buffer for repeated table headers & avoid-break row spacing across page breaks
+      const multiPageTargetHeight =
+        targetHeight * effectiveMaxPages - 72 * (effectiveMaxPages - 1);
+      const multiHScale = multiPageTargetHeight / baseH;
+      bestZoom = Math.min(wScale, multiHScale, 1);
+
+      if (multiHScale < wScale && bestZoom < 0.995) {
+        const steps = 10;
+        const maxWidth = Math.round(Math.max(baseW, targetWidth) * 1.45);
+        for (let i = 1; i <= steps; i++) {
+          const candWidth = Math.round(baseW + ((maxWidth - baseW) * i) / steps);
+          if (candWidth <= baseW) continue;
+          if (targetWidth / candWidth <= bestZoom) break;
+
+          el.style.width = `${candWidth}px`;
+          const nW = Math.max(el.scrollWidth, candWidth);
+          const nH = Math.max(el.scrollHeight, 1);
+          const candZoom = Math.min(targetWidth / nW, multiPageTargetHeight / nH, 1);
+
+          if (candZoom > bestZoom) {
+            bestZoom = candZoom;
+            bestWidth = nW;
+          }
+          if (bestZoom >= 0.995) break;
+        }
       }
     }
 
-    // Apply a small safety factor when scaling down so border/subpixel rounding never triggers page 2
+    // Apply a small safety factor when scaling down so border/subpixel rounding never triggers an extra page
     const finalZoom = bestZoom < 1 ? bestZoom * 0.988 : 1;
     const finalWidth =
       finalZoom < 1
@@ -131,7 +184,7 @@ export function useF4OnePagePrint({
     el.style.width = '';
     el.style.setProperty('--f4-print-width', `${finalWidth}px`);
     el.style.setProperty('--f4-print-zoom', finalZoom.toFixed(4));
-  }, [orientation, sheetRef]);
+  }, [orientation, sheetRef, maxPages, documentTitle]);
 
   useEffect(() => {
     const handleBeforePrint = () => applyPrintFit();

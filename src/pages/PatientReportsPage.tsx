@@ -97,10 +97,6 @@ export function PatientReportsPage({
   const { userProfile } = useAuth();
   const { showToast } = useToast();
   const sheetRef = useRef<HTMLDivElement>(null);
-  const { handlePrint } = useF4OnePagePrint({
-    orientation: 'landscape',
-    sheetRef,
-  });
   const { todayDate: liveTodayDate, currentShift: liveCurrentShift } = useLiveClock();
   const [todayDate, setTodayDate] = useState(liveTodayDate);
   const [selectedPatientId, setSelectedPatientId] = useState('ALL');
@@ -110,6 +106,21 @@ export function PatientReportsPage({
   const [hasManualShift, setHasManualShift] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [activeTab, setActiveTab] = useState<'services' | 'soap'>('services');
+
+  const printShiftCode =
+    shiftFilter === 'Pagi' ? 'P' : shiftFilter === 'Siang' ? 'S' : 'M';
+  const printDateLabel = /^\d{4}-\d{2}-\d{2}$/.test(dateFilter)
+    ? `${dateFilter.slice(8, 10)}-${dateFilter.slice(5, 7)}-${dateFilter.slice(0, 4)}`
+    : /^\d{4}-\d{2}$/.test(monthFilter)
+    ? `${monthFilter.slice(5, 7)}-${monthFilter.slice(0, 4)}`
+    : 'Semua';
+  const printDocumentTitle = `Lap Pasien-Shift ${printShiftCode}-${printDateLabel}`;
+
+  const { handlePrint } = useF4OnePagePrint({
+    orientation: 'landscape',
+    sheetRef,
+    documentTitle: printDocumentTitle,
+  });
 
   useEffect(() => {
     if (liveTodayDate !== todayDate) {

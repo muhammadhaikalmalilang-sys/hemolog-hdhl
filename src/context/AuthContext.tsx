@@ -53,6 +53,33 @@ function toAuthUser(sbUser: SupabaseUser | null | undefined): AuthUser | null {
   };
 }
 
+function isSameAuthUser(a: AuthUser | null, b: AuthUser | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.uid === b.uid &&
+    a.email === b.email &&
+    a.displayName === b.displayName &&
+    a.emailVerified === b.emailVerified &&
+    a.providerIds.join(',') === b.providerIds.join(',')
+  );
+}
+
+function isSameUserProfile(a: UserProfile | null, b: UserProfile | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.uid === b.uid &&
+    a.email === b.email &&
+    a.fullName === b.fullName &&
+    a.nip === b.nip &&
+    a.role === b.role &&
+    a.isActive === b.isActive &&
+    a.phone === b.phone &&
+    a.specialization === b.specialization
+  );
+}
+
 interface AuthContextValue {
   authUser: AuthUser | null;
   userProfile: UserProfile | null;
@@ -185,7 +212,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let profileChannel: ReturnType<typeof sb.channel> | null = null;
     let retryTimer: number | null = null;
     let activeUser: AuthUser | null = null;
+    let loadedProfile: UserProfile | null = null;
     let bootstrappingUid: string | null = null;
+
+    const commitUserProfile = (next: UserProfile | null) => {
+      if (isSameUserProfile(loadedProfile, next)) return;
+      loadedProfile = next;
+      setUserProfile(next);
+    };
 
     const cleanupChannel = () => {
       if (profileChannel) {
@@ -259,7 +293,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         if (cancelled || seq !== authEventSeq) return;
         if (insertedUser) {
-          setUserProfile(mapUserRow(insertedUser));
+          commitUserProfile(mapUserRow(insertedUser));
           setAuthReady(true);
           setProfileLoading(false);
         }
@@ -330,7 +364,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setBlockedMessage(
               'Akun Anda sedang dinonaktifkan oleh Administrator. Hubungi Admin Unit Hemodialisa untuk aktivasi kembali.'
             );
-            setUserProfile(null);
+            commitUserProfile(null);
             await sb.auth.signOut().catch(() => undefined);
           } else {
             const fallbackName =
@@ -341,7 +375,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                   'Staf HD',
                 120
               ) || 'Staf HD';
-            setUserProfile({
+            commitUserProfile({
               ...profile,
               uid: mappedUser.uid,
               email: profile.email || mappedUser.email || '',
@@ -367,7 +401,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               if (cancelled || seq !== authEventSeq) return;
               if (payload.eventType === 'DELETE') {
                 setBlockedMessage('Akun Anda telah dihapus oleh Administrator.');
-                setUserProfile(null);
+                commitUserProfile(null);
                 void sb.auth.signOut().catch(() => undefined);
                 return;
               }
@@ -377,10 +411,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                   setBlockedMessage(
                     'Akun Anda sedang dinonaktifkan oleh Administrator. Hubungi Admin Unit Hemodialisa untuk aktivasi kembali.'
                   );
-                  setUserProfile(null);
+                  commitUserProfile(null);
                   void sb.auth.signOut().catch(() => undefined);
                 } else {
-                  setUserProfile(updated);
+                  commitUserProfile(updated);
                 }
                 setAuthReady(true);
                 setProfileLoading(false);
@@ -396,42 +430,63 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     };
 
-    const handleSession = (session: Session | null) => {
-      const currentSeq = ++authEventSeq;
-      cleanupChannel();
+    const handleSession = (session: Session | null, event?: string) => {
       if (cancelled) return;
 
       const sbUser = session?.user ?? null;
       const mapped = toAuthUser(sbUser);
-      activeUser = mapped;
-      bootstrappingUid = null;
-      setAuthUser(mapped);
-      setProfileError(null);
 
       if (!sbUser || !mapped) {
-        setUserProfile(null);
+        authEventSeq += 1;
+        cleanupChannel();
+        activeUser = null;
+        bootstrappingUid = null;
+        setAuthUser(null);
+        commitUserProfile(null);
+        setProfileError(null);
         setAuthReady(true);
         setProfileLoading(false);
         return;
       }
 
+      const isSameUid = activeUser?.uid === mapped.uid;
+      activeUser = mapped;
+      setAuthUser((prev) => (isSameAuthUser(prev, mapped) ? prev : mapped));
+      setProfileError(null);
       setBlockedMessage(null);
       setIdleLogoutMessage(null);
-      setProfileLoading(true);
+
+      // Keep UI mounted cleanly during background TOKEN_REFRESHED or duplicate session events
+      if (isSameUid && loadedProfile) {
+        if (event === 'USER_UPDATED' || !profileChannel) {
+          void loadAndWatchProfile(sbUser, mapped, authEventSeq);
+        } else {
+          setAuthReady(true);
+          setProfileLoading(false);
+        }
+        return;
+      }
+
+      const currentSeq = ++authEventSeq;
+      cleanupChannel();
+      bootstrappingUid = null;
+      if (!loadedProfile) {
+        setProfileLoading(true);
+      }
       void loadAndWatchProfile(sbUser, mapped, currentSeq);
     };
 
     void sb.auth.getSession().then(({ data }) => {
       if (!cancelled) {
-        handleSession(data.session);
+        handleSession(data.session, 'INITIAL_SESSION');
       }
     });
 
     const {
       data: { subscription },
-    } = sb.auth.onAuthStateChange((_event, session) => {
+    } = sb.auth.onAuthStateChange((event, session) => {
       if (!cancelled) {
-        handleSession(session);
+        handleSession(session, event);
       }
     });
 
@@ -881,10 +936,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Trigger reconnect silently if offline->online occurs while mounted
   useEffect(() => {
-    if (authUser && isSupabaseConfigured) {
+    if (authUser?.uid && isSupabaseConfigured) {
       void reconnectSupabase({ force: false, resubscribe: false, reason: 'focus' });
     }
-  }, [authUser]);
+  }, [authUser?.uid]);
 
   return (
     <AuthContext.Provider

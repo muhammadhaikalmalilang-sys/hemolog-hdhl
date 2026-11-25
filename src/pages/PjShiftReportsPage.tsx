@@ -189,9 +189,9 @@ function parseSbarLines(text?: string): {
       current = 'r';
       r = trimmed.replace(/^R\s*[:\-]\s*/i, '');
     } else if (current && trimmed) {
-      if (current === 's') s = s ? `${s} ${trimmed}` : trimmed;
-      if (current === 'b') b = b ? `${b} ${trimmed}` : trimmed;
-      if (current === 'a') a = a ? `${a} ${trimmed}` : trimmed;
+      if (current === 's') s = s ? `${s}\n${trimmed}` : trimmed;
+      if (current === 'b') b = b ? `${b}\n${trimmed}` : trimmed;
+      if (current === 'a') a = a ? `${a}\n${trimmed}` : trimmed;
       if (current === 'r') r = r ? `${r}\n${trimmed}` : trimmed;
     }
   }
@@ -215,17 +215,6 @@ export function PjShiftReportsPage({
   const { userProfile } = useAuth();
   const { showToast } = useToast();
   const sheetRef = useRef<HTMLDivElement>(null);
-  const { handlePrint } = useF4OnePagePrint({
-    orientation: 'portrait',
-    sheetRef,
-  });
-
-  // Verified logbooks only (Approved by PJ Shift or Kepala Ruang)
-  const allApprovedLogbooks = useMemo(
-    () => logbooks.filter((item) => item.verificationStatus === 'Approved'),
-    [logbooks]
-  );
-
   const { todayDate: liveTodayDate, currentShift: liveCurrentShift } = useLiveClock();
   const [trackedTodayDate, setTrackedTodayDate] = useState(liveTodayDate);
   const [selectedDate, setSelectedDate] = useState(liveTodayDate);
@@ -233,6 +222,32 @@ export function PjShiftReportsPage({
     liveCurrentShift === 'Siang' ? 'Siang' : 'Pagi'
   );
   const [verifierFilter, setVerifierFilter] = useState<'ALL' | 'PJ Shift' | 'Kepala Ruang'>('ALL');
+
+  const printShiftLabel =
+    shiftFilter === 'Pagi'
+      ? 'Shift P'
+      : shiftFilter === 'Siang'
+      ? 'Shift S'
+      : shiftFilter === 'Malam'
+      ? 'Shift M'
+      : 'Semua Shift';
+  const printDateLabel = /^\d{4}-\d{2}-\d{2}$/.test(selectedDate)
+    ? `${selectedDate.slice(8, 10)}-${selectedDate.slice(5, 7)}-${selectedDate.slice(0, 4)}`
+    : selectedDate;
+  const printDocumentTitle = `Lap PJ-${printShiftLabel}-${printDateLabel}`;
+
+  const { handlePrint } = useF4OnePagePrint({
+    orientation: 'portrait',
+    sheetRef,
+    maxPages: 2,
+    documentTitle: printDocumentTitle,
+  });
+
+  // Verified logbooks only (Approved by PJ Shift or Kepala Ruang)
+  const allApprovedLogbooks = useMemo(
+    () => logbooks.filter((item) => item.verificationStatus === 'Approved'),
+    [logbooks]
+  );
 
   useEffect(() => {
     if (liveTodayDate !== trackedTodayDate) {
@@ -619,7 +634,7 @@ export function PjShiftReportsPage({
       } else {
         const diff = entry.ufGoal - entry.ufAchieved;
         underUfDetails.push(
-          `${entry.machineNumber} (${entry.patientName}) under-UF ${diff.toLocaleString('id-ID')} mL`
+          `${entry.patientName} under-UF ${diff.toLocaleString('id-ID')} mL`
         );
       }
 
@@ -648,9 +663,19 @@ export function PjShiftReportsPage({
       if (sec1) {
         if (sec1.roAdequate && sec1.roStatus === 'Baik') roOkCount += 1;
         if (sec1.roTds || sec1.roConductivity) {
-          roSamples.push(
-            `TDS ${sec1.roTds || '-'} ppm / Cond ${sec1.roConductivity || '-'} µS/cm`
-          );
+          const rawTds = (sec1.roTds || '').trim();
+          const rawCond = (sec1.roConductivity || '').trim();
+          const tdsStr = rawTds
+            ? /(ppm|mg\/l|ppb|µs|μs|ms)/i.test(rawTds)
+              ? rawTds
+              : `${rawTds} ppm`
+            : '-';
+          const condStr = rawCond
+            ? /(µs|μs|us|ms|cm|ppm)/i.test(rawCond)
+              ? rawCond
+              : `${rawCond} µS/cm`
+            : '-';
+          roSamples.push(`TDS ${tdsStr} / Cond ${condStr}`);
         }
         if (sec1.emergencyStatus === 'Lengkap' && sec1.aedReady && sec1.oxygenReady && sec1.emergencyDrugsReady) {
           emergencyOkCount += 1;
@@ -830,12 +855,9 @@ export function PjShiftReportsPage({
       totalVerified === 0
         ? `Belum ada logbook pasien berstatus Terverifikasi (Approved) pada ${formatFullDayDateId(selectedDate)} (${shiftWord}).`
         : `Pelayanan ${shiftWord} selesai melayani ${totalVerified} pasien terverifikasi (${rajalCount} rawat jalan, ${ranapCount} rawat inap). ${operationalMachines} mesin HD siap beroperasi optimal.${
-            allIncidents.length > 0
-              ? ` Tercatat ${allIncidents.length} kejadian klinis intra-HD (${allIncidents
-                  .map((i) => `${i.entry.machineNumber} ${i.entry.patientName}: ${i.type}`)
-                  .slice(0, 3)
-                  .join('; ')}).`
-              : ' Seluruh tindakan HD berlangsung stabil tanpa komplikasi bermakna.'
+            allIncidents.length === 0
+              ? ' Seluruh tindakan HD berlangsung stabil tanpa komplikasi bermakna.'
+              : ''
           }`;
 
     const autoBackground =
@@ -843,17 +865,20 @@ export function PjShiftReportsPage({
         ? '-'
         : allIncidents.length > 0
         ? allIncidents
-            .map(
-              (i) =>
-                `${i.entry.patientName} (${i.entry.machineNumber}, No. RM ${i.entry.patientRm}) HD via ${i.entry.vascularAccess}, UF Target ${i.entry.ufGoal} mL — Pukul ${i.time} mengalami ${i.type}${
-                  i.bp && i.bp !== '-'
-                    ? ` (TD ${i.bp} mmHg)`
-                    : i.detail
-                    ? ` (${i.detail})`
-                    : ''
-                }.`
-            )
-            .join(' ')
+            .map((i, idx) => {
+              const detailText = i.detail?.trim() || '';
+              const hasBp = Boolean(i.bp && i.bp !== '-');
+              const bpSuffix = hasBp
+                ? ` (TD ${i.bp}${/mmhg/i.test(i.bp) ? '' : ' mmHg'})`
+                : '';
+              const isOtherComp = /^komplikasi\s+lainnya$/i.test(i.type.trim());
+              const typeLabel =
+                isOtherComp && detailText ? `Komplikasi ${detailText}` : i.type;
+              const extraSuffix =
+                bpSuffix || (!isOtherComp && detailText ? ` (${detailText})` : '');
+              return `${idx + 1}. ${i.entry.patientName} : Pukul ${i.time} mengalami ${typeLabel}${extraSuffix}.`;
+            })
+            .join('\n')
         : `Seluruh ${totalVerified} pasien terverifikasi menjalani tindakan HD sesuai resep DPJP dengan akses vaskular (${avfCount} Cimino/AVF, ${cdlCount} CDL, ${femoralCount} Femoral) dalam kondisi paten.`;
 
     const autoAssessment =
@@ -863,12 +888,12 @@ export function PjShiftReportsPage({
             ufMetCount,
             totalVerified
           )}) mencapai target UF.${
-            underUfDetails.length > 0 ? ` Catatan under-UF: ${underUfDetails.join('; ')}.` : ''
+            underUfDetails.length > 0 ? ` Catatan under-UF: ${underUfDetails.join(', ')}.` : ''
           }${
             consultIncidents.length > 0
-              ? ` Tindak lanjut medis: ${consultIncidents
-                  .map((c) => `${c.entry.patientName}: ${c.advice}`)
-                  .join('; ')}.`
+              ? `\n${consultIncidents
+                  .map((c) => `- Tindak lanjut medis: ${c.entry.patientName}: ${c.advice.trim()}`)
+                  .join('\n')}`
               : ' Kondisi pasca dialisis seluruh pasien stabil dan hemostasis tercapai.'
           }`;
 
@@ -1013,7 +1038,7 @@ export function PjShiftReportsPage({
             )
             .join('; ')
         : 'Tidak ada insiden klinis / teknis';
-    const handoverDefault = `S: ${sbarView.situation}\nB: ${sbarView.background}\nA: ${sbarView.assessment}\nR: ${sbarView.recommendation.replace(/\n/g, ' ')}`;
+    const handoverDefault = `S: ${sbarView.situation}\nB: ${sbarView.background}\nA: ${sbarView.assessment}\nR: ${sbarView.recommendation}`;
     return {
       reportType: 'pj_shift' as const,
       date: selectedDate,
@@ -1230,7 +1255,7 @@ export function PjShiftReportsPage({
     );
     setModalHandoverNotes(
       activeSavedReport?.handoverNotes ||
-        `S: ${sbarView.situation}\nB: ${sbarView.background}\nA: ${sbarView.assessment}\nR: ${sbarView.recommendation.replace(/\n/g, ' ')}`
+        `S: ${sbarView.situation}\nB: ${sbarView.background}\nA: ${sbarView.assessment}\nR: ${sbarView.recommendation}`
     );
     setShowModal(true);
   };
@@ -1540,25 +1565,36 @@ export function PjShiftReportsPage({
 
   const formatIncidentLines = (
     items: ReturnType<typeof collectIncidents>,
-    emptyText: string
+    emptyText: string,
+    groupByPatient = true
   ): string[] => {
     if (items.length === 0) return [emptyText];
-    const byPatient = new Map<string, { header: string; details: string[] }>();
-    for (const i of items) {
+    const buildDetailStr = (i: ReturnType<typeof collectIncidents>[number]) => {
       const meta: string[] = [];
       if (i.time && i.time !== '-') meta.push(`Pkl ${i.time}`);
       if (i.bp && i.bp !== '-') meta.push(`TD ${i.bp}`);
       if (i.detail) meta.push(i.detail);
-      const detailStr = `[${i.type}]${
+      return `[${i.type}]${
         meta.length > 0 ? ` (${meta.join(', ')})` : ''
       }${i.advice ? `: ${i.advice}` : ''}`;
+    };
+
+    if (!groupByPatient) {
+      return items.map(
+        (i) => `${i.entry.patientName} ${buildDetailStr(i)}`
+      );
+    }
+
+    const byPatient = new Map<string, { header: string; details: string[] }>();
+    for (const i of items) {
+      const detailStr = buildDetailStr(i);
 
       const existing = byPatient.get(i.entry.id);
       if (existing) {
         existing.details.push(detailStr);
       } else {
         byPatient.set(i.entry.id, {
-          header: `${i.entry.machineNumber} (${i.entry.patientName})`,
+          header: i.entry.patientName,
           details: [detailStr],
         });
       }
@@ -1903,7 +1939,7 @@ export function PjShiftReportsPage({
       [key]: draftSbarText.trim() || '-',
     };
     const combinedHandoverNotes = clampString(
-      `S: ${updatedSbar.situation}\nB: ${updatedSbar.background}\nA: ${updatedSbar.assessment}\nR: ${updatedSbar.recommendation.replace(/\n/g, ' ')}`,
+      `S: ${updatedSbar.situation}\nB: ${updatedSbar.background}\nA: ${updatedSbar.assessment}\nR: ${updatedSbar.recommendation}`,
       2500
     );
     const sbarUpdatePayload = {
@@ -2138,7 +2174,8 @@ export function PjShiftReportsPage({
         'Sesuai Indikasi',
         formatIncidentLines(
           shiftStats.consultIncidents,
-          'Kondisi pasien stabil, tidak ada konsultasi cito emergensi'
+          'Kondisi pasien stabil, tidak ada konsultasi cito emergensi',
+          false
         ),
         false
       ),
@@ -2226,7 +2263,7 @@ export function PjShiftReportsPage({
           <button
             type="button"
             onClick={handlePrint}
-            title="Cetak / Simpan PDF (F4 Portrait - 1 Halaman Penuh)"
+            title="Cetak / Simpan PDF (F4 Portrait · 1–2 Halaman)"
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
           >
             <Printer className="h-4 w-4" />
@@ -2362,7 +2399,7 @@ export function PjShiftReportsPage({
         )}
 
         {/* SECTION A: INFORMASI UMUM SHIFT & KETENAGAAN (MANPOWER) */}
-        <div className="f4-scroll-wrap overflow-x-auto">
+        <div className="pj-keep-together f4-scroll-wrap overflow-x-auto">
           <table className="w-full border-collapse text-[11px] text-slate-900">
             <thead>
               <tr className="bg-[#1b4670] text-white">
@@ -2464,7 +2501,7 @@ export function PjShiftReportsPage({
         </div>
 
         {/* SECTION B: SENSUS PASIEN, AKSES VASKULAR & UTILISASI MESIN HEMODIALISIS */}
-        <div className="f4-scroll-wrap overflow-x-auto">
+        <div className="pj-keep-together f4-scroll-wrap overflow-x-auto">
           <table className="w-full border-collapse text-[11px] text-slate-900">
             <thead>
               <tr className="bg-[#1b4670] text-white">
@@ -2730,7 +2767,7 @@ export function PjShiftReportsPage({
         </div>
 
         {/* SECTION D: AKUNTABILITAS NON-MEDIS, OPERASIONAL, WATER TREATMENT & K3 */}
-        <div className="f4-scroll-wrap overflow-x-auto">
+        <div className="pj-keep-together f4-scroll-wrap overflow-x-auto">
           <table className="w-full border-collapse text-[11px] text-slate-900">
             <thead>
               <tr className="bg-[#1b4670] text-white">
@@ -2996,7 +3033,7 @@ export function PjShiftReportsPage({
           const showNextPjColumn = shiftFilter !== 'Siang';
           const colWidthClass = showNextPjColumn ? 'w-1/3' : 'w-1/2';
           return (
-            <div className="f4-scroll-wrap overflow-x-auto">
+            <div className="pj-keep-together f4-scroll-wrap overflow-x-auto">
               <table className="pj-sig-table w-full border-collapse text-[11px] text-slate-900">
                 <thead>
                   <tr className="bg-[#1b4670] text-white">
@@ -3195,7 +3232,7 @@ export function PjShiftReportsPage({
 
         {/* Review status banner if evaluated */}
         {activeSavedReport?.reviewStatus === 'Reviewed' && (
-          <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 px-4 py-2.5 text-xs text-emerald-900">
+          <div className="pj-keep-together rounded-lg border border-emerald-200 bg-emerald-50/70 px-4 py-2.5 text-xs text-emerald-900">
             <strong>Evaluasi Kepala Ruang ({activeSavedReport.reviewedByName}): </strong>
             {activeSavedReport.reviewNote}
           </div>

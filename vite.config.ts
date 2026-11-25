@@ -118,7 +118,7 @@ export default defineConfig(() => {
       tailwindcss(),
       consistentSrgbCssPlugin(),
       VitePWA({
-        registerType: 'autoUpdate',
+        registerType: 'prompt',
         includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'icon.svg'],
         manifest: {
           id: '/',
@@ -154,8 +154,6 @@ export default defineConfig(() => {
         },
         workbox: {
           cleanupOutdatedCaches: true,
-          skipWaiting: true,
-          clientsClaim: true,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,webp,woff,woff2}'],
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           navigateFallbackDenylist: [/^\/api\//],

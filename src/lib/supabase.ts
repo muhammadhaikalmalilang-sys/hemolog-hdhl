@@ -319,10 +319,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
     if (document.visibilityState === 'visible') {
       const hiddenDuration = lastHiddenAt > 0 ? Date.now() - lastHiddenAt : 0;
-      if (!wasOffline && hiddenDuration < 120_000) return;
+      const isRtConnected =
+        typeof supabaseClient?.realtime?.isConnected === 'function'
+          ? supabaseClient.realtime.isConnected()
+          : true;
+      if (!wasOffline && isRtConnected && hiddenDuration < 600_000) return;
       void reconnectSupabase({
         force: true,
-        resubscribe: true,
+        resubscribe: wasOffline || !isRtConnected || hiddenDuration >= 600_000,
         reason: 'visibilitychange',
       });
     }
