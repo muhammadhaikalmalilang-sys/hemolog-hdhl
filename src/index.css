@@ -102,8 +102,14 @@
 
 /* Synchronized readable styles for Patient Report (F4 Landscape) */
 @media print {
+  .f4-print-sheet.f4-patient-landscape {
+    break-inside: auto !important;
+    page-break-inside: auto !important;
+  }
   .f4-patient-landscape .f4-banner {
     padding: 6px 10px !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
   }
   .f4-patient-landscape .f4-banner h3 {
     font-size: 13.5px !important;
@@ -117,6 +123,19 @@
   .f4-patient-landscape table {
     width: 100% !important;
     table-layout: auto !important;
+    break-inside: auto !important;
+    page-break-inside: auto !important;
+  }
+  .f4-patient-landscape thead {
+    display: table-header-group !important;
+  }
+  .f4-patient-landscape tfoot {
+    display: table-row-group !important;
+  }
+  .f4-patient-landscape tbody tr,
+  .f4-patient-landscape tfoot tr {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
   }
   .f4-patient-landscape thead th {
     font-size: 9px !important;
@@ -152,6 +171,10 @@
     grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
     gap: 8px !important;
     font-size: 11px !important;
+  }
+  .f4-patient-landscape .f4-soap-grid > div {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
   }
 }
 

@@ -98,14 +98,16 @@ function computePrintLayout(
         if (bestZoom >= 0.995) break;
       }
     }
-  } else if (baseH <= targetHeight) {
-    // Fits comfortably on 1 page at full readable width
-    bestZoom = Math.min(wScale, 1);
-  } else if (hScale >= 0.9 && wScale >= 0.9) {
-    // Slight 1-page overflow: scale down gently (>= ~0.89) to avoid a near-empty page 2
-    bestZoom = Math.min(wScale, hScale, 1);
   } else {
-    // Allow multi-page flow at full readable scale (up to effectiveMaxPages)
+    const widthZoom = Math.min(wScale, 1);
+    if (baseH * widthZoom <= targetHeight) {
+      // Fits comfortably on 1 page at full readable width
+      bestZoom = widthZoom;
+    } else if (hScale >= widthZoom * 0.92 && hScale >= 0.82) {
+      // Slight 1-page overflow: scale down gently to avoid a near-empty page 2
+      bestZoom = Math.min(widthZoom, hScale, 1);
+    } else {
+      // Allow multi-page flow at full readable scale (up to effectiveMaxPages)
     // Reserve buffer for repeated table headers & avoid-break row spacing across page breaks
     const multiPageTargetHeight =
       targetHeight * effectiveMaxPages - 72 * (effectiveMaxPages - 1);
@@ -131,6 +133,7 @@ function computePrintLayout(
         }
         if (bestZoom >= 0.995) break;
       }
+    }
     }
   }
 

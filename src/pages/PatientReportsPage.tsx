@@ -120,6 +120,7 @@ export function PatientReportsPage({
   const { handlePrint } = useF4OnePagePrint({
     orientation: 'landscape',
     sheetRef,
+    maxPages: 2,
     documentTitle: printDocumentTitle,
   });
   const [downloadingPdf, setDownloadingPdf] = useState(false);
@@ -824,7 +825,7 @@ export function PatientReportsPage({
           <button
             type="button"
             onClick={handlePrint}
-            title="Cetak Langsung (F4 Landscape - 1 Halaman Penuh)"
+            title="Cetak Langsung (F4 Landscape - Otomatis 1-2 Halaman)"
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
           >
             <Printer className="h-4 w-4" />

@@ -13,8 +13,37 @@ import {
   toPatientRow,
   updateRowByColumn,
 } from '../lib/db';
-import { clampString, isRegularPatient } from '../lib/formatters';
+import { clampString, isPatientScheduledOnDay, isRegularPatient } from '../lib/formatters';
 import type { Patient, PatientStatus, PatientType, VascularAccessType } from '../types';
+
+function matchesScheduleFilter(routineSchedule: string | undefined, scheduleFilter: string): boolean {
+  if (scheduleFilter === 'ALL') return true;
+  const normalized = (routineSchedule || '')
+    .toLowerCase()
+    .replace(/jum'at/g, 'jumat')
+    .replace(/ahad/g, 'minggu');
+
+  switch (scheduleFilter) {
+    case 'SENIN_KAMIS':
+      return normalized.includes('senin') && normalized.includes('kamis');
+    case 'SELASA_JUMAT':
+      return normalized.includes('selasa') && normalized.includes('jumat');
+    case 'RABU_SABTU':
+      return normalized.includes('rabu') && normalized.includes('sabtu');
+    case 'NON_RUTIN':
+      return !(
+        normalized.includes('senin') ||
+        normalized.includes('selasa') ||
+        normalized.includes('rabu') ||
+        normalized.includes('kamis') ||
+        normalized.includes('jumat') ||
+        normalized.includes('sabtu') ||
+        normalized.includes('minggu')
+      );
+    default:
+      return isPatientScheduledOnDay(routineSchedule, scheduleFilter);
+  }
+}
 
 interface PatientsPageProps {
   patients: Patient[];
@@ -26,6 +55,8 @@ export function PatientsPage({ patients }: PatientsPageProps) {
 
   const [activePatientTab, setActivePatientTab] = useState<PatientType>('Reguler');
   const [searchTerm, setSearchTerm] = useState('');
+  const [scheduleFilter, setScheduleFilter] = useState('ALL');
+  const [shiftFilter, setShiftFilter] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [showModal, setShowModal] = useState(false);
   const [showBulkModal, setShowBulkModal] = useState(false);
@@ -76,19 +107,41 @@ export function PatientsPage({ patients }: PatientsPageProps) {
     const sourceList = activePatientTab === 'Reguler' ? regularPatients : nonRegularPatients;
     return sourceList.filter((p) => {
       if (statusFilter !== 'ALL' && p.status !== statusFilter) return false;
+      if (!matchesScheduleFilter(p.routineSchedule, scheduleFilter)) return false;
+      if (
+        shiftFilter !== 'ALL' &&
+        !(p.routineSchedule || '').toLowerCase().includes(shiftFilter.toLowerCase())
+      ) {
+        return false;
+      }
       if (searchTerm.trim()) {
         const q = searchTerm.toLowerCase();
         if (
           !p.fullName.toLowerCase().includes(q) &&
           !p.mrn.toLowerCase().includes(q) &&
-          !p.diagnosis.toLowerCase().includes(q)
+          !p.diagnosis.toLowerCase().includes(q) &&
+          !(p.routineSchedule || '').toLowerCase().includes(q)
         ) {
           return false;
         }
       }
       return true;
     });
-  }, [activePatientTab, regularPatients, nonRegularPatients, statusFilter, searchTerm]);
+  }, [
+    activePatientTab,
+    regularPatients,
+    nonRegularPatients,
+    statusFilter,
+    scheduleFilter,
+    shiftFilter,
+    searchTerm,
+  ]);
+
+  const hasActiveFilters =
+    Boolean(searchTerm.trim()) ||
+    scheduleFilter !== 'ALL' ||
+    shiftFilter !== 'ALL' ||
+    statusFilter !== 'ALL';
 
   const openCreate = () => {
     const defaultType = activePatientTab;
@@ -280,28 +333,90 @@ export function PatientsPage({ patients }: PatientsPageProps) {
         </div>
       )}
 
-      <div className="rounded-xl border border-slate-200 bg-white p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          <input
-            type="text"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Cari nama pasien, No. RM, atau diagnosa..."
-            className="w-full rounded-lg border border-slate-300 pl-9 pr-3 py-2 text-xs focus:border-teal-600 focus:outline-none"
-          />
+      <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3">
+          <div className="relative lg:col-span-5">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Cari nama pasien, No. RM, diagnosa, atau jadwal..."
+              className="w-full rounded-lg border border-slate-300 pl-9 pr-3 py-2 text-xs focus:border-teal-600 focus:outline-none"
+            />
+          </div>
+          <select
+            aria-label="Filter Jadwal HD"
+            value={scheduleFilter}
+            onChange={(e) => setScheduleFilter(e.target.value)}
+            className="lg:col-span-3 rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-700 focus:border-teal-600 focus:outline-none"
+          >
+            <option value="ALL">Semua Jadwal</option>
+            <optgroup label="Pola Jadwal Rutin">
+              <option value="SENIN_KAMIS">Senin &amp; Kamis</option>
+              <option value="SELASA_JUMAT">Selasa &amp; Jumat</option>
+              <option value="RABU_SABTU">Rabu &amp; Sabtu</option>
+            </optgroup>
+            <optgroup label="Per Hari">
+              <option value="Senin">Senin</option>
+              <option value="Selasa">Selasa</option>
+              <option value="Rabu">Rabu</option>
+              <option value="Kamis">Kamis</option>
+              <option value="Jumat">Jumat</option>
+              <option value="Sabtu">Sabtu</option>
+              <option value="Minggu">Minggu</option>
+            </optgroup>
+            <optgroup label="Lainnya">
+              <option value="NON_RUTIN">Non-Reguler / Insidental</option>
+            </optgroup>
+          </select>
+          <select
+            aria-label="Filter Shift Jadwal"
+            value={shiftFilter}
+            onChange={(e) => setShiftFilter(e.target.value)}
+            className="lg:col-span-2 rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-700 focus:border-teal-600 focus:outline-none"
+          >
+            <option value="ALL">Semua Shift</option>
+            <option value="Pagi">Shift Pagi</option>
+            <option value="Siang">Shift Siang</option>
+            <option value="Malam">Shift Malam</option>
+          </select>
+          <select
+            aria-label="Filter Status Pasien"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="lg:col-span-2 rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-700 focus:border-teal-600 focus:outline-none"
+          >
+            <option value="ALL">Semua Status Pasien</option>
+            <option value="Aktif">Aktif</option>
+            <option value="Rujuk">Rujuk</option>
+            <option value="Nonaktif">Nonaktif</option>
+            <option value="Meninggal">Meninggal</option>
+          </select>
         </div>
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-700 focus:border-teal-600 focus:outline-none"
-        >
-          <option value="ALL">Semua Status Pasien</option>
-          <option value="Aktif">Aktif</option>
-          <option value="Rujuk">Rujuk</option>
-          <option value="Nonaktif">Nonaktif</option>
-          <option value="Meninggal">Meninggal</option>
-        </select>
+        {hasActiveFilters && (
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+            <span>
+              Menampilkan <strong className="text-slate-700">{filtered.length}</strong> dari{' '}
+              <strong className="text-slate-700">
+                {activePatientTab === 'Reguler' ? regularPatients.length : nonRegularPatients.length}
+              </strong>{' '}
+              pasien {activePatientTab === 'Reguler' ? 'reguler' : 'non-reguler'}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setSearchTerm('');
+                setScheduleFilter('ALL');
+                setShiftFilter('ALL');
+                setStatusFilter('ALL');
+              }}
+              className="font-semibold text-teal-700 hover:underline"
+            >
+              Reset Filter
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">

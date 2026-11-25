@@ -866,6 +866,27 @@ function drawFooterRow(doc: jsPDF, plan: LayoutPlan, y: number): number {
   return y + footerH;
 }
 
+function simulateServicePdfPages(plan: LayoutPlan): number {
+  if (plan.rows.length === 0) return 1;
+  const maxY = MARGIN_MM + PRINT_H_MM;
+  const headerH = plan.hdrRow1H + plan.hdrRow2H;
+  let pages = 1;
+  let y = MARGIN_MM + plan.bannerHeightMm + headerH;
+
+  plan.rows.forEach((row) => {
+    if (y + row.rowHeightMm > maxY) {
+      pages += 1;
+      y = MARGIN_MM + headerH;
+    }
+    y += row.rowHeightMm;
+  });
+
+  if (plan.footerH > 0 && y + plan.footerH > maxY) {
+    pages += 1;
+  }
+  return pages;
+}
+
 export function exportPatientServicesPdf({
   rows,
   summaryStats,
@@ -901,19 +922,32 @@ export function exportPatientServicesPdf({
     return;
   }
 
-  // Solve for largest scale where the entire table fits cleanly on 1 F4 Landscape page
-  let chosenPlan: LayoutPlan | null = null;
-  for (let s = 1.08; s >= 0.48; s -= 0.025) {
+  // 1) Fit on 1 F4 Landscape page ONLY while text stays comfortably readable (scale >= 0.82)
+  let singlePagePlan: LayoutPlan | null = null;
+  for (let s = 1.08; s >= 0.82; s -= 0.025) {
     const candidate = buildLayoutPlan(doc, rows, summaryStats, meta, Number(s.toFixed(3)));
     if (candidate.totalHeightMm <= PRINT_H_MM - 0.5) {
-      chosenPlan = candidate;
+      singlePagePlan = candidate;
       break;
     }
   }
 
-  // If even 0.48 scale exceeds 1 page (very large multi-shift/month datasets), use readable 0.72 and paginate cleanly
-  const singlePageFit = Boolean(chosenPlan);
-  const plan = chosenPlan ?? buildLayoutPlan(doc, rows, summaryStats, meta, 0.72);
+  // 2) If 1 page would be too small, allow 2 pages at a comfortable readable scale (1.04 down to 0.72)
+  let twoPagePlan: LayoutPlan | null = null;
+  if (!singlePagePlan) {
+    for (let s = 1.04; s >= 0.72; s -= 0.025) {
+      const candidate = buildLayoutPlan(doc, rows, summaryStats, meta, Number(s.toFixed(3)));
+      if (simulateServicePdfPages(candidate) <= 2) {
+        twoPagePlan = candidate;
+        break;
+      }
+    }
+  }
+
+  // 3) For very large multi-shift/month datasets (> 2 pages), paginate cleanly at readable 0.82 scale
+  const singlePageFit = Boolean(singlePagePlan);
+  const plan =
+    singlePagePlan ?? twoPagePlan ?? buildLayoutPlan(doc, rows, summaryStats, meta, 0.82);
 
   let y = drawBanner(doc, plan, MARGIN_MM);
   y = drawTableHeaders(doc, plan, y);
@@ -926,7 +960,7 @@ export function exportPatientServicesPdf({
   } else {
     const maxY = MARGIN_MM + PRINT_H_MM;
     plan.rows.forEach((row, idx) => {
-      if (y + row.rowHeightMm > maxY - (idx === plan.rows.length - 1 ? plan.footerH : 0)) {
+      if (y + row.rowHeightMm > maxY) {
         doc.addPage([F4_LANDSCAPE_H_MM, F4_LANDSCAPE_W_MM], 'landscape');
         y = drawTableHeaders(doc, plan, MARGIN_MM);
       }
