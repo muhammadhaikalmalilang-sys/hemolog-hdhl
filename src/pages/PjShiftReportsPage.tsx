@@ -230,16 +230,16 @@ export function PjShiftReportsPage({
 
   const printShiftLabel =
     shiftFilter === 'Pagi'
-      ? 'Shift P'
+      ? 'SHIFT PAGI'
       : shiftFilter === 'Siang'
-      ? 'Shift S'
+      ? 'SHIFT SIANG'
       : shiftFilter === 'Malam'
-      ? 'Shift M'
-      : 'Semua Shift';
+      ? 'SHIFT MALAM'
+      : 'SEMUA SHIFT';
   const printDateLabel = /^\d{4}-\d{2}-\d{2}$/.test(selectedDate)
-    ? `${selectedDate.slice(8, 10)}-${selectedDate.slice(5, 7)}-${selectedDate.slice(0, 4)}`
+    ? `${getDayNameId(selectedDate).toUpperCase()} ${selectedDate.slice(8, 10)}-${selectedDate.slice(5, 7)}-${selectedDate.slice(0, 4)}`
     : selectedDate;
-  const printDocumentTitle = `Lap PJ-${printShiftLabel}-${printDateLabel}`;
+  const printDocumentTitle = `LAP PJ ${printShiftLabel} ${printDateLabel}`;
 
   const { handlePrint, handleDownloadPdf, downloadingPdf } = useF4OnePagePrint({
     orientation: 'portrait',

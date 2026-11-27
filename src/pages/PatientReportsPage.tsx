@@ -9,6 +9,7 @@ import {
   formatFullDayDateId,
   formatMonthLabel,
   formatVerificationStatusLabel,
+  getDayNameId,
 } from '../lib/formatters';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -113,14 +114,13 @@ export function PatientReportsPage({
   const [searchTerm, setSearchTerm] = useState('');
   const [activeTab, setActiveTab] = useState<'services' | 'soap'>('services');
 
-  const printShiftCode =
-    shiftFilter === 'Pagi' ? 'P' : shiftFilter === 'Siang' ? 'S' : 'M';
+  const printShiftLabel = `SHIFT ${shiftFilter.toUpperCase()}`;
   const printDateLabel = /^\d{4}-\d{2}-\d{2}$/.test(dateFilter)
-    ? `${dateFilter.slice(8, 10)}-${dateFilter.slice(5, 7)}-${dateFilter.slice(0, 4)}`
+    ? `${getDayNameId(dateFilter).toUpperCase()} ${dateFilter.slice(8, 10)}-${dateFilter.slice(5, 7)}-${dateFilter.slice(0, 4)}`
     : /^\d{4}-\d{2}$/.test(monthFilter)
     ? `${monthFilter.slice(5, 7)}-${monthFilter.slice(0, 4)}`
-    : 'Semua';
-  const printDocumentTitle = `Lap Pasien-Shift ${printShiftCode}-${printDateLabel}`;
+    : 'SEMUA';
+  const printDocumentTitle = `REGISTER ${printShiftLabel} ${printDateLabel}`;
 
   const { handlePrint } = useF4OnePagePrint({
     orientation: 'landscape',
