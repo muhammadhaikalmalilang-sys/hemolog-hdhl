@@ -50,6 +50,7 @@ export interface PatientReportPdfMeta {
   dateLabel: string;
   pjShift: string;
   dpjpLabel: string;
+  dutyDoctorLabel?: string;
   kaRuang: string;
   nurseCount: number;
 }
@@ -98,20 +99,11 @@ function lineHeightMm(fontPt: number, mult = 1.24): number {
   return fontPt * PT_TO_MM * mult;
 }
 
-interface SegmentedItem {
-  text: string;
-  lines: string[];
-}
-
 interface BuiltRowCells {
   colLines: string[][];
   colSubLines: Array<string[] | null>;
-  complicationSegments: SegmentedItem[] | null;
-  compTimeSegments: SegmentedItem[] | null;
-  adviceSegments: SegmentedItem[] | null;
   rowHeightMm: number;
   isIsolasi: boolean;
-  hasComplication: boolean;
   transfusionGiven: boolean | null;
   epoGiven: boolean | null;
 }
@@ -138,8 +130,10 @@ interface LayoutPlan {
   bannerMetaPt: number;
   padX: number;
   padY: number;
-  segGap: number;
 }
+
+// 20-column Page 1 layout (Complications moved to dedicated Page 2)
+const NUM_MAIN_COLS = 20;
 
 const SUB_HEADERS = [
   'STATUS',
@@ -157,9 +151,6 @@ const SUB_HEADERS = [
   'CAPAIAN UF (ML)',
   'TD PRE (MMHG)',
   'TD POST (MMHG)',
-  'KOMPLIKASI INTRA-HD',
-  'JAM',
-  'TINDAKAN & ADVIS MEDIS DPJP',
   'TRANSFUSI',
   'EPO',
 ];
@@ -172,9 +163,8 @@ const GROUP_HEADERS: Array<{ label: string; startCol: number; span: number; rowS
   { label: 'PARAMETER BERAT BADAN & ALIRAN', startCol: 6, span: 6 },
   { label: 'MONITORING ULTRAFILTRASI & ADEKUASI', startCol: 12, span: 3 },
   { label: 'TANDA VITAL (HEMODINAMIK)', startCol: 15, span: 2 },
-  { label: 'KOMPLIKASI, TATALAKSANA & ADVIS DPJP', startCol: 17, span: 3 },
-  { label: 'TRANSFUSI & EPO', startCol: 20, span: 2 },
-  { label: 'PERAWAT PELAKSANA', startCol: 22, span: 1, rowSpan2: true },
+  { label: 'TRANSFUSI & EPO', startCol: 17, span: 2 },
+  { label: 'PERAWAT PELAKSANA', startCol: 19, span: 1, rowSpan2: true },
 ];
 
 function computeAllColumnWidths(
@@ -183,10 +173,10 @@ function computeAllColumnWidths(
   summaryStats: PatientReportPdfSummary | null,
   scale: number
 ): number[] {
-  const bodyPt = 7.6 * scale;
-  const subPt = 6.5 * scale;
-  const hdrPt = 6.2 * scale;
-  const padX = Math.max(0.85, 1.35 * scale);
+  const bodyPt = 9.0 * scale;
+  const subPt = 7.6 * scale;
+  const hdrPt = 7.2 * scale;
+  const padX = Math.max(1.1, 1.8 * scale);
 
   const measureW = (txt: string, pt: number, bold = false): number => {
     doc.setFont('helvetica', bold ? 'bold' : 'normal');
@@ -194,8 +184,9 @@ function computeAllColumnWidths(
     return doc.getTextWidth(pdfSafe(txt));
   };
 
-  const fitIndices = [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 22];
-  const widths = new Array<number>(23).fill(11);
+  // Fixed-fit columns (0, 2..16, 19); flexible columns: 1 (Nama), 17 (Transfusi), 18 (EPO)
+  const fitIndices = [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 19];
+  const widths = new Array<number>(NUM_MAIN_COLS).fill(14);
 
   const headerMinTokens: Record<number, string> = {
     0: 'MESIN',
@@ -214,8 +205,7 @@ function computeAllColumnWidths(
     14: 'CAPAIAN',
     15: 'TD PRE',
     16: 'TD POST',
-    18: 'JAM',
-    22: 'PELAKSANA',
+    19: 'PELAKSANA',
   };
 
   for (const col of fitIndices) {
@@ -229,7 +219,7 @@ function computeAllColumnWidths(
       else if (col === 4) {
         maxW = Math.max(maxW, measureW(r.vascularAccessLabel, bodyPt, true));
         if (r.vascularAccessNote) {
-          maxW = Math.max(maxW, Math.min(24 * scale, measureW(r.vascularAccessNote, subPt, false)));
+          maxW = Math.max(maxW, Math.min(28 * scale, measureW(r.vascularAccessNote, subPt, false)));
         }
       } else if (col === 5) maxW = Math.max(maxW, measureW(fmtNum(r.durationHours, 1), bodyPt));
       else if (col === 6) maxW = Math.max(maxW, measureW(fmtNum(s.preWeight, 1), bodyPt));
@@ -237,18 +227,14 @@ function computeAllColumnWidths(
       else if (col === 8) maxW = Math.max(maxW, measureW(fmtNum(r.dryWeight, 1), bodyPt));
       else if (col === 9) maxW = Math.max(maxW, measureW(r.qbVal !== null ? fmtInt(r.qbVal) : '-', bodyPt));
       else if (col === 10) maxW = Math.max(maxW, measureW(r.qdVal !== null ? fmtInt(r.qdVal) : '-', bodyPt));
-      else if (col === 11) maxW = Math.max(maxW, Math.min(28 * scale, measureW(r.heparinDisplay, bodyPt)));
+      else if (col === 11) maxW = Math.max(maxW, Math.min(34 * scale, measureW(r.heparinDisplay, bodyPt)));
       else if (col === 12) maxW = Math.max(maxW, measureW(fmtInt(s.ufGoal), bodyPt));
       else if (col === 13) maxW = Math.max(maxW, measureW(r.ktvDisplay, bodyPt));
       else if (col === 14) maxW = Math.max(maxW, measureW(fmtInt(s.ufAchieved), bodyPt, true));
       else if (col === 15) maxW = Math.max(maxW, measureW(s.preBp || '-', bodyPt));
       else if (col === 16) maxW = Math.max(maxW, measureW(s.postBp || '-', bodyPt));
-      else if (col === 18) {
-        for (const t of r.compTimeLines) {
-          maxW = Math.max(maxW, measureW(t, bodyPt, r.hasComplication));
-        }
-      } else if (col === 22) {
-        maxW = Math.max(maxW, Math.min(34 * scale, measureW(s.nurseName, bodyPt, true)));
+      else if (col === 19) {
+        maxW = Math.max(maxW, Math.min(44 * scale, measureW(s.nurseName, bodyPt, true)));
         maxW = Math.max(maxW, measureW(`Shift ${s.shift}`, subPt));
       }
     }
@@ -258,45 +244,50 @@ function computeAllColumnWidths(
       if (col === 14) maxW = Math.max(maxW, measureW(fmtInt(summaryStats.totalAchievedUf), bodyPt, true));
     }
 
-    widths[col] = maxW + padX * 2 + 0.6;
+    widths[col] = maxW + padX * 2 + 0.8;
   }
 
-  // Distribute remaining A3 width (408mm total) across the 5 flexible columns:
-  // Col 1 (Nama Pasien), Col 17 (Komplikasi), Col 19 (Tindakan & Advis), Col 20 (Transfusi), Col 21 (EPO)
+  // Distribute remaining A3 width (408mm total) across Col 1 (Nama Pasien), Col 17 (Transfusi), Col 18 (EPO)
   const usedFixed = fitIndices.reduce((sum, idx) => sum + widths[idx], 0);
-  const remaining = Math.max(85, PRINT_W_MM - usedFixed);
+  const remaining = Math.max(60, PRINT_W_MM - usedFixed);
 
   const hasTransfusionNotes = allRows.some(
     (r) => r.transfusionGiven === true && Boolean(r.transfusionNote)
   );
   const hasEpoNotes = allRows.some((r) => r.epoGiven === true && Boolean(r.epoNote));
-  const maxCompLen = Math.max(12, ...allRows.map((r) => r.complicationLines.join(' ').length));
-  const maxAdvLen = Math.max(12, ...allRows.map((r) => r.dpjpAdviceLines.join(' ').length));
-  const maxPatientLen = Math.max(18, ...allRows.map((r) => r.entry.patientName.length));
 
-  const minTransfusionW = Math.max(measureW('TRANSFUSI', hdrPt, true) + padX * 2 + 0.6, 14 * scale);
-  const minEpoW = Math.max(measureW('EPO', hdrPt, true) + padX * 2 + 0.6, 11 * scale);
+  const minTransfusionW = Math.max(measureW('TRANSFUSI', hdrPt, true) + padX * 2 + 0.8, 17 * scale);
+  const minEpoW = Math.max(measureW('EPO', hdrPt, true) + padX * 2 + 0.8, 13 * scale);
 
-  const demand1 = Math.min(42, Math.max(26, maxPatientLen * 1.15));
-  const demand17 = Math.min(58, Math.max(28, Math.sqrt(maxCompLen) * 5.2));
-  const demand19 = Math.min(72, Math.max(34, Math.sqrt(maxAdvLen) * 6.0));
-  const demand20 = hasTransfusionNotes ? 28 : minTransfusionW * 0.72;
-  const demand21 = hasEpoNotes ? 22 : minEpoW * 0.72;
-  const totalDemand = demand1 + demand17 + demand19 + demand20 + demand21;
+  const maxPatientNameW = Math.max(
+    45 * scale,
+    ...allRows.map((r) => measureW(r.entry.patientName, bodyPt, true) + padX * 2 + 1)
+  );
 
-  widths[1] = Math.max(28 * scale, (remaining * demand1) / totalDemand);
-  widths[17] = Math.max(28 * scale, (remaining * demand17) / totalDemand);
-  widths[19] = Math.max(34 * scale, (remaining * demand19) / totalDemand);
-  widths[20] = Math.max(minTransfusionW, (remaining * demand20) / totalDemand);
-  widths[21] = Math.max(minEpoW, (remaining * demand21) / totalDemand);
+  const targetTransfusionW = hasTransfusionNotes ? Math.max(minTransfusionW, 30 * scale) : minTransfusionW;
+  const targetEpoW = hasEpoNotes ? Math.max(minEpoW, 24 * scale) : minEpoW;
 
+  if (maxPatientNameW + targetTransfusionW + targetEpoW <= remaining) {
+    // Plenty of room on A3: give Nama Pasien generous width and distribute any surplus proportionally
+    const surplus = remaining - (maxPatientNameW + targetTransfusionW + targetEpoW);
+    widths[1] = maxPatientNameW + surplus * 0.72;
+    widths[17] = targetTransfusionW + surplus * (hasTransfusionNotes ? 0.18 : 0.14);
+    widths[18] = targetEpoW + surplus * (hasTransfusionNotes ? 0.1 : 0.14);
+  } else {
+    const flexTotal = maxPatientNameW + targetTransfusionW + targetEpoW;
+    widths[1] = Math.max(42 * scale, (remaining * maxPatientNameW) / flexTotal);
+    widths[17] = Math.max(minTransfusionW, (remaining * targetTransfusionW) / flexTotal);
+    widths[18] = Math.max(minEpoW, (remaining * targetEpoW) / flexTotal);
+  }
+
+  // Exact normalization to PRINT_W_MM
   const actualSum = widths.reduce((a, b) => a + b, 0);
   if (Math.abs(actualSum - PRINT_W_MM) > 0.01) {
-    const flexCols = [1, 17, 19, 20, 21];
+    const flexCols = [1, 17, 18];
     const fixedSum = fitIndices.reduce((sum, idx) => sum + widths[idx], 0);
     const targetFlexSum = PRINT_W_MM - fixedSum;
     const currentFlexSum = flexCols.reduce((sum, idx) => sum + widths[idx], 0);
-    if (targetFlexSum > 50 && currentFlexSum > 0) {
+    if (targetFlexSum > 45 && currentFlexSum > 0) {
       const ratio = targetFlexSum / currentFlexSum;
       for (const idx of flexCols) widths[idx] *= ratio;
     } else {
@@ -317,22 +308,21 @@ function buildLayoutPlan(
   scale: number,
   totalShiftPatients: number,
   pageInfoLabel: string,
-  bannerTitle = 'LOGBOOK DETAIL PELAYANAN ASUHAN KEPERAWATAN & MEDIS PASIEN HEMODIALISIS'
+  bannerTitle = 'LOGBOOK DETAIL PELAYANAN ASUHAN PASIEN HEMODIALISIS'
 ): LayoutPlan {
-  const bodyPt = 7.6 * scale;
-  const subPt = 6.5 * scale;
-  const hdr1Pt = 6.5 * scale;
-  const hdr2Pt = 6.2 * scale;
-  const bannerTitlePt = Math.max(8.5, 10.6 * Math.min(1.06, scale + 0.04));
-  const bannerMetaPt = Math.max(6.8, 8.0 * Math.min(1.06, scale + 0.04));
+  const bodyPt = 9.0 * scale;
+  const subPt = 7.6 * scale;
+  const hdr1Pt = 7.6 * scale;
+  const hdr2Pt = 7.2 * scale;
+  const bannerTitlePt = Math.max(9.5, 11.8 * Math.min(1.12, scale + 0.04));
+  const bannerMetaPt = Math.max(7.5, 8.8 * Math.min(1.1, scale + 0.04));
 
-  const padX = Math.max(0.85, 1.35 * scale);
-  const padY = Math.max(0.7, 1.3 * scale);
-  const segGap = Math.max(0.7, 1.25 * scale);
+  const padX = Math.max(1.1, 1.8 * scale);
+  const padY = Math.max(0.85, 1.45 * scale);
 
   // Banner measurement
-  const bannerPadX = 3.2;
-  const bannerPadY = Math.max(2.0, 2.5 * scale);
+  const bannerPadX = 3.8;
+  const bannerPadY = Math.max(2.2, 2.8 * scale);
   const bannerTextW = PRINT_W_MM - bannerPadX * 2;
 
   doc.setFont('helvetica', 'bold');
@@ -349,13 +339,13 @@ function buildLayoutPlan(
   const bannerHeightMm =
     bannerPadY * 2 +
     bannerTitleLines.length * lineHeightMm(bannerTitlePt, 1.18) +
-    0.8 +
+    0.9 +
     bannerMetaLines.length * lineHeightMm(bannerMetaPt, 1.2);
 
   // Header Row 1 & Row 2 measurement
   const hdr1LH = lineHeightMm(hdr1Pt, 1.16);
   const hdr2LH = lineHeightMm(hdr2Pt, 1.16);
-  const hdrPadY = Math.max(0.75, 1.2 * scale);
+  const hdrPadY = Math.max(0.9, 1.35 * scale);
 
   const hdrRow1Lines: string[][] = [];
   let maxRowSpan2H = 0;
@@ -366,7 +356,7 @@ function buildLayoutPlan(
   for (const grp of GROUP_HEADERS) {
     let spanW = 0;
     for (let c = grp.startCol; c < grp.startCol + grp.span; c++) spanW += colWidths[c];
-    const lines = doc.splitTextToSize(grp.label, Math.max(5, spanW - padX * 2)) as string[];
+    const lines = doc.splitTextToSize(grp.label, Math.max(6, spanW - padX * 2)) as string[];
     hdrRow1Lines.push(lines);
     const neededH = lines.length * hdr1LH + hdrPadY * 2;
     if (grp.rowSpan2) maxRowSpan2H = Math.max(maxRowSpan2H, neededH);
@@ -381,7 +371,7 @@ function buildLayoutPlan(
     const colIdx = i + 2;
     const lines = doc.splitTextToSize(
       SUB_HEADERS[i],
-      Math.max(4, colWidths[colIdx] - padX * 2)
+      Math.max(5, colWidths[colIdx] - padX * 2)
     ) as string[];
     hdrRow2Lines.push(lines);
     maxSubHdr2H = Math.max(maxSubHdr2H, lines.length * hdr2LH + hdrPadY * 2);
@@ -403,13 +393,13 @@ function buildLayoutPlan(
   for (const r of pageRows) {
     const s = r.entry;
     const isIsolasi = /isolasi|hep/i.test(r.roomCategory);
-    const colLines: string[][] = new Array(23).fill(null).map(() => []);
-    const colSubLines: Array<string[] | null> = new Array(23).fill(null);
+    const colLines: string[][] = new Array(NUM_MAIN_COLS).fill(null).map(() => []);
+    const colSubLines: Array<string[] | null> = new Array(NUM_MAIN_COLS).fill(null);
 
     const wrapCell = (colIdx: number, txt: string, pt: number, bold = false): string[] => {
       doc.setFont('helvetica', bold ? 'bold' : 'normal');
       doc.setFontSize(pt);
-      const maxW = Math.max(3, colWidths[colIdx] - padX * 2);
+      const maxW = Math.max(4, colWidths[colIdx] - padX * 2);
       return doc.splitTextToSize(pdfSafe(txt), maxW) as string[];
     };
 
@@ -435,80 +425,32 @@ function buildLayoutPlan(
     colLines[15] = wrapCell(15, s.preBp || '-', bodyPt);
     colLines[16] = wrapCell(16, s.postBp || '-', bodyPt);
 
-    let complicationSegments: SegmentedItem[] | null = null;
-    if (r.complicationLines.length > 1) {
-      complicationSegments = r.complicationLines.map((line, idx) => {
-        const text = `${idx + 1}. ${line}`;
-        return { text, lines: wrapCell(17, text, bodyPt, r.hasComplication) };
-      });
-    } else {
-      colLines[17] = wrapCell(17, r.complicationLines[0] || 'Tidak ada', bodyPt, r.hasComplication);
-    }
-
-    let compTimeSegments: SegmentedItem[] | null = null;
-    if (r.compTimeLines.length > 1) {
-      compTimeSegments = r.compTimeLines.map((line) => ({
-        text: line,
-        lines: wrapCell(18, line, bodyPt, r.hasComplication),
-      }));
-    } else {
-      colLines[18] = wrapCell(18, r.compTimeLines[0] || '-', bodyPt, r.hasComplication);
-    }
-
-    let adviceSegments: SegmentedItem[] | null = null;
-    if (r.dpjpAdviceLines.length > 1) {
-      adviceSegments = r.dpjpAdviceLines.map((line, idx) => {
-        const text = `${idx + 1}. ${line}`;
-        return { text, lines: wrapCell(19, text, bodyPt, false) };
-      });
-    } else {
-      colLines[19] = wrapCell(19, r.dpjpAdviceLines[0] || '-', bodyPt, false);
-    }
-
     if (r.transfusionGiven === null) {
-      colLines[20] = ['-'];
+      colLines[17] = ['-'];
     } else if (r.transfusionGiven) {
-      colLines[20] = ['Ya'];
-      if (r.transfusionNote) colSubLines[20] = wrapCell(20, r.transfusionNote, subPt, false);
+      colLines[17] = ['Ya'];
+      if (r.transfusionNote) colSubLines[17] = wrapCell(17, r.transfusionNote, subPt, false);
     } else {
-      colLines[20] = ['Tidak'];
+      colLines[17] = ['Tidak'];
     }
 
     if (r.epoGiven === null) {
-      colLines[21] = ['-'];
+      colLines[18] = ['-'];
     } else if (r.epoGiven) {
-      colLines[21] = ['Ya'];
-      if (r.epoNote) colSubLines[21] = wrapCell(21, r.epoNote, subPt, false);
+      colLines[18] = ['Ya'];
+      if (r.epoNote) colSubLines[18] = wrapCell(18, r.epoNote, subPt, false);
     } else {
-      colLines[21] = ['Tidak'];
+      colLines[18] = ['Tidak'];
     }
 
-    colLines[22] = wrapCell(22, s.nurseName, bodyPt, true);
-    colSubLines[22] = wrapCell(22, `Shift ${s.shift}`, subPt, false);
+    colLines[19] = wrapCell(19, s.nurseName, bodyPt, true);
+    colSubLines[19] = wrapCell(19, `Shift ${s.shift}`, subPt, false);
 
     let maxContentH = bodyLH;
-    for (let c = 0; c < 23; c++) {
-      let cellH = 0;
-      if (c === 17 && complicationSegments) {
-        cellH = complicationSegments.reduce(
-          (acc, seg, idx) => acc + seg.lines.length * bodyLH + (idx > 0 ? segGap : 0),
-          0
-        );
-      } else if (c === 18 && compTimeSegments) {
-        cellH = compTimeSegments.reduce(
-          (acc, seg, idx) => acc + seg.lines.length * bodyLH + (idx > 0 ? segGap : 0),
-          0
-        );
-      } else if (c === 19 && adviceSegments) {
-        cellH = adviceSegments.reduce(
-          (acc, seg, idx) => acc + seg.lines.length * bodyLH + (idx > 0 ? segGap : 0),
-          0
-        );
-      } else {
-        cellH = colLines[c].length * bodyLH;
-        if (colSubLines[c] && colSubLines[c]!.length > 0) {
-          cellH += 0.4 + colSubLines[c]!.length * subLH;
-        }
+    for (let c = 0; c < NUM_MAIN_COLS; c++) {
+      let cellH = colLines[c].length * bodyLH;
+      if (colSubLines[c] && colSubLines[c]!.length > 0) {
+        cellH += 0.4 + colSubLines[c]!.length * subLH;
       }
       if (cellH > maxContentH) maxContentH = cellH;
     }
@@ -516,19 +458,15 @@ function buildLayoutPlan(
     builtRows.push({
       colLines,
       colSubLines,
-      complicationSegments,
-      compTimeSegments,
-      adviceSegments,
       rowHeightMm: maxContentH + padY * 2,
       isIsolasi,
-      hasComplication: r.hasComplication,
       transfusionGiven: r.transfusionGiven,
       epoGiven: r.epoGiven,
     });
   }
 
-  // Footer row (rendered on Page 2 or single page when total === 1)
-  const footerVals = new Array<string>(23).fill('-');
+  // Footer row ("TOTAL & RATA-RATA")
+  const footerVals = new Array<string>(NUM_MAIN_COLS).fill('-');
   if (summaryStats) {
     footerVals[5] = fmtNum(summaryStats.avgDurasi, 1);
     footerVals[6] = fmtNum(summaryStats.avgPreW, 1);
@@ -538,10 +476,10 @@ function buildLayoutPlan(
     footerVals[10] = summaryStats.avgQd !== null ? fmtInt(summaryStats.avgQd) : '-';
     footerVals[12] = fmtInt(summaryStats.totalTargetUf);
     footerVals[14] = fmtInt(summaryStats.totalAchievedUf);
-    footerVals[20] = summaryStats.transfusionCount > 0 ? `${summaryStats.transfusionCount} Ya` : '-';
-    footerVals[21] = summaryStats.epoCount > 0 ? `${summaryStats.epoCount} Ya` : '-';
+    footerVals[17] = summaryStats.transfusionCount > 0 ? `${summaryStats.transfusionCount} Ya` : '-';
+    footerVals[18] = summaryStats.epoCount > 0 ? `${summaryStats.epoCount} Ya` : '-';
   }
-  const footerH = summaryStats ? bodyLH + padY * 2 : 0;
+  const footerH = summaryStats ? bodyLH + padY * 2.2 : 0;
 
   const totalHeightMm =
     bannerHeightMm +
@@ -572,15 +510,14 @@ function buildLayoutPlan(
     bannerMetaPt,
     padX,
     padY,
-    segGap,
   };
 }
 
 function drawBanner(doc: jsPDF, plan: LayoutPlan, startY: number): number {
   const { bannerHeightMm, bannerTitleLines, bannerMetaLines, bannerTitlePt, bannerMetaPt, scale } =
     plan;
-  const padX = 3.2;
-  const padY = Math.max(2.0, 2.5 * scale);
+  const padX = 3.8;
+  const padY = Math.max(2.2, 2.8 * scale);
 
   doc.setFillColor(14, 58, 83); // #0e3a53
   doc.rect(MARGIN_MM, startY, PRINT_W_MM, bannerHeightMm, 'F');
@@ -668,7 +605,7 @@ function drawTableHeaders(doc: jsPDF, plan: LayoutPlan, startY: number): number 
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(hdr2Pt);
     doc.setTextColor(255, 255, 255);
-    const isLeft = colIdx === 4 || colIdx === 11 || colIdx === 17 || colIdx === 19;
+    const isLeft = colIdx === 4 || colIdx === 11;
     for (const line of lines) {
       if (isLeft) doc.text(line, x + padX, ty);
       else doc.text(line, x + w / 2, ty, { align: 'center' });
@@ -686,21 +623,19 @@ function drawBodyRow(
   rowIdx: number,
   y: number
 ): number {
-  const { colWidths, bodyPt, subPt, padX, padY, segGap } = plan;
+  const { colWidths, bodyPt, subPt, padX } = plan;
   const bodyLH = lineHeightMm(bodyPt, 1.2);
   const subLH = lineHeightMm(subPt, 1.18);
   const h = row.rowHeightMm;
   const isEven = rowIdx % 2 === 0;
 
   let cx = MARGIN_MM;
-  for (let c = 0; c < 23; c++) {
+  for (let c = 0; c < NUM_MAIN_COLS; c++) {
     const w = colWidths[c];
 
-    if ((c === 17 || c === 18) && row.hasComplication) {
+    if (c === 17 && row.transfusionGiven === true) {
       doc.setFillColor(254, 242, 242); // rose-50
-    } else if (c === 20 && row.transfusionGiven === true) {
-      doc.setFillColor(254, 242, 242); // rose-50
-    } else if (c === 21 && row.epoGiven === true) {
+    } else if (c === 18 && row.epoGiven === true) {
       doc.setFillColor(240, 253, 250); // teal-50
     } else if (isEven) {
       doc.setFillColor(255, 255, 255);
@@ -714,99 +649,57 @@ function drawBodyRow(
 
     const lines = row.colLines[c];
     const subLines = row.colSubLines[c];
+    const isLeftAlign = c === 1 || c === 4 || c === 11 || c === 19;
 
-    const isTopAlign = c >= 17 && c <= 21;
-    const isLeftAlign = c === 1 || c === 4 || c === 11 || c === 17 || c === 19 || c === 22;
+    let totalContentH = lines.length * bodyLH;
+    if (subLines && subLines.length > 0) {
+      totalContentH += 0.4 + subLines.length * subLH;
+    }
+    let ty = y + (h - totalContentH) / 2 + bodyPt * PT_TO_MM * 0.85;
 
-    if (
-      (c === 17 && row.complicationSegments) ||
-      (c === 18 && row.compTimeSegments) ||
-      (c === 19 && row.adviceSegments)
+    const isBold =
+      c === 0 ||
+      c === 1 ||
+      c === 2 ||
+      (c === 3 && row.isIsolasi) ||
+      c === 4 ||
+      c === 14 ||
+      (c === 17 && row.transfusionGiven === true) ||
+      (c === 18 && row.epoGiven === true) ||
+      c === 19;
+
+    doc.setFont('helvetica', isBold ? 'bold' : 'normal');
+    doc.setFontSize(bodyPt);
+
+    if (c === 17 && row.transfusionGiven === true) {
+      doc.setTextColor(190, 18, 60); // rose-700
+    } else if (c === 18 && row.epoGiven === true) {
+      doc.setTextColor(15, 118, 110); // teal-700
+    } else if (
+      c === 13 ||
+      (c === 17 && row.transfusionGiven === false) ||
+      (c === 18 && row.epoGiven === false)
     ) {
-      const segs =
-        c === 17
-          ? row.complicationSegments!
-          : c === 18
-          ? row.compTimeSegments!
-          : row.adviceSegments!;
-      const isRose = (c === 17 || c === 18) && row.hasComplication;
-      doc.setFont('helvetica', isRose ? 'bold' : 'normal');
-      doc.setFontSize(bodyPt);
-      if (isRose) doc.setTextColor(190, 18, 60);
-      else doc.setTextColor(30, 41, 59);
-
-      let sy = y + padY;
-      segs.forEach((seg, sIdx) => {
-        if (sIdx > 0) {
-          const lineY = sy - segGap / 2;
-          doc.setDrawColor(isRose ? 254 : 226, isRose ? 205 : 232, isRose ? 211 : 240);
-          doc.setLineWidth(0.14);
-          doc.line(cx + padX, lineY, cx + w - padX, lineY);
-        }
-        let ty = sy + bodyPt * PT_TO_MM * 0.85;
-        for (const l of seg.lines) {
-          if (c === 18) doc.text(l, cx + w / 2, ty, { align: 'center' });
-          else doc.text(l, cx + padX, ty);
-          ty += bodyLH;
-        }
-        sy += seg.lines.length * bodyLH + segGap;
-      });
+      doc.setTextColor(71, 85, 105); // slate-600
     } else {
-      let totalContentH = lines.length * bodyLH;
-      if (subLines && subLines.length > 0) {
-        totalContentH += 0.4 + subLines.length * subLH;
-      }
-      let ty = isTopAlign
-        ? y + padY + bodyPt * PT_TO_MM * 0.85
-        : y + (h - totalContentH) / 2 + bodyPt * PT_TO_MM * 0.85;
+      doc.setTextColor(15, 23, 42); // slate-900
+    }
 
-      const isBold =
-        c === 0 ||
-        c === 1 ||
-        c === 2 ||
-        (c === 3 && row.isIsolasi) ||
-        c === 4 ||
-        c === 14 ||
-        ((c === 17 || c === 18) && row.hasComplication) ||
-        (c === 20 && row.transfusionGiven === true) ||
-        (c === 21 && row.epoGiven === true) ||
-        c === 22;
+    for (const l of lines) {
+      if (isLeftAlign) doc.text(l, cx + padX, ty);
+      else doc.text(l, cx + w / 2, ty, { align: 'center' });
+      ty += bodyLH;
+    }
 
-      doc.setFont('helvetica', isBold ? 'bold' : 'normal');
-      doc.setFontSize(bodyPt);
-
-      if ((c === 17 || c === 18) && row.hasComplication) {
-        doc.setTextColor(190, 18, 60); // rose-700
-      } else if (c === 20 && row.transfusionGiven === true) {
-        doc.setTextColor(190, 18, 60);
-      } else if (c === 21 && row.epoGiven === true) {
-        doc.setTextColor(15, 118, 110); // teal-700
-      } else if (
-        c === 13 ||
-        (c === 20 && row.transfusionGiven === false) ||
-        (c === 21 && row.epoGiven === false)
-      ) {
-        doc.setTextColor(71, 85, 105); // slate-600
-      } else {
-        doc.setTextColor(15, 23, 42); // slate-900
-      }
-
-      for (const l of lines) {
-        if (isLeftAlign) doc.text(l, cx + padX, ty);
-        else doc.text(l, cx + w / 2, ty, { align: 'center' });
-        ty += bodyLH;
-      }
-
-      if (subLines && subLines.length > 0) {
-        ty += 0.4;
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(subPt);
-        doc.setTextColor(100, 116, 139); // slate-500
-        for (const sl of subLines) {
-          if (isLeftAlign) doc.text(sl, cx + padX, ty);
-          else doc.text(sl, cx + w / 2, ty, { align: 'center' });
-          ty += subLH;
-        }
+    if (subLines && subLines.length > 0) {
+      ty += 0.4;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(subPt);
+      doc.setTextColor(100, 116, 139); // slate-500
+      for (const sl of subLines) {
+        if (isLeftAlign) doc.text(sl, cx + padX, ty);
+        else doc.text(sl, cx + w / 2, ty, { align: 'center' });
+        ty += subLH;
       }
     }
 
@@ -841,16 +734,16 @@ function drawFooterRow(doc: jsPDF, plan: LayoutPlan, y: number): number {
   const w24 = colWidths[2] + colWidths[3] + colWidths[4];
   doc.rect(cx, y, w24, footerH, 'FD');
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(Math.max(5.2, bodyPt * 0.92));
+  doc.setFontSize(Math.max(6.4, bodyPt * 0.9));
   doc.setTextColor(100, 116, 139);
   doc.text('Ringkasan Shift', cx + w24 / 2, ty, { align: 'center' });
   cx += w24;
 
-  // Individual cols 5..22
+  // Individual cols 5..19
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(bodyPt);
   doc.setTextColor(15, 23, 42);
-  for (let c = 5; c < 23; c++) {
+  for (let c = 5; c < NUM_MAIN_COLS; c++) {
     const w = colWidths[c];
     doc.rect(cx, y, w, footerH, 'FD');
     doc.text(footerVals[c] || '-', cx + w / 2, ty, { align: 'center' });
@@ -858,6 +751,402 @@ function drawFooterRow(doc: jsPDF, plan: LayoutPlan, y: number): number {
   }
 
   return y + footerH;
+}
+
+interface ComplicationEpisode {
+  no: number;
+  patientName: string;
+  patientRm: string;
+  complication: string;
+  time: string;
+  advice: string;
+}
+
+function buildComplicationEpisodes(rows: PatientReportPdfRow[]): ComplicationEpisode[] {
+  const list: ComplicationEpisode[] = [];
+  let seq = 1;
+  for (const r of rows) {
+    if (!r.hasComplication) continue;
+    const count = r.complicationLines.length;
+    for (let i = 0; i < count; i++) {
+      const adv =
+        i === count - 1 && r.dpjpAdviceLines.length > count
+          ? r.dpjpAdviceLines.slice(i).join('; ')
+          : r.dpjpAdviceLines[i] || (r.dpjpAdviceLines.length === 1 ? r.dpjpAdviceLines[0] : '-');
+      list.push({
+        no: seq++,
+        patientName: r.entry.patientName,
+        patientRm: r.entry.patientRm || '-',
+        complication: r.complicationLines[i] || '-',
+        time: r.compTimeLines[i] || r.compTimeLines[0] || '-',
+        advice: adv || '-',
+      });
+    }
+  }
+  return list;
+}
+
+function drawComplicationHeaders(
+  doc: jsPDF,
+  colWidths: number[],
+  y: number,
+  hdr1Pt: number,
+  hdr2Pt: number
+): number {
+  const hdr1LH = lineHeightMm(hdr1Pt, 1.18);
+  const hdr2LH = lineHeightMm(hdr2Pt, 1.18);
+  const hdr1H = hdr1LH + 3.4;
+  const hdr2H = hdr2LH + 3.2;
+
+  doc.setLineWidth(0.2);
+  doc.setFillColor(27, 79, 110); // #1b4f6e
+  doc.setDrawColor(45, 102, 135);
+  doc.rect(MARGIN_MM, y, PRINT_W_MM, hdr1H, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(hdr1Pt);
+  doc.setTextColor(255, 255, 255);
+  doc.text(
+    'KOMPLIKASI, TATALAKSANA & ADVIS DPJP',
+    MARGIN_MM + PRINT_W_MM / 2,
+    y + (hdr1H - hdr1LH) / 2 + hdr1Pt * PT_TO_MM * 0.85,
+    { align: 'center' }
+  );
+
+  const labels = ['NO', 'NAMA', 'KOMPLIKASI INTRA-HD', 'JAM', 'TINDAKAN & ADVIS MEDIS DPJP'];
+  const y2 = y + hdr1H;
+  let cx = MARGIN_MM;
+  for (let i = 0; i < colWidths.length; i++) {
+    const w = colWidths[i];
+    doc.setFillColor(35, 96, 132); // #236084
+    doc.setDrawColor(52, 117, 155);
+    doc.rect(cx, y2, w, hdr2H, 'FD');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(hdr2Pt);
+    doc.setTextColor(255, 255, 255);
+    const ty = y2 + (hdr2H - hdr2LH) / 2 + hdr2Pt * PT_TO_MM * 0.85;
+    if (i === 1 || i === 2 || i === 4) {
+      doc.text(labels[i], cx + 2.8, ty);
+    } else {
+      doc.text(labels[i], cx + w / 2, ty, { align: 'center' });
+    }
+    cx += w;
+  }
+
+  return y + hdr1H + hdr2H;
+}
+
+function drawStaffSummaryTable(
+  doc: jsPDF,
+  rows: PatientReportPdfRow[],
+  meta: PatientReportPdfMeta,
+  startY: number
+): number {
+  const hdrPt = 9.2;
+  const labelPt = 9.2;
+  const valPt = 9.6;
+  const bigStatPt = 11.5;
+
+  const hdrLH = lineHeightMm(hdrPt, 1.18);
+  const hdrH = hdrLH + 3.4;
+
+  // Compute patient classification counts
+  let rawatJalanCount = 0;
+  let rawatInapCount = 0;
+  let isolasiCount = 0;
+  for (const r of rows) {
+    if (r.statusRawat === 'RI') rawatInapCount += 1;
+    else rawatJalanCount += 1;
+    if (/isolasi|hep/i.test(r.roomCategory)) isolasiCount += 1;
+  }
+
+  const leftColLabelW = 46;
+  const leftColValW = 158;
+  const rightColLabelW = 46;
+  const rightColValW = PRINT_W_MM - leftColLabelW - leftColValW - rightColLabelW; // 158mm
+
+  const padX = 3.2;
+  const padY = 2.2;
+  const valLH = lineHeightMm(valPt, 1.24);
+  const leftEntries = [
+    { label: 'DOKTER DPJP', val: meta.dpjpLabel || '-' },
+    { label: 'DOKTER UMUM', val: meta.dutyDoctorLabel || '-' },
+    { label: 'KEPALA RUANG', val: meta.kaRuang || '-' },
+    { label: 'PJ SHIFT', val: meta.pjShift || '-' },
+  ];
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(valPt);
+  const leftWrapped = leftEntries.map((item) => {
+    const lines = doc.splitTextToSize(pdfSafe(item.val), leftColValW - padX * 2) as string[];
+    const rowH = Math.max(9.2, lines.length * valLH + padY * 2);
+    return { ...item, lines, rowH };
+  });
+
+  // Top Header Row
+  doc.setLineWidth(0.2);
+  doc.setFillColor(27, 79, 110); // #1b4f6e
+  doc.setDrawColor(45, 102, 135);
+  doc.rect(MARGIN_MM, startY, PRINT_W_MM, hdrH, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(hdrPt);
+  doc.setTextColor(255, 255, 255);
+  doc.text(
+    'STAFF BERTUGAS & TOTAL PASIEN',
+    MARGIN_MM + PRINT_W_MM / 2,
+    startY + (hdrH - hdrLH) / 2 + hdrPt * PT_TO_MM * 0.85,
+    { align: 'center' }
+  );
+
+  let cy = startY + hdrH;
+  const leftX0 = MARGIN_MM;
+  const leftX1 = leftX0 + leftColLabelW;
+  const rightX0 = leftX1 + leftColValW;
+  const rightX1 = rightX0 + rightColLabelW;
+
+  // Draw Left 4 rows
+  let rowY = cy;
+  leftWrapped.forEach((item, idx) => {
+    doc.setFillColor(35, 96, 132); // #236084
+    doc.setDrawColor(52, 117, 155);
+    doc.rect(leftX0, rowY, leftColLabelW, item.rowH, 'FD');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(labelPt);
+    doc.setTextColor(255, 255, 255);
+    const labelLH = lineHeightMm(labelPt, 1.2);
+    doc.text(
+      item.label,
+      leftX0 + padX,
+      rowY + (item.rowH - labelLH) / 2 + labelPt * PT_TO_MM * 0.85
+    );
+
+    if (idx % 2 === 0) doc.setFillColor(255, 255, 255);
+    else doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(203, 213, 225);
+    doc.rect(leftX1, rowY, leftColValW, item.rowH, 'FD');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(valPt);
+    doc.setTextColor(15, 23, 42);
+    const totalTextH = item.lines.length * valLH;
+    let ty = rowY + (item.rowH - totalTextH) / 2 + valPt * PT_TO_MM * 0.85;
+    for (const line of item.lines) {
+      doc.text(line, leftX1 + padX, ty);
+      ty += valLH;
+    }
+
+    rowY += item.rowH;
+  });
+
+  // Draw Right 2 merged blocks (TOTAL PERAWAT spans rows 0..1; TOTAL PASIEN spans rows 2..3)
+  const topBlockH = leftWrapped[0].rowH + leftWrapped[1].rowH;
+  const botBlockH = leftWrapped[2].rowH + leftWrapped[3].rowH;
+
+  // Block 1: TOTAL PERAWAT
+  doc.setFillColor(35, 96, 132);
+  doc.setDrawColor(52, 117, 155);
+  doc.rect(rightX0, cy, rightColLabelW, topBlockH, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(labelPt);
+  doc.setTextColor(255, 255, 255);
+  const lblLH = lineHeightMm(labelPt, 1.2);
+  doc.text(
+    'TOTAL PERAWAT',
+    rightX0 + rightColLabelW / 2,
+    cy + (topBlockH - lblLH) / 2 + labelPt * PT_TO_MM * 0.85,
+    { align: 'center' }
+  );
+
+  doc.setFillColor(255, 255, 255);
+  doc.setDrawColor(203, 213, 225);
+  doc.rect(rightX1, cy, rightColValW, topBlockH, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(bigStatPt);
+  doc.setTextColor(15, 23, 42);
+  const bigLH = lineHeightMm(bigStatPt, 1.22);
+  doc.text(
+    `${meta.nurseCount} PERAWAT`,
+    rightX1 + rightColValW / 2,
+    cy + (topBlockH - bigLH) / 2 + bigStatPt * PT_TO_MM * 0.85,
+    { align: 'center' }
+  );
+
+  // Block 2: TOTAL PASIEN
+  const botY = cy + topBlockH;
+  doc.setFillColor(35, 96, 132);
+  doc.setDrawColor(52, 117, 155);
+  doc.rect(rightX0, botY, rightColLabelW, botBlockH, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(labelPt);
+  doc.setTextColor(255, 255, 255);
+  doc.text(
+    'TOTAL PASIEN',
+    rightX0 + rightColLabelW / 2,
+    botY + (botBlockH - lblLH) / 2 + labelPt * PT_TO_MM * 0.85,
+    { align: 'center' }
+  );
+
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(203, 213, 225);
+  doc.rect(rightX1, botY, rightColValW, botBlockH, 'FD');
+
+  const patientLines = [
+    `${rawatJalanCount} PASIEN RAWAT JALAN`,
+    `${rawatInapCount} PASIEN RAWAT INAP`,
+    ...(isolasiCount > 0 ? [`(${isolasiCount} PASIEN RUANG ISOLASI)`] : []),
+  ];
+  const lineSpacingPt = isolasiCount > 0 ? 10.2 : 11.0;
+  const pLH = lineHeightMm(lineSpacingPt, 1.28);
+  const totalPH = patientLines.length * pLH;
+  let py = botY + (botBlockH - totalPH) / 2 + lineSpacingPt * PT_TO_MM * 0.85;
+  patientLines.forEach((pLine, pIdx) => {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(pIdx === 2 ? 8.8 : lineSpacingPt);
+    doc.setTextColor(pIdx === 2 ? 71 : 15, pIdx === 2 ? 85 : 23, pIdx === 2 ? 105 : 42);
+    doc.text(pLine, rightX1 + rightColValW / 2, py, { align: 'center' });
+    py += pLH;
+  });
+
+  return botY + botBlockH;
+}
+
+function renderComplicationsAndStaffPage(
+  doc: jsPDF,
+  rows: PatientReportPdfRow[],
+  meta: PatientReportPdfMeta
+) {
+  doc.addPage([A3_LANDSCAPE_H_MM, A3_LANDSCAPE_W_MM], 'landscape');
+
+  const episodes = buildComplicationEpisodes(rows);
+  const compCols = [14, 72, 145, 24, PRINT_W_MM - (14 + 72 + 145 + 24)]; // = 153mm
+  const hdr1Pt = 9.4;
+  const hdr2Pt = 8.4;
+  const bodyPt = 9.5;
+  const subPt = 8.0;
+  const padX = 2.6;
+  const padY = 1.9;
+  const bodyLH = lineHeightMm(bodyPt, 1.24);
+  const subLH = lineHeightMm(subPt, 1.18);
+  const maxY = MARGIN_MM + PRINT_H_MM;
+
+  let y = drawComplicationHeaders(doc, compCols, MARGIN_MM, hdr1Pt, hdr2Pt);
+
+  if (episodes.length === 0) {
+    const emptyH = 14;
+    doc.setFillColor(255, 255, 255);
+    doc.setDrawColor(203, 213, 225);
+    doc.setLineWidth(0.18);
+    doc.rect(MARGIN_MM, y, PRINT_W_MM, emptyH, 'FD');
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9.6);
+    doc.setTextColor(100, 116, 139);
+    doc.text(
+      'Tidak ada komplikasi intra-HD yang tercatat pada shift / periode ini.',
+      MARGIN_MM + PRINT_W_MM / 2,
+      y + (emptyH - lineHeightMm(9.6, 1.2)) / 2 + 9.6 * PT_TO_MM * 0.85,
+      { align: 'center' }
+    );
+    y += emptyH;
+  } else {
+    episodes.forEach((ep, idx) => {
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(bodyPt);
+      const nameLines = doc.splitTextToSize(pdfSafe(ep.patientName), compCols[1] - padX * 2) as string[];
+      const compLines = doc.splitTextToSize(pdfSafe(ep.complication), compCols[2] - padX * 2) as string[];
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(subPt);
+      const rmLines = doc.splitTextToSize(pdfSafe(ep.patientRm), compCols[1] - padX * 2) as string[];
+      doc.setFontSize(bodyPt);
+      const timeLines = doc.splitTextToSize(pdfSafe(ep.time), compCols[3] - padX * 1.5) as string[];
+      const advLines = doc.splitTextToSize(pdfSafe(ep.advice), compCols[4] - padX * 2) as string[];
+
+      const nameBlockH = nameLines.length * bodyLH + 0.4 + rmLines.length * subLH;
+      const compBlockH = compLines.length * bodyLH;
+      const timeBlockH = timeLines.length * bodyLH;
+      const advBlockH = advLines.length * bodyLH;
+      const rowH = Math.max(nameBlockH, compBlockH, timeBlockH, advBlockH) + padY * 2;
+
+      if (y + rowH > maxY) {
+        doc.addPage([A3_LANDSCAPE_H_MM, A3_LANDSCAPE_W_MM], 'landscape');
+        y = drawComplicationHeaders(doc, compCols, MARGIN_MM, hdr1Pt, hdr2Pt);
+      }
+
+      const isEven = idx % 2 === 0;
+      let cx = MARGIN_MM;
+      for (let c = 0; c < 5; c++) {
+        const w = compCols[c];
+        if (isEven) doc.setFillColor(255, 255, 255);
+        else doc.setFillColor(248, 250, 252);
+        doc.setDrawColor(226, 232, 240);
+        doc.setLineWidth(0.18);
+        doc.rect(cx, y, w, rowH, 'FD');
+
+        if (c === 0) {
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(bodyPt);
+          doc.setTextColor(15, 23, 42);
+          const ty = y + (rowH - bodyLH) / 2 + bodyPt * PT_TO_MM * 0.85;
+          doc.text(String(ep.no), cx + w / 2, ty, { align: 'center' });
+        } else if (c === 1) {
+          let ty = y + (rowH - nameBlockH) / 2 + bodyPt * PT_TO_MM * 0.85;
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(bodyPt);
+          doc.setTextColor(15, 23, 42);
+          for (const nl of nameLines) {
+            doc.text(nl, cx + padX, ty);
+            ty += bodyLH;
+          }
+          ty += 0.4;
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(subPt);
+          doc.setTextColor(100, 116, 139);
+          for (const rl of rmLines) {
+            doc.text(rl, cx + padX, ty);
+            ty += subLH;
+          }
+        } else if (c === 2) {
+          let ty = y + (rowH - compBlockH) / 2 + bodyPt * PT_TO_MM * 0.85;
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(bodyPt);
+          doc.setTextColor(190, 18, 60); // rose-700
+          for (const cl of compLines) {
+            doc.text(cl, cx + padX, ty);
+            ty += bodyLH;
+          }
+        } else if (c === 3) {
+          let ty = y + (rowH - timeBlockH) / 2 + bodyPt * PT_TO_MM * 0.85;
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(bodyPt);
+          doc.setTextColor(15, 23, 42);
+          for (const tl of timeLines) {
+            doc.text(tl, cx + w / 2, ty, { align: 'center' });
+            ty += bodyLH;
+          }
+        } else {
+          let ty = y + (rowH - advBlockH) / 2 + bodyPt * PT_TO_MM * 0.85;
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(bodyPt);
+          doc.setTextColor(15, 23, 42);
+          for (const al of advLines) {
+            doc.text(al, cx + padX, ty);
+            ty += bodyLH;
+          }
+        }
+
+        cx += w;
+      }
+
+      y += rowH;
+    });
+  }
+
+  // Staff Bertugas & Total Pasien block (~46mm tall); start new page if tight
+  const estimatedStaffBlockH = 48;
+  const staffStartY = y + 7;
+  if (staffStartY + estimatedStaffBlockH > maxY) {
+    doc.addPage([A3_LANDSCAPE_H_MM, A3_LANDSCAPE_W_MM], 'landscape');
+    drawStaffSummaryTable(doc, rows, meta, MARGIN_MM);
+  } else {
+    drawStaffSummaryTable(doc, rows, meta, staffStartY);
+  }
 }
 
 function renderFixedSinglePage(doc: jsPDF, plan: LayoutPlan, addNewPage: boolean) {
@@ -893,95 +1182,48 @@ export function exportPatientServicesPdf({
 
   if (rows.length === 0) {
     const widths = computeAllColumnWidths(doc, [], null, 1.0);
-    const plan = buildLayoutPlan(doc, [], widths, null, meta, 1.0, 0, 'Halaman 1 dari 1');
+    const plan = buildLayoutPlan(doc, [], widths, null, meta, 1.0, 0, 'Halaman 1 dari 2');
     const yAfterBanner = drawBanner(doc, plan, MARGIN_MM);
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(10);
+    doc.setFontSize(10.5);
     doc.setTextColor(100, 116, 139);
     doc.text(
       'Belum ada logbook yang diinput perawat untuk tanggal dan shift yang dipilih.',
       MARGIN_MM + PRINT_W_MM / 2,
-      yAfterBanner + 22,
+      yAfterBanner + 24,
       { align: 'center' }
     );
+    renderComplicationsAndStaffPage(doc, rows, meta);
     doc.save(sanitizeFilename(filename));
     return;
   }
 
-  if (rows.length === 1) {
-    let singlePlan: LayoutPlan | null = null;
-    for (let s = 1.1; s >= 0.72; s -= 0.02) {
-      const scale = Number(s.toFixed(3));
-      const widths = computeAllColumnWidths(doc, rows, summaryStats, scale);
-      const candidate = buildLayoutPlan(
-        doc,
-        rows,
-        widths,
-        summaryStats,
-        meta,
-        scale,
-        1,
-        'Halaman 1 dari 1 (Pasien 1)'
-      );
-      if (candidate.totalHeightMm <= PRINT_H_MM - 0.5) {
-        singlePlan = candidate;
-        break;
-      }
-    }
-    const widths = computeAllColumnWidths(doc, rows, summaryStats, 0.9);
-    const plan =
-      singlePlan ??
-      buildLayoutPlan(doc, rows, widths, summaryStats, meta, 0.9, 1, 'Halaman 1 dari 1');
-    renderFixedSinglePage(doc, plan, false);
-    doc.save(sanitizeFilename(filename));
-    return;
-  }
-
-  // Bagi seluruh pasien merata menjadi 2 halaman:
-  // Contoh 25 pasien -> Halaman 1: 13 pasien (1-13), Halaman 2: 12 pasien (14-25) + TOTAL & RATA-RATA
-  const splitIdx = Math.ceil(rows.length / 2);
-  const firstHalf = rows.slice(0, splitIdx);
-  const secondHalf = rows.slice(splitIdx);
-
-  let fittedTwoPages: { plan1: LayoutPlan; plan2: LayoutPlan } | null = null;
-  for (let s = 1.1; s >= 0.58; s -= 0.02) {
+  // Page 1: Optimize scale so ALL patients + TOTAL & RATA-RATA footer fit cleanly on 1 A3 Landscape page
+  let fittedPage1: LayoutPlan | null = null;
+  for (let s = 1.14; s >= 0.64; s -= 0.02) {
     const scale = Number(s.toFixed(3));
     const widths = computeAllColumnWidths(doc, rows, summaryStats, scale);
-
-    const plan1 = buildLayoutPlan(
+    const candidate = buildLayoutPlan(
       doc,
-      firstHalf,
-      widths,
-      null,
-      meta,
-      scale,
-      rows.length,
-      `Halaman 1 dari 2 (Pasien 1-${splitIdx} dari ${rows.length})`
-    );
-    if (plan1.totalHeightMm > PRINT_H_MM - 0.5) continue;
-
-    const plan2 = buildLayoutPlan(
-      doc,
-      secondHalf,
+      rows,
       widths,
       summaryStats,
       meta,
       scale,
       rows.length,
-      `Halaman 2 dari 2 (Pasien ${splitIdx + 1}-${rows.length} dari ${rows.length})`
+      `Halaman 1 dari 2 (${rows.length} Pasien)`
     );
-    if (plan2.totalHeightMm <= PRINT_H_MM - 0.5) {
-      fittedTwoPages = { plan1, plan2 };
+    if (candidate.totalHeightMm <= PRINT_H_MM - 0.5) {
+      fittedPage1 = candidate;
       break;
     }
   }
 
-  if (fittedTwoPages) {
-    renderFixedSinglePage(doc, fittedTwoPages.plan1, false);
-    renderFixedSinglePage(doc, fittedTwoPages.plan2, true);
+  if (fittedPage1) {
+    renderFixedSinglePage(doc, fittedPage1, false);
   } else {
-    // Fallback untuk dataset arsip sangat besar (> ~60 pasien sebulan) agar tidak terpotong di bawah
-    const fallbackScale = 0.88;
+    // Fallback pagination only for massive multi-month archive exports (> ~45 rows)
+    const fallbackScale = 0.9;
     const widths = computeAllColumnWidths(doc, rows, summaryStats, fallbackScale);
     const fullPlan = buildLayoutPlan(
       doc,
@@ -1012,6 +1254,9 @@ export function exportPatientServicesPdf({
       drawFooterRow(doc, fullPlan, y);
     }
   }
+
+  // Page 2: Dedicated Complications, Management & DPJP Advice + Staff Bertugas & Total Pasien
+  renderComplicationsAndStaffPage(doc, rows, meta);
 
   doc.save(sanitizeFilename(filename));
 }

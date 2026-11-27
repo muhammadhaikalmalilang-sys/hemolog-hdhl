@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Download, Eye, FileDown, Plus, Printer, Search, Smartphone, X } from 'lucide-react';
+import { AlertTriangle, Download, Eye, FileDown, Plus, Printer, Search, Smartphone, X } from 'lucide-react';
 import { handleDbError, OperationType } from '../lib/supabase';
 import { generateRecordId, insertRow, toReportRow } from '../lib/db';
 import {
@@ -24,6 +24,7 @@ import {
 import { LogbookDetailModal } from '../components/logbook/LogbookDetailModal';
 import { VerificationBadge } from '../components/ui/StatusBadge';
 import type {
+  DoctorScheduleEntry,
   LogbookEntry,
   LogbookFormTemplate,
   Machine,
@@ -39,6 +40,7 @@ interface PatientReportsPageProps {
   logbooks: LogbookEntry[];
   reports: ReportEntry[];
   machines?: Machine[];
+  doctorSchedules?: DoctorScheduleEntry[];
   staffDirectory?: StaffDirectoryEntry[];
   pjShiftAssignments?: PjShiftAssignmentEntry[];
   formTemplate?: LogbookFormTemplate;
@@ -91,6 +93,7 @@ export function PatientReportsPage({
   logbooks,
   reports,
   machines = [],
+  doctorSchedules = [],
   staffDirectory = [],
   pjShiftAssignments = [],
   formTemplate,
@@ -181,6 +184,7 @@ export function PatientReportsPage({
     [logbooks, detailEntryId]
   );
   const [showSoapModal, setShowSoapModal] = useState(false);
+  const [showComplicationsModal, setShowComplicationsModal] = useState(false);
   const [soapPatientId, setSoapPatientId] = useState('');
   const [soapDate, setSoapDate] = useState(liveTodayDate);
   const [soapS, setSoapS] = useState('');
@@ -623,7 +627,54 @@ export function PatientReportsPage({
     };
   }, [tableRows]);
 
-  // Dynamic Header Metadata (matching PDF banner)
+  const complicationRecords = useMemo(() => {
+    const items: Array<{
+      id: string;
+      entryId: string;
+      patientName: string;
+      patientRm: string;
+      bedMachine: string;
+      complication: string;
+      time: string;
+      advice: string;
+    }> = [];
+    for (const row of tableRows) {
+      if (!row.hasComplication) continue;
+      const count = row.complicationLines.length;
+      for (let i = 0; i < count; i++) {
+        const adv =
+          i === count - 1 && row.dpjpAdviceLines.length > count
+            ? row.dpjpAdviceLines.slice(i).join('; ')
+            : row.dpjpAdviceLines[i] ||
+              (row.dpjpAdviceLines.length === 1 ? row.dpjpAdviceLines[0] : '-');
+        items.push({
+          id: `${row.entry.id}-c-${i}`,
+          entryId: row.entry.id,
+          patientName: row.entry.patientName,
+          patientRm: row.entry.patientRm || '-',
+          bedMachine: row.bedMachine,
+          complication: row.complicationLines[i] || '-',
+          time: row.compTimeLines[i] || row.compTimeLines[0] || '-',
+          advice: adv || '-',
+        });
+      }
+    }
+    return items;
+  }, [tableRows]);
+
+  const patientClassificationCounts = useMemo(() => {
+    let rawatJalan = 0;
+    let rawatInap = 0;
+    let isolasi = 0;
+    for (const r of tableRows) {
+      if (r.statusRawat === 'RI') rawatInap += 1;
+      else rawatJalan += 1;
+      if (/isolasi|hep/i.test(r.roomCategory)) isolasi += 1;
+    }
+    return { rawatJalan, rawatInap, isolasi };
+  }, [tableRows]);
+
+  // Dynamic Header Metadata (matching PDF banner & Page 2 Staff summary)
   const bannerMeta = useMemo(() => {
     const kaRuang =
       staffDirectory.find((s) => s.isActive && s.role === 'Kepala Ruang')?.fullName ||
@@ -640,15 +691,32 @@ export function PatientReportsPage({
       staffDirectory.find((s) => s.isActive && s.role === 'PJ Shift')?.fullName ||
       'PJ Shift HD';
 
+    const matchingDocSchedules = doctorSchedules.filter((d) => {
+      if (dateFilter && d.date !== dateFilter) return false;
+      if (!dateFilter && monthFilter && !d.date.startsWith(monthFilter)) return false;
+      return d.shift === shiftFilter;
+    });
+    const scheduledDpjp = Array.from(
+      new Set(matchingDocSchedules.map((d) => d.dpjpDoctorName).filter(Boolean))
+    );
+    const scheduledDuty = Array.from(
+      new Set(matchingDocSchedules.map((d) => d.dutyDoctorName).filter(Boolean))
+    );
     const uniqueDoctors = Array.from(
       new Set(filteredServices.map((s) => s.doctorName).filter(Boolean))
     );
+    const logbookDutyDoctors = Array.from(
+      new Set(filteredServices.map((s) => s.dutyDoctorName).filter(Boolean))
+    );
+
     const dpjpLabel =
-      uniqueDoctors.length === 0
-        ? '-'
-        : uniqueDoctors.length === 1
-        ? uniqueDoctors[0]
-        : `${uniqueDoctors[0]} (+${uniqueDoctors.length - 1} DPJP lainnya)`;
+      uniqueDoctors.length > 0
+        ? uniqueDoctors.join(', ')
+        : scheduledDpjp.length > 0
+        ? scheduledDpjp.join(', ')
+        : '-';
+    const dutyDoctorLabel =
+      scheduledDuty.join(', ') || logbookDutyDoctors.join(', ') || '-';
 
     const dateLabel = dateFilter
       ? formatFullDayDateId(dateFilter)
@@ -661,11 +729,13 @@ export function PatientReportsPage({
       dateLabel,
       pjShift,
       dpjpLabel,
+      dutyDoctorLabel,
       kaRuang,
     };
   }, [
     staffDirectory,
     pjShiftAssignments,
+    doctorSchedules,
     filteredServices,
     dateFilter,
     monthFilter,
@@ -1192,25 +1262,50 @@ export function PatientReportsPage({
         </div>
       )}
 
-      {/* Tabs */}
-      <div className="no-print flex items-center gap-1 rounded-lg bg-slate-100 p-1 w-fit">
+      {/* Tabs & Komplikasi Button */}
+      <div className="no-print flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-1 w-fit">
+          <button
+            type="button"
+            onClick={() => setActiveTab('services')}
+            className={`rounded-md px-3.5 py-1.5 text-xs font-semibold transition-colors ${
+              activeTab === 'services' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'
+            }`}
+          >
+            Tabel Logbook Detail Pasien ({tableRows.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('soap')}
+            className={`rounded-md px-3.5 py-1.5 text-xs font-semibold transition-colors ${
+              activeTab === 'soap' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'
+            }`}
+          >
+            Catatan Perkembangan SOAP ({filteredSoap.length})
+          </button>
+        </div>
+
         <button
           type="button"
-          onClick={() => setActiveTab('services')}
-          className={`rounded-md px-3.5 py-1.5 text-xs font-semibold transition-colors ${
-            activeTab === 'services' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'
+          onClick={() => setShowComplicationsModal(true)}
+          title="Lihat Daftar Komplikasi Intra-HD, Advis DPJP & Staff Bertugas"
+          className={`inline-flex items-center gap-1.5 rounded-lg border px-3.5 py-2 text-xs font-semibold transition-colors whitespace-nowrap ${
+            complicationRecords.length > 0
+              ? 'border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100'
+              : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
           }`}
         >
-          Tabel Logbook Detail Pasien ({tableRows.length})
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab('soap')}
-          className={`rounded-md px-3.5 py-1.5 text-xs font-semibold transition-colors ${
-            activeTab === 'soap' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'
-          }`}
-        >
-          Catatan Perkembangan SOAP ({filteredSoap.length})
+          <AlertTriangle className="h-4 w-4" />
+          Komplikasi
+          <span
+            className={`ml-0.5 rounded px-1.5 py-0.5 font-mono text-[11px] font-bold tabular-nums ${
+              complicationRecords.length > 0
+                ? 'bg-rose-600 text-white'
+                : 'bg-slate-200 text-slate-700'
+            }`}
+          >
+            {complicationRecords.length}
+          </span>
         </button>
       </div>
 
@@ -1288,12 +1383,6 @@ export function PatientReportsPage({
                       TANDA VITAL (HEMODINAMIK)
                     </th>
                     <th
-                      colSpan={3}
-                      className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-normal"
-                    >
-                      KOMPLIKASI, TATALAKSANA &amp; ADVIS DPJP
-                    </th>
-                    <th
                       colSpan={2}
                       className="border border-[#2d6687] px-2 py-1.5 text-center font-bold whitespace-normal"
                     >
@@ -1369,16 +1458,6 @@ export function PatientReportsPage({
                     </th>
                     <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
                       TD POST (MMHG)
-                    </th>
-
-                    <th className="border border-[#34759b] px-2 py-1.5 text-left font-semibold whitespace-normal">
-                      KOMPLIKASI INTRA-HD
-                    </th>
-                    <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
-                      JAM
-                    </th>
-                    <th className="border border-[#34759b] px-2 py-1.5 text-left font-semibold whitespace-normal">
-                      TINDAKAN &amp; ADVIS MEDIS DPJP
                     </th>
 
                     <th className="border border-[#34759b] px-2 py-1.5 text-center font-semibold whitespace-normal">
@@ -1478,70 +1557,6 @@ export function PatientReportsPage({
                         </td>
                         <td className="f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                           {s.postBp || '-'}
-                        </td>
-
-                        {/* KOMPLIKASI, TATALAKSANA & ADVIS DPJP */}
-                        <td
-                          className={`f4-col-flex border border-slate-200 px-2 py-2 align-top whitespace-normal break-words ${
-                            row.hasComplication ? 'font-bold text-rose-700 bg-rose-50/70' : ''
-                          }`}
-                        >
-                          {row.complicationLines.length > 1 ? (
-                            <div className="space-y-1">
-                              {row.complicationLines.map((line, lineIdx) => (
-                                <div
-                                  key={`${s.id}-comp-${lineIdx}`}
-                                  className={
-                                    lineIdx > 0 ? 'border-t border-rose-200/80 pt-1' : undefined
-                                  }
-                                >
-                                  {lineIdx + 1}. {line}
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            row.complicationLines[0]
-                          )}
-                        </td>
-                        <td
-                          className={`f4-col-fit w-[1%] border border-slate-200 px-2 py-2 text-center font-mono tabular-nums align-top whitespace-nowrap ${
-                            row.hasComplication ? 'font-bold text-rose-700 bg-rose-50/70' : ''
-                          }`}
-                        >
-                          {row.compTimeLines.length > 1 ? (
-                            <div className="space-y-1">
-                              {row.compTimeLines.map((tLine, lineIdx) => (
-                                <div
-                                  key={`${s.id}-ctime-${lineIdx}`}
-                                  className={
-                                    lineIdx > 0 ? 'border-t border-rose-200/80 pt-1' : undefined
-                                  }
-                                >
-                                  {tLine}
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            row.compTimeLines[0]
-                          )}
-                        </td>
-                        <td className="f4-col-flex border border-slate-200 px-2 py-2 align-top whitespace-normal break-words">
-                          {row.dpjpAdviceLines.length > 1 ? (
-                            <div className="space-y-1">
-                              {row.dpjpAdviceLines.map((adv, lineIdx) => (
-                                <div
-                                  key={`${s.id}-adv-${lineIdx}`}
-                                  className={
-                                    lineIdx > 0 ? 'border-t border-slate-200/80 pt-1' : undefined
-                                  }
-                                >
-                                  {lineIdx + 1}. {adv}
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            row.dpjpAdviceLines[0]
-                          )}
                         </td>
 
                         {/* TRANSFUSI & EPO */}
@@ -1661,9 +1676,6 @@ export function PatientReportsPage({
                       </td>
                       <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center whitespace-nowrap">-</td>
                       <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center whitespace-nowrap">-</td>
-                      <td className="f4-col-flex border border-slate-300 px-2 py-2 text-center">-</td>
-                      <td className="f4-col-fit w-[1%] border border-slate-300 px-2 py-2 text-center whitespace-nowrap">-</td>
-                      <td className="f4-col-flex border border-slate-300 px-2 py-2 text-center">-</td>
                       <td className="f4-col-flex border border-slate-300 px-2 py-2 text-center font-mono tabular-nums whitespace-nowrap">
                         {summaryStats.transfusionCount > 0 ? `${summaryStats.transfusionCount} Ya` : '-'}
                       </td>
@@ -1729,6 +1741,181 @@ export function PatientReportsPage({
             ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Modal Komplikasi Intra-HD, Advis DPJP & Staff Bertugas */}
+      {showComplicationsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 overflow-y-auto">
+          <div className="w-full max-w-5xl rounded-xl border border-slate-200 bg-white shadow-xl my-8 overflow-hidden">
+            <div className="flex items-start justify-between gap-3 bg-[#0e3a53] px-5 py-4 text-white">
+              <div>
+                <h3 className="font-display text-sm sm:text-base font-bold uppercase tracking-wide">
+                  Komplikasi, Tatalaksana &amp; Advis DPJP
+                </h3>
+                <p className="mt-0.5 text-[11px] text-sky-100">
+                  Shift: {bannerMeta.shiftLabel} &nbsp;|&nbsp; Hari/Tanggal: {bannerMeta.dateLabel}{' '}
+                  &nbsp;|&nbsp; {complicationRecords.length} kejadian intra-HD
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowComplicationsModal(false)}
+                className="rounded-lg p-1.5 text-sky-100 hover:bg-white/10"
+                aria-label="Tutup modal komplikasi"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-5 max-h-[78vh] overflow-y-auto">
+              {complicationRecords.length === 0 ? (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-8 text-center text-xs text-slate-500">
+                  Tidak ada komplikasi intra-HD yang tercatat pada shift / periode yang dipilih.
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-lg border border-slate-200">
+                  <table className="w-full border-collapse text-xs text-slate-800">
+                    <thead>
+                      <tr className="bg-[#236084] text-white text-[10.5px] uppercase tracking-wider">
+                        <th className="border border-[#34759b] px-2.5 py-2 text-center w-10">No</th>
+                        <th className="border border-[#34759b] px-3 py-2 text-left min-w-[180px]">
+                          Nama Pasien / No. RM
+                        </th>
+                        <th className="border border-[#34759b] px-3 py-2 text-left min-w-[220px]">
+                          Komplikasi Intra-HD
+                        </th>
+                        <th className="border border-[#34759b] px-2.5 py-2 text-center w-20">Jam</th>
+                        <th className="border border-[#34759b] px-3 py-2 text-left min-w-[240px]">
+                          Tindakan &amp; Advis Medis DPJP
+                        </th>
+                        <th className="border border-[#34759b] px-2.5 py-2 text-center w-20">
+                          Aksi
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {complicationRecords.map((item, idx) => (
+                        <tr
+                          key={item.id}
+                          className={idx % 2 === 0 ? 'bg-white' : 'bg-slate-50'}
+                        >
+                          <td className="border border-slate-200 px-2.5 py-2 text-center font-mono font-bold text-slate-700">
+                            {idx + 1}
+                          </td>
+                          <td className="border border-slate-200 px-3 py-2">
+                            <div className="font-semibold text-slate-900">{item.patientName}</div>
+                            <div className="font-mono text-[10.5px] text-slate-500">
+                              {item.patientRm} · Bed {item.bedMachine}
+                            </div>
+                          </td>
+                          <td className="border border-slate-200 px-3 py-2 font-semibold text-rose-700">
+                            {item.complication}
+                          </td>
+                          <td className="border border-slate-200 px-2.5 py-2 text-center font-mono font-semibold text-slate-800 whitespace-nowrap">
+                            {item.time}
+                          </td>
+                          <td className="border border-slate-200 px-3 py-2 text-slate-800">
+                            {item.advice}
+                          </td>
+                          <td className="border border-slate-200 px-2.5 py-2 text-center">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowComplicationsModal(false);
+                                setDetailEntryId(item.entryId);
+                              }}
+                              className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-[10px] font-semibold text-slate-700 hover:bg-slate-50"
+                            >
+                              <Eye className="h-3 w-3" />
+                              Detail
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Staff Bertugas & Total Pasien */}
+              <div className="overflow-hidden rounded-lg border border-slate-300">
+                <div className="bg-[#1b4f6e] px-4 py-2 text-center text-[11px] font-bold uppercase tracking-wider text-white">
+                  Staff Bertugas &amp; Total Pasien
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 text-xs">
+                  <div className="divide-y divide-slate-200 border-b md:border-b-0 md:border-r border-slate-200">
+                    <div className="flex">
+                      <div className="w-36 shrink-0 bg-[#236084] px-3 py-2 font-bold text-white">
+                        DOKTER DPJP
+                      </div>
+                      <div className="flex-1 px-3 py-2 font-semibold text-slate-900">
+                        {bannerMeta.dpjpLabel}
+                      </div>
+                    </div>
+                    <div className="flex">
+                      <div className="w-36 shrink-0 bg-[#236084] px-3 py-2 font-bold text-white">
+                        DOKTER UMUM
+                      </div>
+                      <div className="flex-1 px-3 py-2 font-semibold text-slate-900">
+                        {bannerMeta.dutyDoctorLabel}
+                      </div>
+                    </div>
+                    <div className="flex">
+                      <div className="w-36 shrink-0 bg-[#236084] px-3 py-2 font-bold text-white">
+                        KEPALA RUANG
+                      </div>
+                      <div className="flex-1 px-3 py-2 font-semibold text-slate-900">
+                        {bannerMeta.kaRuang}
+                      </div>
+                    </div>
+                    <div className="flex">
+                      <div className="w-36 shrink-0 bg-[#236084] px-3 py-2 font-bold text-white">
+                        PJ SHIFT
+                      </div>
+                      <div className="flex-1 px-3 py-2 font-semibold text-slate-900">
+                        {bannerMeta.pjShift}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="divide-y divide-slate-200 flex flex-col justify-stretch">
+                    <div className="flex flex-1">
+                      <div className="w-36 shrink-0 bg-[#236084] px-3 py-3 font-bold text-white flex items-center justify-center text-center">
+                        TOTAL PERAWAT
+                      </div>
+                      <div className="flex-1 px-3 py-3 font-bold text-sm text-slate-900 flex items-center justify-center">
+                        {nurseBreakdown.length} PERAWAT
+                      </div>
+                    </div>
+                    <div className="flex flex-1">
+                      <div className="w-36 shrink-0 bg-[#236084] px-3 py-3 font-bold text-white flex items-center justify-center text-center">
+                        TOTAL PASIEN
+                      </div>
+                      <div className="flex-1 px-3 py-3 font-bold text-slate-900 flex flex-col items-center justify-center gap-0.5 text-center">
+                        <span>{patientClassificationCounts.rawatJalan} PASIEN RAWAT JALAN</span>
+                        <span>{patientClassificationCounts.rawatInap} PASIEN RAWAT INAP</span>
+                        {patientClassificationCounts.isolasi > 0 && (
+                          <span className="text-[11px] font-semibold text-slate-600">
+                            ({patientClassificationCounts.isolasi} Pasien Ruang Isolasi)
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end border-t border-slate-200 bg-slate-50 px-5 py-3">
+              <button
+                type="button"
+                onClick={() => setShowComplicationsModal(false)}
+                className="rounded-lg border border-slate-300 bg-white px-4 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+              >
+                Tutup
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

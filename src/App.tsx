@@ -476,6 +476,7 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_
             logbooks={allLogbooks}
             reports={allReports}
             machines={machines}
+            doctorSchedules={doctorSchedules}
             staffDirectory={staffDirectory}
             pjShiftAssignments={pjShiftAssignments}
             formTemplate={formTemplate}
