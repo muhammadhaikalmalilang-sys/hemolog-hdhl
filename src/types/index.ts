@@ -35,6 +35,7 @@ export type MenuId =
   | 'data_akun'
   | 'data_pasien'
   | 'data_mesin'
+  | 'kuota'
   | 'my_account';
 
 export interface MenuItemConfig {
@@ -54,6 +55,7 @@ export const ROLE_MENUS: Record<UserRole, MenuItemConfig[]> = {
     { id: 'jadwal_dinas', label: 'Jadwal Dinas', description: 'Input & kelola jadwal shift perawat' },
     { id: 'data_pasien', label: 'Data Pasien', description: 'Kelola data pasien hemodialisa' },
     { id: 'data_mesin', label: 'Data Mesin', description: 'Monitoring & status mesin HD' },
+    { id: 'kuota', label: 'Kuota', description: 'Kapasitas database Supabase & sisa kuota logbook' },
     { id: 'my_account', label: 'My Account', description: 'Profil pribadi & ubah password' },
   ],
   Managerial: [

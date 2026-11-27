@@ -30,6 +30,7 @@ const pageLoaders: Record<MenuId, () => Promise<{ default: React.ComponentType<a
   data_dokter: () => import('./pages/DoctorsPage').then((m) => ({ default: m.DoctorsPage })),
   data_mesin: () => import('./pages/MachinesPage').then((m) => ({ default: m.MachinesPage })),
   data_akun: () => import('./pages/AccountsPage').then((m) => ({ default: m.AccountsPage })),
+  kuota: () => import('./pages/QuotaPage').then((m) => ({ default: m.QuotaPage })),
   my_account: () => import('./pages/MyAccountPage').then((m) => ({ default: m.MyAccountPage })),
 };
 
@@ -47,6 +48,7 @@ const PatientsPage = lazy(pageLoaders.data_pasien);
 const DoctorsPage = lazy(pageLoaders.data_dokter);
 const MachinesPage = lazy(pageLoaders.data_mesin);
 const AccountsPage = lazy(pageLoaders.data_akun);
+const QuotaPage = lazy(pageLoaders.kuota);
 const MyAccountPage = lazy(pageLoaders.my_account);
 
 function PageSkeleton() {
@@ -533,6 +535,8 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_
         return <MachinesPage machines={machines} />;
       case 'data_akun':
         return <AccountsPage users={allUsers} />;
+      case 'kuota':
+        return <QuotaPage />;
       case 'my_account':
         return <MyAccountPage />;
       default:

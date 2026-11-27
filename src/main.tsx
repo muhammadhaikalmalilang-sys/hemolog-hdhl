@@ -28,27 +28,43 @@ export function isPwaUpdateDismissed(): boolean {
 }
 
 if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+  const hadControllerAtStart = Boolean(navigator.serviceWorker.controller);
+  let hasReloadedForSwUpdate = false;
+
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadControllerAtStart || hasReloadedForSwUpdate) return;
+    hasReloadedForSwUpdate = true;
+    window.location.reload();
+  });
+
   const updateSW = registerSW({
     immediate: true,
     onNeedRefresh() {
       window.__hemologApplyPwaUpdate = () => updateSW(true);
-      if (!isPwaUpdateDismissed()) {
-        window.dispatchEvent(new CustomEvent('hemolog:pwa-update'));
-      }
+      void updateSW(true).catch(() => {
+        if (!isPwaUpdateDismissed()) {
+          window.dispatchEvent(new CustomEvent('hemolog:pwa-update'));
+        }
+      });
     },
     onRegisteredSW(_swUrl, registration) {
       if (!registration) return;
       let lastCheckAt = Date.now();
-      const checkForUpdate = () => {
+      const checkForUpdate = (minIntervalMs = 15 * 60 * 1000) => {
         if (typeof navigator !== 'undefined' && !navigator.onLine) return;
-        if (isPwaUpdateDismissed()) return;
         const now = Date.now();
-        if (now - lastCheckAt < 60 * 60 * 1000) return;
+        if (now - lastCheckAt < minIntervalMs) return;
         lastCheckAt = now;
         void registration.update().catch(() => undefined);
       };
 
-      window.setInterval(checkForUpdate, 60 * 60 * 1000);
+      window.setInterval(() => checkForUpdate(15 * 60 * 1000), 15 * 60 * 1000);
+      window.addEventListener('online', () => checkForUpdate(15 * 1000));
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          checkForUpdate(60 * 1000);
+        }
+      });
     },
   });
 }

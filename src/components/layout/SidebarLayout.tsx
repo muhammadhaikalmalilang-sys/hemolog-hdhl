@@ -16,6 +16,7 @@ import {
   Users,
   UserSquare2,
   Cpu,
+  Database,
   User,
   LogOut,
   Menu,
@@ -40,6 +41,7 @@ const MENU_ICONS: Record<MenuId, React.ComponentType<{ className?: string }>> = 
   data_akun: Users,
   data_pasien: UserSquare2,
   data_mesin: Cpu,
+  kuota: Database,
   my_account: User,
 };
 

@@ -881,6 +881,73 @@ GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO service_role;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO authenticated, service_role;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_role;
 
+-- Fungsi statistik ukuran database & tabel untuk menu Kuota (khusus Administrator)
+CREATE OR REPLACE FUNCTION public.app_get_storage_quota()
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+DECLARE
+  v_db_bytes bigint;
+  v_tables jsonb;
+BEGIN
+  IF NOT public.app_is_admin() THEN
+    RAISE EXCEPTION 'Hanya Administrator yang berhak mengakses statistik kuota database.'
+      USING ERRCODE = '42501';
+  END IF;
+
+  v_db_bytes := pg_database_size(current_database());
+
+  SELECT coalesce(jsonb_agg(row_to_json(t)::jsonb ORDER BY t.total_bytes DESC), '[]'::jsonb)
+  INTO v_tables
+  FROM (
+    SELECT
+      'logbook'::text AS table_name,
+      (SELECT count(*) FROM public.logbook)::bigint AS row_count,
+      pg_table_size('public.logbook'::regclass)::bigint AS data_bytes,
+      pg_indexes_size('public.logbook'::regclass)::bigint AS index_bytes,
+      pg_total_relation_size('public.logbook'::regclass)::bigint AS total_bytes
+    UNION ALL
+    SELECT 'reports', (SELECT count(*) FROM public.reports), pg_table_size('public.reports'::regclass), pg_indexes_size('public.reports'::regclass), pg_total_relation_size('public.reports'::regclass)
+    UNION ALL
+    SELECT 'patients', (SELECT count(*) FROM public.patients), pg_table_size('public.patients'::regclass), pg_indexes_size('public.patients'::regclass), pg_total_relation_size('public.patients'::regclass)
+    UNION ALL
+    SELECT 'schedules', (SELECT count(*) FROM public.schedules), pg_table_size('public.schedules'::regclass), pg_indexes_size('public.schedules'::regclass), pg_total_relation_size('public.schedules'::regclass)
+    UNION ALL
+    SELECT 'doctor_schedules', (SELECT count(*) FROM public.doctor_schedules), pg_table_size('public.doctor_schedules'::regclass), pg_indexes_size('public.doctor_schedules'::regclass), pg_total_relation_size('public.doctor_schedules'::regclass)
+    UNION ALL
+    SELECT 'pj_shift_assignments', (SELECT count(*) FROM public.pj_shift_assignments), pg_table_size('public.pj_shift_assignments'::regclass), pg_indexes_size('public.pj_shift_assignments'::regclass), pg_total_relation_size('public.pj_shift_assignments'::regclass)
+    UNION ALL
+    SELECT 'doctors', (SELECT count(*) FROM public.doctors), pg_table_size('public.doctors'::regclass), pg_indexes_size('public.doctors'::regclass), pg_total_relation_size('public.doctors'::regclass)
+    UNION ALL
+    SELECT 'machines', (SELECT count(*) FROM public.machines), pg_table_size('public.machines'::regclass), pg_indexes_size('public.machines'::regclass), pg_total_relation_size('public.machines'::regclass)
+    UNION ALL
+    SELECT 'users', (SELECT count(*) FROM public.users), pg_table_size('public.users'::regclass), pg_indexes_size('public.users'::regclass), pg_total_relation_size('public.users'::regclass)
+    UNION ALL
+    SELECT 'staff_directory', (SELECT count(*) FROM public.staff_directory), pg_table_size('public.staff_directory'::regclass), pg_indexes_size('public.staff_directory'::regclass), pg_total_relation_size('public.staff_directory'::regclass)
+    UNION ALL
+    SELECT 'logbook_locks', (SELECT count(*) FROM public.logbook_locks), pg_table_size('public.logbook_locks'::regclass), pg_indexes_size('public.logbook_locks'::regclass), pg_total_relation_size('public.logbook_locks'::regclass)
+    UNION ALL
+    SELECT 'machine_locks', (SELECT count(*) FROM public.machine_locks), pg_table_size('public.machine_locks'::regclass), pg_indexes_size('public.machine_locks'::regclass), pg_total_relation_size('public.machine_locks'::regclass)
+    UNION ALL
+    SELECT 'action_categories', (SELECT count(*) FROM public.action_categories), pg_table_size('public.action_categories'::regclass), pg_indexes_size('public.action_categories'::regclass), pg_total_relation_size('public.action_categories'::regclass)
+    UNION ALL
+    SELECT 'form_templates', (SELECT count(*) FROM public.form_templates), pg_table_size('public.form_templates'::regclass), pg_indexes_size('public.form_templates'::regclass), pg_total_relation_size('public.form_templates'::regclass)
+  ) t;
+
+  RETURN jsonb_build_object(
+    'databaseBytes', v_db_bytes,
+    'tables', v_tables,
+    'measuredAt', now()
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.app_get_storage_quota() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.app_get_storage_quota() TO authenticated, service_role;
+
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
   GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO authenticated;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public

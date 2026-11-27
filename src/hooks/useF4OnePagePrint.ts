@@ -245,6 +245,7 @@ export function useF4OnePagePrint({
 
     downloadingRef.current = true;
     setDownloadingPdf(true);
+    let offscreenHost: HTMLDivElement | null = null;
 
     try {
       // Allow UI button state to paint before measuring/rendering canvas
@@ -256,17 +257,30 @@ export function useF4OnePagePrint({
         await document.fonts.ready.catch(() => undefined);
       }
 
-      const effectiveMaxPages = Math.max(1, maxPages);
-      const { finalWidth } = computePrintLayout(el, orientation, effectiveMaxPages);
+      // Render and measure in an offscreen clone so the visible table never flickers or resizes
+      offscreenHost = document.createElement('div');
+      offscreenHost.style.position = 'fixed';
+      offscreenHost.style.left = '-100000px';
+      offscreenHost.style.top = '0';
+      offscreenHost.style.pointerEvents = 'none';
+      offscreenHost.style.zIndex = '-1';
+      offscreenHost.setAttribute('aria-hidden', 'true');
 
-      el.classList.add('f4-measuring');
-      el.style.width = `${finalWidth}px`;
-      el.style.backgroundColor = '#ffffff';
+      const clone = el.cloneNode(true) as HTMLDivElement;
+      offscreenHost.appendChild(clone);
+      document.body.appendChild(offscreenHost);
+
+      const effectiveMaxPages = Math.max(1, maxPages);
+      const { finalWidth } = computePrintLayout(clone, orientation, effectiveMaxPages);
+
+      clone.classList.add('f4-measuring');
+      clone.style.width = `${finalWidth}px`;
+      clone.style.backgroundColor = '#ffffff';
 
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
-      const elWidthPx = Math.max(el.scrollWidth, finalWidth);
-      const totalHeightPx = Math.max(el.scrollHeight, 1);
+      const elWidthPx = Math.max(clone.scrollWidth, finalWidth);
+      const totalHeightPx = Math.max(clone.scrollHeight, 1);
 
       const pageWidthMm = orientation === 'landscape' ? F4_LONG_MM : F4_SHORT_MM;
       const pageHeightMm = orientation === 'landscape' ? F4_SHORT_MM : F4_LONG_MM;
@@ -277,10 +291,10 @@ export function useF4OnePagePrint({
       const singlePageHeightMm = totalHeightPx * widthFitMmPerPx;
 
       // Collect indivisible blocks so multi-page PDF breaks never slice through rows or signatures
-      const elRect = el.getBoundingClientRect();
+      const elRect = clone.getBoundingClientRect();
       const atomicBlocks: Array<{ top: number; bottom: number }> = [];
       if (effectiveMaxPages > 1 && singlePageHeightMm > printableHeightMm + 2) {
-        el.querySelectorAll('tr, .pj-keep-together, .pj-doc-header, .pj-sig-table').forEach(
+        clone.querySelectorAll('tr, .pj-keep-together, .pj-doc-header, .pj-sig-table').forEach(
           (node) => {
             const htmlNode = node as HTMLElement;
             if (htmlNode.closest('.no-print')) return;
@@ -298,19 +312,14 @@ export function useF4OnePagePrint({
         backgroundColor: '#ffffff',
         pixelRatio: 2,
         cacheBust: true,
+        skipFonts: true,
         width: elWidthPx,
         height: totalHeightPx,
         filter: (node: HTMLElement) =>
           !(node instanceof HTMLElement && node.classList.contains('no-print')),
       };
 
-      let sourceCanvas: HTMLCanvasElement;
-      try {
-        sourceCanvas = await toCanvas(el, captureOptions);
-      } catch {
-        // Fallback if external webfont CSS cannot be serialized offline
-        sourceCanvas = await toCanvas(el, { ...captureOptions, skipFonts: true });
-      }
+      const sourceCanvas = await toCanvas(clone, captureOptions);
 
       const pdf = new jsPDF({
         orientation,
@@ -420,11 +429,13 @@ export function useF4OnePagePrint({
 
       pdf.save(filename);
     } finally {
-      clearPrintFit();
+      if (offscreenHost?.parentNode) {
+        offscreenHost.parentNode.removeChild(offscreenHost);
+      }
       downloadingRef.current = false;
       setDownloadingPdf(false);
     }
-  }, [clearPrintFit, documentTitle, maxPages, orientation, sheetRef]);
+  }, [documentTitle, maxPages, orientation, sheetRef]);
 
   return { handlePrint, handleDownloadPdf, downloadingPdf };
 }

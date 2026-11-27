@@ -868,7 +868,7 @@ export function PatientReportsPage({
             type="button"
             onClick={handleDownloadPatientPdf}
             disabled={downloadingPdf}
-            title={`Unduh PDF Resmi F4 (${printDocumentTitle}.pdf)`}
+            title={`Unduh PDF Resmi A3 — 2 Halaman (${printDocumentTitle}.pdf)`}
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 whitespace-nowrap"
           >
             <FileDown className="h-4 w-4" />
