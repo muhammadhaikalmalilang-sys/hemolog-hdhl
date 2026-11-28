@@ -1,14 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Download, Eye, FileDown, Plus, Printer, Search, Smartphone, X } from 'lucide-react';
+import { AlertTriangle, Eye, FileDown, FileSpreadsheet, Plus, Printer, Search, Smartphone, X } from 'lucide-react';
 import { handleDbError, OperationType } from '../lib/supabase';
 import { generateRecordId, insertRow, toReportRow } from '../lib/db';
 import {
   clampString,
-  exportToCsv,
   formatDateId,
   formatFullDayDateId,
   formatMonthLabel,
-  formatVerificationStatusLabel,
   getDayNameId,
 } from '../lib/formatters';
 import { useAuth } from '../context/AuthContext';
@@ -21,6 +19,7 @@ import {
   exportPatientSoapMobilePdf,
   exportPatientSoapPdf,
 } from '../lib/patientReportPdf';
+import { exportPatientServicesExcel, exportPatientSoapExcel } from '../lib/excelExport';
 import { LogbookDetailModal } from '../components/logbook/LogbookDetailModal';
 import { VerificationBadge } from '../components/ui/StatusBadge';
 import type {
@@ -133,6 +132,7 @@ export function PatientReportsPage({
   });
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [downloadingMobilePdf, setDownloadingMobilePdf] = useState(false);
+  const [exportingExcel, setExportingExcel] = useState(false);
 
   useEffect(() => {
     if (liveTodayDate !== todayDate) {
@@ -791,69 +791,43 @@ export function PatientReportsPage({
     }
   };
 
-  const handleExportCsv = () => {
-    exportToCsv(
-      `logbook-detail-pasien-${dateFilter || monthFilter || 'semua'}.csv`,
-      [
-        'NO. BED / MESIN',
-        'TANGGAL',
-        'SHIFT',
-        'NAMA LENGKAP PASIEN / NO. RM',
-        'STATUS',
-        'RUANG',
-        'AKSES VASKULAR',
-        'DURASI (JAM)',
-        'BB PRE HD (KG)',
-        'BB POST HD (KG)',
-        'BB KERING (KG)',
-        'QB (ML/M)',
-        'QD (ML/M)',
-        'HEPARIN',
-        'TARGET UF (ML)',
-        'KT/V',
-        'CAPAIAN UF (ML)',
-        'TD PRE (MMHG)',
-        'TD POST (MMHG)',
-        'KOMPLIKASI INTRA-HD',
-        'JAM KOMPLIKASI',
-        'TINDAKAN & ADVIS MEDIS DPJP',
-        'TRANSFUSI',
-        'EPO',
-        'PERAWAT PELAKSANA',
-        'DOKTER DPJP',
-        'STATUS VERIFIKASI',
-      ],
-      tableRows.map((r) => [
-        r.bedMachine,
-        r.entry.date,
-        r.entry.shift,
-        `${r.entry.patientName} (${r.entry.patientRm})`,
-        r.statusRawat,
-        r.roomCategory,
-        r.vascularAccessDisplay,
-        r.durationHours !== null ? r.durationHours : '-',
-        r.entry.preWeight,
-        r.entry.postWeight,
-        r.dryWeight !== null ? r.dryWeight : '-',
-        r.qbVal !== null ? r.qbVal : '-',
-        r.qdVal !== null ? r.qdVal : '-',
-        r.heparinDisplay,
-        r.entry.ufGoal,
-        r.ktvDisplay,
-        r.entry.ufAchieved,
-        r.entry.preBp,
-        r.entry.postBp,
-        r.complicationLines.join('\n'),
-        r.compTimeLines.join('\n'),
-        r.dpjpAdviceLines.join('\n'),
-        r.transfusionDisplay,
-        r.epoDisplay,
-        r.entry.nurseName,
-        r.entry.doctorName,
-        formatVerificationStatusLabel(r.entry.verificationStatus),
-      ])
-    );
-    showToast(`Laporan detail pasien (${tableRows.length} baris) diekspor ke CSV.`, 'success');
+  const handleExportExcel = async () => {
+    if (exportingExcel) return;
+    setExportingExcel(true);
+    try {
+      const excelMeta = {
+        ...bannerMeta,
+        nurseCount: nurseBreakdown.length,
+      };
+      if (activeTab === 'soap') {
+        await exportPatientSoapExcel({
+          filename: `${printDocumentTitle}-SOAP`,
+          notes: filteredSoap,
+          meta: excelMeta,
+        });
+        showToast(
+          `Catatan SOAP (${filteredSoap.length} catatan) berhasil diekspor ke Excel.`,
+          'success'
+        );
+      } else {
+        await exportPatientServicesExcel({
+          filename: printDocumentTitle,
+          rows: tableRows,
+          summaryStats,
+          meta: excelMeta,
+          complicationRecords,
+          patientClassificationCounts,
+        });
+        showToast(
+          `Laporan detail pasien (${tableRows.length} baris) berhasil diekspor ke Excel.`,
+          'success'
+        );
+      }
+    } catch {
+      showToast('Gagal mengekspor laporan pasien ke Excel.', 'error');
+    } finally {
+      setExportingExcel(false);
+    }
   };
 
   const handleDownloadPatientPdf = () => {
@@ -956,13 +930,16 @@ export function PatientReportsPage({
           </button>
           <button
             type="button"
-            onClick={handleExportCsv}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+            onClick={() => void handleExportExcel()}
+            disabled={exportingExcel}
+            title={`Unduh Excel (.xlsx) (${printDocumentTitle}.xlsx)`}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-300 bg-emerald-50 px-3.5 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60 whitespace-nowrap"
           >
-            <Download className="h-4 w-4" />
-            Ekspor CSV
+            <FileSpreadsheet className="h-4 w-4" />
+            {exportingExcel ? 'Membuat Excel...' : 'Ekspor Excel'}
           </button>
-          {userProfile?.role !== 'Managerial' && (
+          {userProfile?.role !== 'Managerial' &&
+            userProfile?.role !== 'Koordinator Unit Hemodialisa' && (
             <button
               type="button"
               onClick={handleOpenSoapModal}

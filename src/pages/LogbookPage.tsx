@@ -119,6 +119,7 @@ const SHIFT_TIME_LABEL: Record<ShiftType, string> = {
 const ROLE_SHORT_CODE: Record<UserRole, string> = {
   Administrator: 'ADM',
   Managerial: 'MG',
+  'Koordinator Unit Hemodialisa': 'KUH',
   'Kepala Ruang': 'KR',
   'PJ Shift': 'PJ',
   'Perawat Pelaksana': 'PP',

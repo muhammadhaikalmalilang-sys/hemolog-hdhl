@@ -46,6 +46,7 @@ function getSupabaseAdmin() {
 const ALLOWED_ROLES = new Set([
   'Administrator',
   'Managerial',
+  'Koordinator Unit Hemodialisa',
   'Kepala Ruang',
   'PJ Shift',
   'Perawat Pelaksana',

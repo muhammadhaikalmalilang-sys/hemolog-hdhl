@@ -422,7 +422,11 @@ export function getLogbookVerificationAccess(
       reason: 'Administrator tidak diperbolehkan memberikan verifikasi logbook.',
     };
   }
-  if (verifierUser.role !== 'Kepala Ruang' && verifierUser.role !== 'PJ Shift') {
+  if (
+    verifierUser.role !== 'Kepala Ruang' &&
+    verifierUser.role !== 'PJ Shift' &&
+    verifierUser.role !== 'Koordinator Unit Hemodialisa'
+  ) {
     return {
       allowed: false,
       windowLabel: '-',
@@ -497,17 +501,49 @@ export function exportToCsv(filename: string, headers: string[], rows: (string |
 
 export function isLogbookAssignedToVerifier(
   entry: {
+    nurseId?: string;
     targetVerifierId?: string;
     targetVerifierRole?: string;
     verifiedBy?: string;
     verificationStatus?: string;
   },
-  user: { uid: string; role: string } | null | undefined
+  user: { uid: string; role: string } | null | undefined,
+  staffDirectory?: { uid: string; role: string }[]
 ): boolean {
   if (!user) return false;
-  if (user.role !== 'Kepala Ruang' && user.role !== 'PJ Shift') return false;
+  if (
+    user.role !== 'Kepala Ruang' &&
+    user.role !== 'PJ Shift' &&
+    user.role !== 'Koordinator Unit Hemodialisa'
+  ) {
+    return false;
+  }
 
   const targetId = entry.targetVerifierId?.trim();
+
+  if (user.role === 'Koordinator Unit Hemodialisa') {
+    if (entry.verificationStatus === 'Approved' && entry.verifiedBy === user.uid) {
+      return true;
+    }
+    const nurseStaff = entry.nurseId
+      ? staffDirectory?.find((s) => s.uid === entry.nurseId)
+      : undefined;
+    const isInputByKaru = nurseStaff?.role === 'Kepala Ruang';
+    if (nurseStaff && !isInputByKaru) {
+      return false;
+    }
+    if (entry.targetVerifierRole === 'Koordinator Unit Hemodialisa') {
+      if (targetId) {
+        return targetId === user.uid;
+      }
+      return true;
+    }
+    if (!entry.targetVerifierRole && isInputByKaru) {
+      return true;
+    }
+    return false;
+  }
+
   if (targetId) {
     if (entry.verificationStatus === 'Approved') {
       return targetId === user.uid || entry.verifiedBy === user.uid;

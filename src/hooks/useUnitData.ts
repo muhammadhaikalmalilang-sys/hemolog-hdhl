@@ -165,6 +165,7 @@ export function useUnitData() {
   const isLeaderOrAdmin =
     userProfile?.role === 'Administrator' ||
     userProfile?.role === 'Managerial' ||
+    userProfile?.role === 'Koordinator Unit Hemodialisa' ||
     userProfile?.role === 'Kepala Ruang' ||
     userProfile?.role === 'PJ Shift';
 

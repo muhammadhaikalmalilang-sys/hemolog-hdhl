@@ -5,9 +5,9 @@ import {
   BarChart3,
   CheckCircle2,
   Clock,
-  Download,
   Eye,
   FileDown,
+  FileSpreadsheet,
   Lock,
   Printer,
   ShieldCheck,
@@ -22,11 +22,11 @@ import { useF4OnePagePrint } from '../hooks/useF4OnePagePrint';
 import {
   MONTH_NAMES_ID,
   clampString,
-  exportToCsv,
   formatDateId,
   formatMonthLabel,
   getDaysInMonth,
 } from '../lib/formatters';
+import { exportMonthlyMatrixExcel, exportMonthlyRecapExcel } from '../lib/excelExport';
 import { LogbookDetailModal } from '../components/logbook/LogbookDetailModal';
 import { ShiftBadge, VerificationBadge } from '../components/ui/StatusBadge';
 import {
@@ -181,6 +181,8 @@ function formatRoleTitle(role?: UserRole | string): string {
       return 'Kepala Ruang';
     case 'Perawat Pelaksana':
       return 'Perawat Pelaksana';
+    case 'Koordinator Unit Hemodialisa':
+      return 'Koordinator Unit Hemodialisa';
     case 'Managerial':
       return 'Managerial';
     case 'Administrator':
@@ -198,6 +200,8 @@ function formatSignatureRoleTitle(role?: UserRole | string): string {
       return 'Kepala Ruang Hemodialisis';
     case 'Perawat Pelaksana':
       return 'Perawat Pelaksana Hemodialisis';
+    case 'Koordinator Unit Hemodialisa':
+      return 'Koordinator Unit Hemodialisa';
     default:
       return `${formatRoleTitle(role)} Hemodialisis`;
   }
@@ -311,6 +315,7 @@ export function MonthlyReportsPage({
   const [viewMode, setViewMode] = useState<'matrix' | 'recap'>('matrix');
   const [detailEntryId, setDetailEntryId] = useState<string | null>(null);
   const [signingSlot, setSigningSlot] = useState<'nurse' | 'karu' | null>(null);
+  const [exportingExcel, setExportingExcel] = useState(false);
   const [signFeedback, setSignFeedback] = useState<{
     type: 'success' | 'error';
     message: string;
@@ -840,8 +845,9 @@ export function MonthlyReportsPage({
       'Kepala Ruang': 1,
       'PJ Shift': 2,
       'Perawat Pelaksana': 3,
-      Managerial: 4,
-      Administrator: 5,
+      'Koordinator Unit Hemodialisa': 4,
+      Managerial: 5,
+      Administrator: 6,
     };
 
     const sortedNurses = [...nurseOptions].sort((a, b) => {
@@ -1135,133 +1141,119 @@ export function MonthlyReportsPage({
 
   const { label: monthSlashLabel, upperLabel: monthUpperLabel } = formatMonthSlash(monthKey);
 
-  const handleExportCsv = () => {
-    const dayNumbers = daysInMonth.map((_, idx) => String(idx + 1));
-    const headers = [
-      'NO',
-      'KATEGORI FASE ASUHAN',
-      'URAIAN KEGIATAN SPESIFIK PERAWAT HEMODIALISIS',
-      'STANDAR SPO / INDIKATOR MUTU',
-      ...dayNumbers,
-      'TOTAL',
-      '% CAPAIAN',
-      'KETERANGAN',
-    ];
-
-    const rows: (string | number)[][] = [];
-
-    // Summary Row 1: Patient count per day
-    rows.push([
-      '',
-      '',
-      'JUMLAH PASIEN KELOLAAN TERVERIFIKASI PER HARI',
-      '',
-      ...daysInMonth.map((d) => logsByDate.get(d)?.length || 0),
-      verifiedLogs.length,
-      '',
-      'Pasien Disahkan',
-    ]);
-
-    for (const section of monthlySpoSections) {
-      rows.push([section.title, ...new Array(headers.length - 1).fill('')]);
-      for (const item of section.items) {
-        const res = matrixData.rowResults.get(item.id);
-        rows.push([
-          item.id,
-          item.category,
-          item.description,
-          item.standard,
-          ...(res ? res.dailyValues : daysInMonth.map(() => 0)),
-          res?.total ?? 0,
-          `${res?.pct ?? 0}%`,
-          res?.keterangan ?? '-',
-        ]);
-      }
-    }
-
-    if (customMonthlyRows.length > 0) {
-      rows.push([
-        'REKAPITULASI PENGINPUTAN TTV & KOLOM TAMBAHAN (SESUAI TEMPLATE LOGBOOK)',
-        ...new Array(headers.length - 1).fill(''),
-      ]);
-      for (const crow of customMonthlyRows) {
-        rows.push([
-          crow.no,
-          crow.category,
-          crow.description,
-          crow.standard,
-          ...crow.dailyDisplay.map((d) => d || '0'),
-          crow.totalDisplay,
-          crow.pctDisplay,
-          crow.keterangan,
-        ]);
-      }
-    }
-
-    // Footer Total Row
-    rows.push([
-      '',
-      '',
-      'TOTAL NILAI KEGIATAN TERVERIFIKASI PER HARI',
-      '',
-      ...matrixData.dailyGrandTotals,
-      matrixData.grandTotal,
-      `${matrixData.grandPct}%`,
-      `Maks: ${matrixData.maxGrandTotal}`,
-    ]);
-
-    // Footer Patient Names Row
-    rows.push([
-      '',
-      '',
-      'PASIEN KELOLAAN (NAMA PASIEN)',
-      '',
-      ...daysInMonth.map((d) => {
-        const names = Array.from(
-          new Set((logsByDate.get(d) || []).map((l) => l.patientName))
+  const handleExportExcel = async () => {
+    if (exportingExcel) return;
+    setExportingExcel(true);
+    try {
+      if (viewMode === 'recap') {
+        await exportMonthlyRecapExcel({
+          filename: `Rekap_Persentase_Capaian_Bulanan_${monthKey}`,
+          monthSlashLabel,
+          rows: allNursesRecap,
+        });
+        showToast(
+          `Rekap capaian bulanan ${formatMonthLabel(monthKey)} berhasil diekspor ke Excel.`,
+          'success'
         );
-        return names.join('; ');
-      }),
-      verifiedLogs.length,
-      '',
-      `${verifiedLogs.length} Pasien Terverifikasi`,
-    ]);
+        return;
+      }
 
-    if (viewMode === 'recap') {
-      exportToCsv(
-        `Rekap_Persentase_Capaian_Bulanan_${monthKey}.csv`,
-        [
-          'NO',
-          'NAMA PERAWAT',
-          'NIP',
-          'JABATAN',
-          'HARI DISAHKAN',
-          'PASIEN KELOLAAN',
-          'NILAI SPO',
-          'MAKS SPO',
-          '% CAPAIAN',
-          'STATUS PENGESAHAN',
-        ],
-        allNursesRecap.map((item, idx) => [
-          idx + 1,
-          item.fullName,
-          item.nip || '-',
-          item.roleLabel,
-          `${item.activeDays} Hari`,
-          `${item.patientCount} Pasien`,
-          item.maxGrandTotal > 0 ? item.grandTotal : '-',
-          item.maxGrandTotal > 0 ? item.maxGrandTotal : '-',
-          item.maxGrandTotal > 0 ? `${item.pct}%` : '-',
-          item.approvalStatus,
-        ])
-      );
-      showToast(`Rekap capaian bulanan ${formatMonthLabel(monthKey)} diekspor ke CSV.`, 'success');
-      return;
+      const safeName = selectedNurse.fullName.replace(/[^a-zA-Z0-9]+/g, '_');
+      const shiftSummaryText = `${shiftCounts.pagi} Shift Pagi · ${shiftCounts.siang} Shift Siang${
+        shiftCounts.malam > 0 ? ` · ${shiftCounts.malam} Shift Malam` : ''
+      }`;
+
+      await exportMonthlyMatrixExcel({
+        filename: `Logbook_Bulanan_${safeName}_${monthKey}`,
+        reportTitle: resolvedTemplate.monthlyReportTitle,
+        staffName: selectedNurse.fullName,
+        staffNip: selectedNurse.nip || '-',
+        staffRoleLabel: `${formatRoleTitle(selectedNurse.role)} - Instalasi Hemodialisa RS Happy Land Medical Centre`,
+        staffRoleSignatureTitle: formatSignatureRoleTitle(selectedNurse.role),
+        monthSlashLabel,
+        monthUpperLabel,
+        activeWorkDays,
+        verifiedPatientCount: verifiedLogs.length,
+        shiftSummaryText,
+        daysInMonth,
+        dayActiveFlags: daysInMonth.map(
+          (dateStr) =>
+            (logsByDate.get(dateStr)?.length || 0) > 0 ||
+            (vascularLogsByDate.get(dateStr)?.length || 0) > 0
+        ),
+        dailyPatientCounts: daysInMonth.map((d) => logsByDate.get(d)?.length || 0),
+        dailyPatientNames: daysInMonth.map((d) =>
+          Array.from(new Set((logsByDate.get(d) || []).map((l) => l.patientName))).join('\n')
+        ),
+        sections: monthlySpoSections.map((section) => ({
+          title: section.title,
+          items: section.items.map((item) => {
+            const res = matrixData.rowResults.get(item.id);
+            return {
+              id: item.id,
+              category: item.category,
+              description: item.description,
+              standard: item.standard,
+              dailyValues: res ? res.dailyValues : daysInMonth.map(() => 0),
+              total: res?.total ?? 0,
+              pct: res?.pct ?? 0,
+              keterangan: res?.keterangan ?? '-',
+            };
+          }),
+        })),
+        customRows: customMonthlyRows.map((crow) => ({
+          no: crow.no,
+          category: crow.category,
+          description: crow.description,
+          standard: crow.standard,
+          dailyDisplay: crow.dailyDisplay,
+          totalDisplay: crow.totalDisplay,
+          pctDisplay: crow.pctDisplay,
+          keterangan: crow.keterangan,
+        })),
+        dailyGrandTotals: matrixData.dailyGrandTotals,
+        grandTotal: matrixData.grandTotal,
+        grandPct: matrixData.grandPct,
+        maxGrandTotal: matrixData.maxGrandTotal,
+        nurseSignature: {
+          signed: Boolean(activeMonthlyReport?.nurseSignedBy),
+          signerName: activeMonthlyReport?.nurseSignedByName || selectedNurse.fullName,
+          metaLine: activeMonthlyReport?.nurseSignedBy
+            ? `${formatRoleTitle(activeMonthlyReport.nurseSignedRole || selectedNurse.role)} · ${
+                formatSignatureTimestamp(
+                  activeMonthlyReport.nurseSignedAt || activeMonthlyReport.updatedAt
+                ) || 'Tercatat Sistem'
+              }`
+            : '',
+          sigCode: activeMonthlyReport?.nurseSignedBy
+            ? `ID: SIG-${activeMonthlyReport.nurseSignedBy.slice(0, 8).toUpperCase()}`
+            : undefined,
+          fallbackName: selectedNurse.fullName,
+          nip: selectedNurse.nip || '-',
+        },
+        karuSignature: {
+          signed: Boolean(activeMonthlyReport?.karuSignedBy),
+          signerName: activeMonthlyReport?.karuSignedByName || verifierInfo.name,
+          metaLine: activeMonthlyReport?.karuSignedBy
+            ? `Kepala Ruang · ${
+                formatSignatureTimestamp(
+                  activeMonthlyReport.karuSignedAt || activeMonthlyReport.updatedAt
+                ) || 'Tercatat Sistem'
+              }`
+            : '',
+          sigCode: activeMonthlyReport?.karuSignedBy
+            ? `ID: SIG-${activeMonthlyReport.karuSignedBy.slice(0, 8).toUpperCase()}`
+            : undefined,
+          fallbackName: verifierInfo.name,
+          nip: verifierInfo.nip || '-',
+        },
+      });
+      showToast(`Matriks bulanan ${selectedNurse.fullName} berhasil diekspor ke Excel.`, 'success');
+    } catch {
+      showToast('Gagal mengekspor Laporan Bulanan ke Excel.', 'error');
+    } finally {
+      setExportingExcel(false);
     }
-
-    const safeName = selectedNurse.fullName.replace(/[^a-zA-Z0-9]+/g, '_');
-    exportToCsv(`Logbook_Bulanan_${safeName}_${monthKey}.csv`, headers, rows);
-    showToast(`Matriks bulanan ${selectedNurse.fullName} diekspor ke CSV.`, 'success');
   };
 
   const totalColumns = 4 + daysInMonth.length + 3;
@@ -1334,11 +1326,13 @@ export function MonthlyReportsPage({
 
           <button
             type="button"
-            onClick={handleExportCsv}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+            onClick={() => void handleExportExcel()}
+            disabled={exportingExcel}
+            title="Unduh Excel (.xlsx)"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-300 bg-emerald-50 px-3.5 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60 whitespace-nowrap"
           >
-            <Download className="h-4 w-4" />
-            Ekspor CSV
+            <FileSpreadsheet className="h-4 w-4" />
+            {exportingExcel ? 'Membuat Excel...' : 'Ekspor Excel'}
           </button>
 
           <button

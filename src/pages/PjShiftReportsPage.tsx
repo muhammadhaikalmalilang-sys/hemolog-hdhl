@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CheckCircle2,
-  Download,
   FileDown,
+  FileSpreadsheet,
   Lock,
   Pencil,
   Plus,
@@ -17,7 +17,6 @@ import { handleDbError, OperationType } from '../lib/supabase';
 import { generateRecordId, insertRow, toReportRow, updateRowByColumn } from '../lib/db';
 import {
   clampString,
-  exportToCsv,
   formatDateId,
   formatFullDayDateId,
   getDayNameId,
@@ -29,6 +28,7 @@ import { useToast } from '../context/ToastContext';
 import { useLiveClock } from '../hooks/useLiveClock';
 import { useF4OnePagePrint } from '../hooks/useF4OnePagePrint';
 import { exportPjShiftMobilePdf } from '../lib/pjShiftReportPdf';
+import { exportPjShiftExcel } from '../lib/excelExport';
 import type {
   DoctorScheduleEntry,
   LogbookEntry,
@@ -226,7 +226,9 @@ export function PjShiftReportsPage({
   const [shiftFilter, setShiftFilter] = useState<'ALL' | ShiftType>(
     liveCurrentShift === 'Siang' ? 'Siang' : 'Pagi'
   );
-  const [verifierFilter, setVerifierFilter] = useState<'ALL' | 'PJ Shift' | 'Kepala Ruang'>('ALL');
+  const [verifierFilter, setVerifierFilter] = useState<
+    'ALL' | 'PJ Shift' | 'Kepala Ruang' | 'Koordinator Unit Hemodialisa'
+  >('ALL');
 
   const printShiftLabel =
     shiftFilter === 'Pagi'
@@ -248,6 +250,7 @@ export function PjShiftReportsPage({
     documentTitle: printDocumentTitle,
   });
   const [downloadingMobilePdf, setDownloadingMobilePdf] = useState(false);
+  const [exportingExcel, setExportingExcel] = useState(false);
 
   // Verified logbooks only (Approved by PJ Shift or Kepala Ruang)
   const allApprovedLogbooks = useMemo(
@@ -342,10 +345,18 @@ export function PjShiftReportsPage({
   const staffMap = useMemo(() => new Map(staffDirectory.map((s) => [s.uid, s])), [staffDirectory]);
   const patientMap = useMemo(() => new Map(patients.map((p) => [p.id, p])), [patients]);
 
-  const getActualVerifierRole = (entry: LogbookEntry): 'PJ Shift' | 'Kepala Ruang' | null => {
+  const getActualVerifierRole = (
+    entry: LogbookEntry
+  ): 'PJ Shift' | 'Kepala Ruang' | 'Koordinator Unit Hemodialisa' | null => {
     if (entry.verifiedBy) {
       const staffRole = staffMap.get(entry.verifiedBy)?.role;
-      if (staffRole === 'PJ Shift' || staffRole === 'Kepala Ruang') return staffRole;
+      if (
+        staffRole === 'PJ Shift' ||
+        staffRole === 'Kepala Ruang' ||
+        staffRole === 'Koordinator Unit Hemodialisa'
+      ) {
+        return staffRole;
+      }
     }
     if (entry.targetVerifierRole) return entry.targetVerifierRole;
     return null;
@@ -2345,68 +2356,185 @@ export function PjShiftReportsPage({
     ];
   }, [shiftStats]);
 
-  const handleExportCsv = () => {
-    const therapyExportLabel =
-      shiftStats.therapyPatients.length > 0
-        ? `${shiftStats.therapyPatients.length} Pasien (${shiftStats.therapyPatients
-            .map((t) => t.label)
-            .join('; ')})`
-        : '0 Pasien (Nihil)';
-    const maintExportLabel = shiftStats.maintenanceNote
-      ? `${shiftStats.maintenanceMachines} (${shiftStats.maintenanceNote})`
-      : shiftStats.maintenanceMachines;
-    const rows: (string | number)[][] = [
-      ['BAGIAN A', 'INFORMASI UMUM SHIFT & KETENAGAAN', '', ''],
-      ['Hari / Tanggal', formatFullDayDateId(selectedDate), 'Shift Dinas', getShiftTimeLabel(shiftFilter)],
-      ['Penanggung Jawab (PJ) Shift', shiftStats.pjShiftName, 'Dokter DPJP Unit HD', shiftStats.dpjpLabel],
-      ['Kepala Ruangan HD', shiftStats.kaRuangName, 'Dokter Jaga Ruangan', shiftStats.dutyDoctorLabel],
-      [
-        'Jumlah Perawat Dinas',
+  const handleExportExcel = async () => {
+    if (exportingExcel) return;
+    setExportingExcel(true);
+    try {
+      const maintExportVal = shiftStats.maintenanceNote
+        ? `${shiftStats.maintenanceMachines}\n(${shiftStats.maintenanceNote})`
+        : shiftStats.maintenanceMachines;
+      const therapyExportVal =
+        shiftStats.therapyPatients.length === 0
+          ? '0 Pasien (Nihil)'
+          : `${shiftStats.therapyPatients.length} Pasien\n${shiftStats.therapyPatients
+              .map((tp, tpIdx) => `${tpIdx + 1}. ${tp.label}`)
+              .join('\n')}`;
+
+      const nurseDutyText =
         shiftStats.totalNursesDinas > 0
-          ? `${shiftStats.totalNursesDinas} Orang (${
-              shiftStats.pjCount > 0
-                ? `${shiftStats.pjCount} PJ Shift + ${shiftStats.pelaksanaCount} Perawat Pelaksana`
-                : `${shiftStats.allNurseRoster.join(', ')}`
-            })`
-          : activeSavedReport?.nursesOnDuty || '0 Orang',
-        'Rasio Perawat : Pasien',
+          ? shiftStats.pjCount > 0
+            ? `${shiftStats.totalNursesDinas} Orang (${shiftStats.pjCount} PJ Shift + ${shiftStats.pelaksanaCount} Perawat Pelaksana)`
+            : `${shiftStats.totalNursesDinas} Orang (${shiftStats.pelaksanaCount} Perawat Pelaksana)`
+          : activeSavedReport?.nursesOnDuty || '0 Orang';
+
+      const ratioText =
         shiftStats.totalNursesDinas > 0 && shiftStats.totalVerified > 0
           ? `1 : ${shiftStats.ratioNum} (${shiftStats.totalNursesDinas} Perawat : ${shiftStats.totalVerified} Pasien)`
-          : '-',
-      ],
-      [
-        'Tenaga Pendukung Dinas',
-        '1 Teknisi Elektromedis/RO 1 dan HK Ruangan',
-        'Total Pasien Dilayani',
-        `${shiftStats.totalVerified} Pasien Selesai HD (${shiftStats.rajalCount} Rajal, ${shiftStats.ranapCount} Ranap)`,
-      ],
-      ['BAGIAN B', 'SENSUS PASIEN, AKSES VASKULAR & UTILISASI MESIN', '', ''],
-      ['Pasien Terjadwal (Target Shift)', shiftStats.scheduledPatientsCount, 'Total Kapasitas Mesin HD', shiftStats.totalMachines],
-      ['Pasien Hadir & Selesai HD', shiftStats.totalVerified, 'Mesin Beroperasi Siap Pakai', shiftStats.operationalMachines],
-      ['Pasien HD Cito / Emergency', shiftStats.citoCount, 'Mesin Maintenance / Perbaikan', maintExportLabel],
-      ['Pasien Batal / Tunda', shiftStats.rescheduledCount, 'Mesin Khusus Hepatitis B', shiftStats.hepBMachines],
-      ['Kategori: Pasien Reguler', shiftStats.regulerCount, 'Mesin Khusus Hepatitis C', shiftStats.hepCMachines],
-      ['Kategori: Isolasi Hepatitis B', shiftStats.hepBCount, 'Akses: AV Fistula (Cimino)', shiftStats.avfCount],
-      ['Kategori: Isolasi Hepatitis C / HIV', shiftStats.hepCHivCount, 'Akses: Double Lumen (CDL)', shiftStats.cdlCount],
-      ['Status: Rawat Jalan', shiftStats.rajalCount, 'Akses: Femoral', shiftStats.femoralCount],
-      ['Status: Rawat Inap', shiftStats.ranapCount, 'Transfusi & Epo', therapyExportLabel],
-      ['BAGIAN C', 'MONITORING ASUHAN KEPERAWATAN & PELAYANAN MEDIS', '', ''],
-      ...sectionCRows.map((r) => [r.indicator, r.result, r.target, r.analysis]),
-      ['BAGIAN D', 'AKUNTABILITAS NON-MEDIS, OPERASIONAL, WATER TREATMENT & K3', '', ''],
-      ...sectionDRows.map((r) => [r.item, r.result, r.parameter, r.status]),
-      ['BAGIAN E', 'SERAH TERIMA SHIFT MODEL SBAR', '', ''],
-      ['SITUATION (S)', sbarView.situation, '', ''],
-      ['BACKGROUND (B)', sbarView.background, '', ''],
-      ['ASSESSMENT (A)', sbarView.assessment, '', ''],
-      ['RECOMMENDATION (R)', sbarView.recommendation, '', ''],
-    ];
+          : '- (Standar PERNEFRI 1 : 3-4 Pasien)';
 
-    exportToCsv(
-      `laporan-pj-shift-${selectedDate}-${shiftFilter}.csv`,
-      ['Keterangan / Indikator', 'Nilai / Hasil Shift', 'Parameter / Target', 'Analisis / Rincian'],
-      rows
-    );
-    showToast(`Laporan PJ Shift (${selectedDate} · ${shiftFilter}) diekspor ke CSV.`, 'success');
+      const sectionARows: Array<[string, string | number, string, string | number]> = [
+        ['Hari / Tanggal', formatFullDayDateId(selectedDate), 'Shift Dinas', getShiftTimeLabel(shiftFilter)],
+        ['Penanggung Jawab (PJ) Shift', shiftStats.pjShiftName, 'Dokter DPJP Unit HD', shiftStats.dpjpLabel],
+        ['Kepala Ruangan HD', shiftStats.kaRuangName, 'Dokter Jaga Ruangan', shiftStats.dutyDoctorLabel],
+        ['Jumlah Perawat Dinas', nurseDutyText, 'Rasio Perawat : Pasien', ratioText],
+        [
+          'Tenaga Pendukung Dinas',
+          '1 Teknisi Elektromedis/RO 1 dan HK Ruangan',
+          'Total Pasien Dilayani',
+          `${shiftStats.totalVerified} Pasien Selesai HD (${shiftStats.rajalCount} Rajal, ${shiftStats.ranapCount} Ranap)`,
+        ],
+      ];
+
+      const sectionBRows = [
+        {
+          lLabel: 'Pasien Terjadwal (Target Shift)',
+          lVal: shiftStats.scheduledPatientsCount,
+          rLabel: 'Total Kapasitas Mesin HD',
+          rVal: shiftStats.totalMachines,
+        },
+        {
+          lLabel: 'Pasien Hadir & Selesai HD',
+          lVal: shiftStats.totalVerified,
+          rLabel: 'Mesin Beroperasi Siap Pakai',
+          rVal: shiftStats.operationalMachines,
+        },
+        {
+          lLabel: 'Pasien HD Cito / Emergency (ICU/IGD)',
+          lVal: shiftStats.citoCount,
+          rLabel: 'Mesin Maintenance / Perbaikan',
+          rVal: maintExportVal,
+        },
+        {
+          lLabel: 'Pasien Batal / Tunda (Reschedule)',
+          lVal: shiftStats.rescheduledCount,
+          rLabel: 'Mesin Khusus Hepatitis B (Isolasi)',
+          rVal: shiftStats.hepBMachines,
+        },
+        {
+          lLabel: 'Kategori: Pasien Reguler (Non-Hepatitis)',
+          lVal: shiftStats.regulerCount,
+          rLabel: 'Mesin Khusus Hepatitis C',
+          rVal: shiftStats.hepCMachines,
+        },
+        {
+          lLabel: 'Kategori: Pasien Isolasi Hepatitis B',
+          lVal: shiftStats.hepBCount,
+          rLabel: 'Akses: AV Fistula (Cimino)',
+          rVal: shiftStats.avfCount,
+        },
+        {
+          lLabel: 'Kategori: Pasien Isolasi Hepatitis C / HIV',
+          lVal: shiftStats.hepCHivCount,
+          rLabel: 'Akses: Double Lumen (CDL)',
+          rVal: shiftStats.cdlCount,
+        },
+        {
+          lLabel: 'Status: Pasien Rawat Jalan',
+          lVal: shiftStats.rajalCount,
+          rLabel: 'Akses: Femoral',
+          rVal: shiftStats.femoralCount,
+        },
+        {
+          lLabel: 'Status: Pasien Rawat Inap (Bangsal/ICU)',
+          lVal: shiftStats.ranapCount,
+          rLabel: 'Transfusi & Epo (Jumlah Pasien yang transfusi dan Epo)',
+          rVal: therapyExportVal,
+        },
+      ];
+
+      const signatures = [
+        {
+          heading: 'Yang Menyerahkan,',
+          roleLabel: `Perawat Penanggung Jawab (PJ) Shift ${shiftFilter !== 'ALL' ? shiftFilter : ''}`.trim(),
+          fallbackName: shiftStats.pjShiftName,
+          signed: Boolean(activeSavedReport?.handoverSignedBy),
+          signerName: activeSavedReport?.handoverSignedByName || shiftStats.pjShiftName,
+          metaLine: activeSavedReport?.handoverSignedBy
+            ? `PJ Shift ${activeSavedReport.handoverSignedShift || shiftFilter} · ${
+                formatSignatureTimestamp(
+                  activeSavedReport.handoverSignedAt || activeSavedReport.updatedAt
+                ) || 'Tercatat Sistem'
+              }`
+            : undefined,
+          sigCode: activeSavedReport?.handoverSignedBy
+            ? `ID: SIG-${activeSavedReport.handoverSignedBy.slice(0, 8).toUpperCase()}`
+            : undefined,
+        },
+        ...(shiftFilter !== 'Siang'
+          ? [
+              {
+                heading: 'Yang Menerima,',
+                roleLabel: `Perawat Penanggung Jawab (PJ) Shift ${shiftStats.nextShiftName}`,
+                fallbackName: shiftStats.nextPjShiftName,
+                signed: Boolean(activeSavedReport?.receivedSignedBy),
+                signerName: activeSavedReport?.receivedSignedByName || shiftStats.nextPjShiftName,
+                metaLine: activeSavedReport?.receivedSignedBy
+                  ? `PJ Shift ${
+                      activeSavedReport.receivedSignedShift || shiftStats.nextShiftName
+                    } · ${
+                      formatSignatureTimestamp(
+                        activeSavedReport.receivedSignedAt || activeSavedReport.updatedAt
+                      ) || 'Tercatat Sistem'
+                    }`
+                  : undefined,
+                sigCode: activeSavedReport?.receivedSignedBy
+                  ? `ID: SIG-${activeSavedReport.receivedSignedBy.slice(0, 8).toUpperCase()}`
+                  : undefined,
+              },
+            ]
+          : []),
+        {
+          heading: 'Mengetahui & Menyetujui,',
+          roleLabel: 'Kepala Ruangan Hemodialisis',
+          fallbackName: shiftStats.kaRuangName,
+          signed: activeSavedReport?.reviewStatus === 'Reviewed',
+          signerName: activeSavedReport?.reviewedByName || shiftStats.kaRuangName,
+          metaLine:
+            activeSavedReport?.reviewStatus === 'Reviewed'
+              ? `Kepala Ruang · ${
+                  formatSignatureTimestamp(
+                    activeSavedReport.reviewedAt || activeSavedReport.updatedAt
+                  ) || 'Tercatat Sistem'
+                }`
+              : undefined,
+          sigCode: activeSavedReport?.reviewedBy
+            ? `ID: SIG-${activeSavedReport.reviewedBy.slice(0, 8).toUpperCase()}`
+            : undefined,
+        },
+      ];
+
+      await exportPjShiftExcel({
+        filename: printDocumentTitle,
+        sectionARows,
+        sectionBRows,
+        sectionCRows,
+        sectionDRows,
+        sbar: sbarView,
+        signatures,
+        reviewEvaluation:
+          activeSavedReport?.reviewStatus === 'Reviewed' && activeSavedReport.reviewNote
+            ? {
+                reviewerName: activeSavedReport.reviewedByName || shiftStats.kaRuangName,
+                note: activeSavedReport.reviewNote,
+              }
+            : null,
+      });
+      showToast(`Laporan PJ Shift (${selectedDate} · ${shiftFilter}) berhasil diekspor ke Excel.`, 'success');
+    } catch {
+      showToast('Gagal mengekspor Laporan PJ Shift ke Excel.', 'error');
+    } finally {
+      setExportingExcel(false);
+    }
   };
 
   const handleDownloadPjMobilePdf = () => {
@@ -2633,11 +2761,13 @@ export function PjShiftReportsPage({
           </button>
           <button
             type="button"
-            onClick={handleExportCsv}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+            onClick={() => void handleExportExcel()}
+            disabled={exportingExcel}
+            title={`Unduh Excel (.xlsx) (${printDocumentTitle}.xlsx)`}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-300 bg-emerald-50 px-3.5 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60 whitespace-nowrap"
           >
-            <Download className="h-4 w-4" />
-            Ekspor CSV
+            <FileSpreadsheet className="h-4 w-4" />
+            {exportingExcel ? 'Membuat Excel...' : 'Ekspor Excel'}
           </button>
           {canReview && kolom3Auth.allowed && (
             <button
@@ -2722,13 +2852,22 @@ export function PjShiftReportsPage({
             <select
               value={verifierFilter}
               onChange={(e) =>
-                setVerifierFilter(e.target.value as 'ALL' | 'PJ Shift' | 'Kepala Ruang')
+                setVerifierFilter(
+                  e.target.value as
+                    | 'ALL'
+                    | 'PJ Shift'
+                    | 'Kepala Ruang'
+                    | 'Koordinator Unit Hemodialisa'
+                )
               }
               className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800 focus:border-[#0B5A8E] focus:outline-none"
             >
-              <option value="ALL">Semua Terverifikasi (PJ Shift &amp; Kepala Ruang)</option>
+              <option value="ALL">Semua Terverifikasi</option>
               <option value="PJ Shift">Diverifikasi oleh PJ Shift</option>
               <option value="Kepala Ruang">Diverifikasi oleh Kepala Ruang</option>
+              <option value="Koordinator Unit Hemodialisa">
+                Diverifikasi oleh Koordinator Unit HD
+              </option>
             </select>
           </div>
         </div>

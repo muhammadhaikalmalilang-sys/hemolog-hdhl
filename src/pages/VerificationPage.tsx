@@ -133,21 +133,22 @@ export function VerificationPage({
   const isAdminUser = userProfile?.role === 'Administrator';
   const canEditBeforeVerify =
     userProfile?.role === 'PJ Shift' ||
-    userProfile?.role === 'Kepala Ruang';
+    userProfile?.role === 'Kepala Ruang' ||
+    userProfile?.role === 'Koordinator Unit Hemodialisa';
 
   const totalAssignedPendingCount = useMemo(
     () =>
       logbooks.filter(
         (item) =>
-          isLogbookAssignedToVerifier(item, userProfile) &&
+          isLogbookAssignedToVerifier(item, userProfile, staffDirectory) &&
           item.verificationStatus === 'Pending'
       ).length,
-    [logbooks, userProfile]
+    [logbooks, userProfile, staffDirectory]
   );
 
   const queueItems = useMemo(() => {
     return logbooks.filter((item) => {
-      if (!isLogbookAssignedToVerifier(item, userProfile)) return false;
+      if (!isLogbookAssignedToVerifier(item, userProfile, staffDirectory)) return false;
       if (dateFilter && item.date !== dateFilter) return false;
       if (statusFilter === 'ALL') {
         if (item.verificationStatus === 'Approved' || item.verificationStatus === 'Draft') {
@@ -167,7 +168,7 @@ export function VerificationPage({
       }
       return true;
     });
-  }, [logbooks, userProfile, dateFilter, statusFilter, shiftFilter, searchTerm]);
+  }, [logbooks, userProfile, staffDirectory, dateFilter, statusFilter, shiftFilter, searchTerm]);
 
   const approvableQueueItems = useMemo(
     () =>
@@ -297,7 +298,9 @@ export function VerificationPage({
           Verifikasi Logbook Tindakan Hemodialisa
         </h2>
         <p className="text-xs text-slate-500">
-          Validasi kelengkapan tindakan perawat sebelum data masuk ke rekapitulasi terverifikasi unit.
+          {userProfile?.role === 'Koordinator Unit Hemodialisa'
+            ? 'Validasi kelengkapan tindakan yang diinput oleh Kepala Ruang sebelum data masuk ke rekapitulasi terverifikasi unit.'
+            : 'Validasi kelengkapan tindakan perawat sebelum data masuk ke rekapitulasi terverifikasi unit.'}
         </p>
         <div className="mt-2 inline-flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-lg border border-sky-200 bg-sky-50/70 px-3 py-1.5 text-[11px] text-slate-700">
           <Clock className="h-3.5 w-3.5 text-[#0e4e78] shrink-0" />

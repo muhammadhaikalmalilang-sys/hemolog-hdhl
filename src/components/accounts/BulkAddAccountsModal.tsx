@@ -56,6 +56,17 @@ function normalizeRole(raw: string, fallback: UserRole): UserRole {
   const s = raw.trim().toLowerCase().replace(/\s+/g, ' ');
   if (!s) return fallback;
   if (s === 'administrator' || s === 'admin') return 'Administrator';
+  if (
+    s === 'koordinator unit hemodialisa' ||
+    s === 'koordinator unit hemodialisis' ||
+    s === 'koordinator unit hd' ||
+    s === 'koordinator unit' ||
+    s === 'koordinator hd' ||
+    s === 'koordinator' ||
+    s === 'kuh'
+  ) {
+    return 'Koordinator Unit Hemodialisa';
+  }
   if (s === 'managerial' || s === 'manajerial' || s === 'manajer') return 'Managerial';
   if (s === 'kepala ruang' || s === 'karu' || s === 'kepala ruangan') return 'Kepala Ruang';
   if (
@@ -660,7 +671,8 @@ export function BulkAddAccountsModal({
                 <p className="text-[11px] text-slate-500">
                   Penulisan role seperti <code className="font-mono">PJ Shif</code> atau{' '}
                   <code className="font-mono">PJ Shift</code>,{' '}
-                  <code className="font-mono">Kepala Ruang</code>, dan{' '}
+                  <code className="font-mono">Kepala Ruang</code>,{' '}
+                  <code className="font-mono">Koordinator Unit Hemodialisa</code>, dan{' '}
                   <code className="font-mono">Perawat Pelaksana</code> akan otomatis disesuaikan
                   dengan hak akses sistem.
                 </p>

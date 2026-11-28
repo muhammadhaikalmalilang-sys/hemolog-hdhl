@@ -1,6 +1,7 @@
 export type UserRole =
   | 'Administrator'
   | 'Managerial'
+  | 'Koordinator Unit Hemodialisa'
   | 'Kepala Ruang'
   | 'PJ Shift'
   | 'Perawat Pelaksana';
@@ -9,6 +10,7 @@ export const USER_ROLES: UserRole[] = [
   'Kepala Ruang',
   'PJ Shift',
   'Perawat Pelaksana',
+  'Koordinator Unit Hemodialisa',
   'Managerial',
   'Administrator',
 ];
@@ -17,8 +19,9 @@ export const ROLE_SORT_ORDER: Record<UserRole, number> = {
   'Kepala Ruang': 0,
   'PJ Shift': 1,
   'Perawat Pelaksana': 2,
-  Managerial: 3,
-  Administrator: 4,
+  'Koordinator Unit Hemodialisa': 3,
+  Managerial: 4,
+  Administrator: 5,
 };
 
 export type MenuId =
@@ -28,6 +31,7 @@ export type MenuId =
   | 'laporan_pasien'
   | 'laporan_pj_shift'
   | 'laporan_bulanan'
+  | 'data_komplikasi'
   | 'verifikasi'
   | 'riwayat'
   | 'jadwal_dinas'
@@ -50,6 +54,7 @@ export const ROLE_MENUS: Record<UserRole, MenuItemConfig[]> = {
     { id: 'master_logbook', label: 'Master Logbook', description: 'Kelola semua logbook & kategori tindakan' },
     { id: 'laporan_pj_shift', label: 'Laporan PJ Shift', description: 'Monitoring & manajemen pengesahan laporan shift' },
     { id: 'laporan_bulanan', label: 'Laporan Bulanan', description: 'Rekap performa perawat & unit HD' },
+    { id: 'data_komplikasi', label: 'Data Komplikasi', description: 'Rekapitulasi & total komplikasi intra-HD unit' },
     { id: 'data_dokter', label: 'Data Dokter', description: 'Kelola dokter penanggung jawab' },
     { id: 'data_akun', label: 'Data Akun', description: 'Manajemen akun, role & aktivasi staf' },
     { id: 'jadwal_dinas', label: 'Jadwal Dinas', description: 'Input & kelola jadwal shift perawat' },
@@ -63,6 +68,16 @@ export const ROLE_MENUS: Record<UserRole, MenuItemConfig[]> = {
     { id: 'laporan_pasien', label: 'Laporan Pasien', description: 'Detail pelayanan asuhan keperawatan & medis' },
     { id: 'laporan_pj_shift', label: 'Laporan PJ Shift', description: 'Evaluasi jalannya shift oleh PJ' },
     { id: 'laporan_bulanan', label: 'Laporan Bulanan', description: 'Rekap performa perawat & unit HD' },
+    { id: 'data_komplikasi', label: 'Data Komplikasi', description: 'Rekapitulasi & total komplikasi intra-HD unit' },
+    { id: 'my_account', label: 'My Account', description: 'Profil pribadi & ubah password' },
+  ],
+  'Koordinator Unit Hemodialisa': [
+    { id: 'dashboard', label: 'Dashboard', description: 'Statistik eksekutif & performa unit' },
+    { id: 'laporan_pasien', label: 'Laporan Pasien', description: 'Detail pelayanan asuhan keperawatan & medis' },
+    { id: 'laporan_pj_shift', label: 'Laporan PJ Shift', description: 'Evaluasi jalannya shift oleh PJ' },
+    { id: 'laporan_bulanan', label: 'Laporan Bulanan', description: 'Rekap performa perawat & unit HD' },
+    { id: 'data_komplikasi', label: 'Data Komplikasi', description: 'Rekapitulasi & total komplikasi intra-HD unit' },
+    { id: 'verifikasi', label: 'Verifikasi', description: 'Verifikasi logbook tindakan yang diinput oleh Kepala Ruang' },
     { id: 'my_account', label: 'My Account', description: 'Profil pribadi & ubah password' },
   ],
   'Kepala Ruang': [
@@ -71,6 +86,7 @@ export const ROLE_MENUS: Record<UserRole, MenuItemConfig[]> = {
     { id: 'laporan_pasien', label: 'Laporan Pasien', description: 'Detail pelayanan asuhan keperawatan & medis' },
     { id: 'laporan_pj_shift', label: 'Laporan PJ Shift', description: 'Review laporan dari PJ Shift' },
     { id: 'laporan_bulanan', label: 'Laporan Bulanan', description: 'Rekapitulasi bulanan ruangan' },
+    { id: 'data_komplikasi', label: 'Data Komplikasi', description: 'Rekapitulasi & total komplikasi intra-HD unit' },
     { id: 'verifikasi', label: 'Verifikasi', description: 'Approval logbook perawat & PJ Shift' },
     { id: 'riwayat', label: 'Riwayat', description: 'Riwayat logbook pribadi & status verifikasi' },
     { id: 'jadwal_dinas', label: 'Jadwal Dinas', description: 'Lihat & validasi jadwal dinas ruangan' },
@@ -82,6 +98,7 @@ export const ROLE_MENUS: Record<UserRole, MenuItemConfig[]> = {
     { id: 'laporan_pasien', label: 'Laporan Pasien', description: 'Detail pelayanan asuhan keperawatan & medis' },
     { id: 'laporan_pj_shift', label: 'Laporan PJ Shift', description: 'Form pengisian & submit laporan shift' },
     { id: 'laporan_bulanan', label: 'Laporan Bulanan', description: 'Rekapitulasi bulanan shift' },
+    { id: 'data_komplikasi', label: 'Data Komplikasi', description: 'Rekapitulasi & total komplikasi intra-HD unit' },
     { id: 'verifikasi', label: 'Verifikasi', description: 'Validasi logbook perawat pelaksana' },
     { id: 'riwayat', label: 'Riwayat', description: 'Riwayat logbook pribadi & laporan shift' },
     { id: 'jadwal_dinas', label: 'Jadwal Dinas', description: 'Jadwal dinas pribadi & tim shift' },
@@ -92,6 +109,7 @@ export const ROLE_MENUS: Record<UserRole, MenuItemConfig[]> = {
     { id: 'logbook', label: 'Logbook', description: 'Input tindakan hemodialisa harian' },
     { id: 'laporan_pasien', label: 'Laporan Pasien', description: 'Catatan perkembangan pasien harian' },
     { id: 'laporan_bulanan', label: 'Laporan Bulanan', description: 'Rekapitulasi logbook pribadi per bulan' },
+    { id: 'data_komplikasi', label: 'Data Komplikasi', description: 'Rekapitulasi & total komplikasi intra-HD unit' },
     { id: 'riwayat', label: 'Riwayat', description: 'Riwayat logbook & status verifikasi' },
     { id: 'jadwal_dinas', label: 'Jadwal Dinas', description: 'Jadwal dinas pribadi' },
     { id: 'my_account', label: 'My Account', description: 'Profil pribadi & ubah password' },
@@ -299,7 +317,7 @@ export interface LogbookEntry {
   complications: string;
   nursingNotes: string;
   verificationStatus: VerificationStatus;
-  targetVerifierRole?: 'PJ Shift' | 'Kepala Ruang';
+  targetVerifierRole?: 'PJ Shift' | 'Kepala Ruang' | 'Koordinator Unit Hemodialisa';
   targetVerifierId?: string;
   targetVerifierName?: string;
   verifiedBy?: string;

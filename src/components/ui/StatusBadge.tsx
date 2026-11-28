@@ -147,6 +147,7 @@ export function RoleBadge({ role }: { role: UserRole }) {
   const styles: Record<UserRole, string> = {
     Administrator: 'border-slate-300 bg-slate-100 text-slate-800',
     Managerial: 'border-sky-200 bg-sky-50 text-sky-800',
+    'Koordinator Unit Hemodialisa': 'border-cyan-200 bg-cyan-50 text-cyan-800',
     'Kepala Ruang': 'border-teal-200 bg-teal-50 text-teal-800',
     'PJ Shift': 'border-indigo-200 bg-indigo-50 text-indigo-800',
     'Perawat Pelaksana': 'border-emerald-200 bg-emerald-50 text-emerald-800',

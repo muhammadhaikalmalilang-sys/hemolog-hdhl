@@ -99,7 +99,9 @@ export function DashboardPage({
   if (!userProfile) return null;
 
   const isAdmin = userProfile.role === 'Administrator';
-  const isManagerial = userProfile.role === 'Managerial';
+  const isManagerial =
+    userProfile.role === 'Managerial' ||
+    userProfile.role === 'Koordinator Unit Hemodialisa';
   const isClinical =
     userProfile.role === 'Kepala Ruang' ||
     userProfile.role === 'PJ Shift' ||
@@ -147,9 +149,9 @@ export function DashboardPage({
       logbooks.filter(
         (l) =>
           l.verificationStatus === 'Pending' &&
-          isLogbookAssignedToVerifier(l, userProfile)
+          isLogbookAssignedToVerifier(l, userProfile, staffDirectory)
       ).length,
-    [logbooks, userProfile]
+    [logbooks, userProfile, staffDirectory]
   );
 
   const regularPatients = useMemo(
@@ -433,7 +435,9 @@ export function DashboardPage({
         </div>
       )}
 
-      {(userProfile.role === 'Kepala Ruang' || userProfile.role === 'PJ Shift') &&
+      {(userProfile.role === 'Kepala Ruang' ||
+        userProfile.role === 'PJ Shift' ||
+        userProfile.role === 'Koordinator Unit Hemodialisa') &&
         pendingCount > 0 && (
           <div className="rounded-2xl border border-amber-200 bg-amber-50/95 backdrop-blur-sm p-4 shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div className="flex items-start gap-2.5 text-amber-900">

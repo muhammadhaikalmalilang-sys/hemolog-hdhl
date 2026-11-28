@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS public.users (
   full_name text NOT NULL,
   nip text NOT NULL DEFAULT '',
   role text NOT NULL DEFAULT 'Perawat Pelaksana'
-    CHECK (role IN ('Administrator', 'Managerial', 'Kepala Ruang', 'PJ Shift', 'Perawat Pelaksana')),
+    CHECK (role IN ('Administrator', 'Managerial', 'Koordinator Unit Hemodialisa', 'Kepala Ruang', 'PJ Shift', 'Perawat Pelaksana')),
   is_active boolean NOT NULL DEFAULT true,
   phone text NOT NULL DEFAULT '',
   specialization text NOT NULL DEFAULT 'Perawat Hemodialisa',
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS public.staff_directory (
   full_name text NOT NULL,
   nip text NOT NULL DEFAULT '',
   role text NOT NULL DEFAULT 'Perawat Pelaksana'
-    CHECK (role IN ('Administrator', 'Managerial', 'Kepala Ruang', 'PJ Shift', 'Perawat Pelaksana')),
+    CHECK (role IN ('Administrator', 'Managerial', 'Koordinator Unit Hemodialisa', 'Kepala Ruang', 'PJ Shift', 'Perawat Pelaksana')),
   is_active boolean NOT NULL DEFAULT true,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -168,7 +168,7 @@ CREATE TABLE IF NOT EXISTS public.logbook (
   verification_status text NOT NULL DEFAULT 'Draft'
     CHECK (verification_status IN ('Draft', 'Pending', 'Revision', 'Approved')),
   target_verifier_role text
-    CHECK (target_verifier_role IS NULL OR target_verifier_role IN ('PJ Shift', 'Kepala Ruang')),
+    CHECK (target_verifier_role IS NULL OR target_verifier_role IN ('PJ Shift', 'Kepala Ruang', 'Koordinator Unit Hemodialisa')),
   target_verifier_id text NOT NULL DEFAULT '',
   target_verifier_name text NOT NULL DEFAULT '',
   verified_by text,
@@ -401,7 +401,7 @@ STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $$
-  SELECT public.app_current_role() IN ('Administrator', 'Managerial', 'Kepala Ruang', 'PJ Shift');
+  SELECT public.app_current_role() IN ('Administrator', 'Managerial', 'Koordinator Unit Hemodialisa', 'Kepala Ruang', 'PJ Shift');
 $$;
 
 CREATE OR REPLACE FUNCTION public.app_is_verifier()
@@ -411,7 +411,22 @@ STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $$
-  SELECT public.app_current_role() IN ('Kepala Ruang', 'PJ Shift');
+  SELECT public.app_current_role() IN ('Kepala Ruang', 'PJ Shift', 'Koordinator Unit Hemodialisa');
+$$;
+
+CREATE OR REPLACE FUNCTION public.app_is_karu_uid(target_uid text)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.users u
+    WHERE u.uid = target_uid
+      AND u.role = 'Kepala Ruang'
+  );
 $$;
 
 CREATE OR REPLACE FUNCTION public.app_own_user_role_unchanged(
@@ -659,6 +674,10 @@ CREATE POLICY logbook_update ON public.logbook
         public.app_is_verifier()
         AND nurse_id <> auth.uid()::text
         AND verification_status IN ('Pending', 'Revision', 'Approved')
+        AND (
+          public.app_current_role() <> 'Koordinator Unit Hemodialisa'
+          OR public.app_is_karu_uid(nurse_id)
+        )
       )
     )
   )
@@ -674,6 +693,10 @@ CREATE POLICY logbook_update ON public.logbook
         public.app_is_verifier()
         AND nurse_id <> auth.uid()::text
         AND verification_status IN ('Pending', 'Revision', 'Approved')
+        AND (
+          public.app_current_role() <> 'Koordinator Unit Hemodialisa'
+          OR public.app_is_karu_uid(nurse_id)
+        )
       )
     )
   );

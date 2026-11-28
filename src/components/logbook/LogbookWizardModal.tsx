@@ -1169,9 +1169,11 @@ export function LogbookWizardModal({
   );
 
   // Section 8: Submission Target
-  const [targetVerifierRole, setTargetVerifierRole] = useState<'PJ Shift' | 'Kepala Ruang'>(() => {
+  const [targetVerifierRole, setTargetVerifierRole] = useState<
+    'PJ Shift' | 'Kepala Ruang' | 'Koordinator Unit Hemodialisa'
+  >(() => {
     if (!readOnly && !verifierEditMode && userProfile?.role === 'Kepala Ruang') {
-      return 'PJ Shift';
+      return 'Koordinator Unit Hemodialisa';
     }
     return editingEntry?.targetVerifierRole || 'Kepala Ruang';
   });
@@ -1389,7 +1391,11 @@ export function LogbookWizardModal({
     setEpoRoute(d?.section7?.epoRoute || 'Subkutan (SC)');
     setEpoNote(d?.section7?.epoNote || '');
 
-    setTargetVerifierRole(entry.targetVerifierRole || 'Kepala Ruang');
+    setTargetVerifierRole(
+      !readOnly && !verifierEditMode && userProfile?.role === 'Kepala Ruang'
+        ? 'Koordinator Unit Hemodialisa'
+        : entry.targetVerifierRole || 'Kepala Ruang'
+    );
     setTargetVerifierId(entry.targetVerifierId || '');
     setSubmissionNote(d?.section6.handoverSummary || '');
     setSubmissionConfirmed(entry.verificationStatus !== 'Draft');
@@ -2941,8 +2947,15 @@ export function LogbookWizardModal({
     const safeShift: ShiftType =
       shift === 'Siang' || shift === 'Malam' ? shift : 'Pagi';
     const safeDate = /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : getTodayDateStr();
-    const safeTargetVerifierRole: 'PJ Shift' | 'Kepala Ruang' = isSubmitterKaru
-      ? 'PJ Shift'
+    const safeTargetVerifierRole:
+      | 'PJ Shift'
+      | 'Kepala Ruang'
+      | 'Koordinator Unit Hemodialisa' = isSubmitterKaru
+      ? 'Koordinator Unit Hemodialisa'
+      : isVerifierEdit && editingEntry?.targetVerifierRole
+      ? editingEntry.targetVerifierRole
+      : targetVerifierRole === 'Koordinator Unit Hemodialisa'
+      ? 'Koordinator Unit Hemodialisa'
       : targetVerifierRole === 'PJ Shift'
       ? 'PJ Shift'
       : 'Kepala Ruang';
@@ -3018,7 +3031,8 @@ export function LogbookWizardModal({
     const isAdminRole = userProfile.role === 'Administrator';
     const isVerifierRole =
       userProfile.role === 'Kepala Ruang' ||
-      userProfile.role === 'PJ Shift';
+      userProfile.role === 'PJ Shift' ||
+      userProfile.role === 'Koordinator Unit Hemodialisa';
     let canVerifierEditCurrent = false;
     try {
       const monthKey = safeDate.slice(0, 7);
@@ -6066,7 +6080,7 @@ export function LogbookWizardModal({
                   </h4>
                   <p className="text-[11px] text-slate-500 mt-0.5">
                     {isSubmitterKaru
-                      ? 'Logbook yang diinputkan oleh Kepala Ruang diajukan untuk diverifikasi oleh PJ Shift yang bertugas.'
+                      ? 'Logbook yang diinputkan oleh Kepala Ruang diajukan untuk diverifikasi oleh Koordinator Unit Hemodialisa.'
                       : 'PJ Shift dan Perawat Pelaksana dapat mengajukan verifikasi logbook pasien ini kepada Kepala Ruang atau PJ Shift lainnya.'}
                   </p>
                 </div>
@@ -6078,10 +6092,10 @@ export function LogbookWizardModal({
                       <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5 text-[#0e4e78]" />
                       <div>
                         <p className="text-xs font-bold text-slate-900">
-                          Tujuan Pengajuan Verifikasi: PJ Shift
+                          Tujuan Pengajuan Verifikasi: Koordinator Unit Hemodialisa
                         </p>
                         <p className="text-[11px] text-slate-600 mt-0.5 leading-snug">
-                          Sebagai Kepala Ruang penginput logbook, pengajuan verifikasi otomatis diarahkan ke halaman Verifikasi PJ Shift tujuan.
+                          Sebagai Kepala Ruang penginput logbook, pengajuan verifikasi otomatis diarahkan ke halaman Verifikasi Koordinator Unit Hemodialisa.
                         </p>
                       </div>
                     </div>
@@ -6182,7 +6196,9 @@ export function LogbookWizardModal({
 
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-700 mb-1.5">
-                      {targetVerifierRole === 'Kepala Ruang'
+                      {targetVerifierRole === 'Koordinator Unit Hemodialisa'
+                        ? 'Koordinator Unit Hemodialisa Tujuan Verifikasi'
+                        : targetVerifierRole === 'Kepala Ruang'
                         ? 'Kepala Ruang Tujuan Verifikasi'
                         : 'PJ Shift Tujuan Verifikasi'}
                     </label>
@@ -6253,7 +6269,11 @@ export function LogbookWizardModal({
                   <span className="text-xs font-medium text-slate-700 leading-snug">
                     Seluruh pengisian indikator SPO dan data asuhan Bagian I–VII untuk pasien{' '}
                     {selectedPatient ? selectedPatient.fullName.toUpperCase() : '-'} telah diperiksa dan siap diajukan untuk diverifikasi oleh{' '}
-                    {targetVerifierRole === 'Kepala Ruang' ? 'Kepala Ruang' : 'PJ Shift'}.
+                    {targetVerifierRole === 'Koordinator Unit Hemodialisa'
+                      ? 'Koordinator Unit Hemodialisa'
+                      : targetVerifierRole === 'Kepala Ruang'
+                      ? 'Kepala Ruang'
+                      : 'PJ Shift'}.
                   </span>
                 </label>
 

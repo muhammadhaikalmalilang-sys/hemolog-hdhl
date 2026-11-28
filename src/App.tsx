@@ -25,6 +25,7 @@ const pageLoaders: Record<MenuId, () => Promise<{ default: React.ComponentType<a
   laporan_pasien: () => import('./pages/PatientReportsPage').then((m) => ({ default: m.PatientReportsPage })),
   laporan_pj_shift: () => import('./pages/PjShiftReportsPage').then((m) => ({ default: m.PjShiftReportsPage })),
   laporan_bulanan: () => import('./pages/MonthlyReportsPage').then((m) => ({ default: m.MonthlyReportsPage })),
+  data_komplikasi: () => import('./pages/ComplicationsPage').then((m) => ({ default: m.ComplicationsPage })),
   jadwal_dinas: () => import('./pages/SchedulesPage').then((m) => ({ default: m.SchedulesPage })),
   data_pasien: () => import('./pages/PatientsPage').then((m) => ({ default: m.PatientsPage })),
   data_dokter: () => import('./pages/DoctorsPage').then((m) => ({ default: m.DoctorsPage })),
@@ -43,6 +44,7 @@ const HistoryPage = lazy(pageLoaders.riwayat);
 const PatientReportsPage = lazy(pageLoaders.laporan_pasien);
 const PjShiftReportsPage = lazy(pageLoaders.laporan_pj_shift);
 const MonthlyReportsPage = lazy(pageLoaders.laporan_bulanan);
+const ComplicationsPage = lazy(pageLoaders.data_komplikasi);
 const SchedulesPage = lazy(pageLoaders.jadwal_dinas);
 const PatientsPage = lazy(pageLoaders.data_pasien);
 const DoctorsPage = lazy(pageLoaders.data_dokter);
@@ -212,9 +214,9 @@ function WorkspaceShell() {
       allLogbooks.filter(
         (l) =>
           l.verificationStatus === 'Pending' &&
-          isLogbookAssignedToVerifier(l, userProfile)
+          isLogbookAssignedToVerifier(l, userProfile, staffDirectory)
       ).length,
-    [allLogbooks, userProfile]
+    [allLogbooks, userProfile, staffDirectory]
   );
 
   if (!supabaseConfigured) {
@@ -514,6 +516,22 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_
             formTemplate={formTemplate}
             archiveLoading={archiveLoading}
             onEnsureMonthLoaded={ensureMonthDetailsLoaded}
+          />
+        );
+      case 'data_komplikasi':
+        return (
+          <ComplicationsPage
+            logbooks={allLogbooks}
+            patients={patients}
+            machines={machines}
+            staffDirectory={staffDirectory}
+            formTemplate={formTemplate}
+            archiveLoading={archiveLoading}
+            onEnsureMonthLoaded={ensureMonthLoaded}
+            onEnsureAllArchivesLoaded={ensureAllArchivesLoaded}
+            onEnsureMonthDetailsLoaded={ensureMonthDetailsLoaded}
+            onEnsureAllArchiveDetailsLoaded={ensureAllArchiveDetailsLoaded}
+            onEnsureLogbookDetailsByIds={ensureLogbookDetailsByIds}
           />
         );
       case 'jadwal_dinas':
